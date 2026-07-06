@@ -1,0 +1,114 @@
+{
+  "primary_agent": "codex",
+  "local_agent": "ollama",
+  "model": "qwen2.5-coder:32b",
+  "context_files": [
+    "AGENTS.md",
+    "AI_SYSTEM.md",
+    "START_HERE.md",
+    "docs/PROJECT.md",
+    "docs/PROJECT_CONTEXT.md",
+    "docs/PROJECT_CONTEXT.json",
+    "docs/AGENT_CONTEXT.md",
+    "docs/ARCHITECTURE.md",
+    "docs/SYSTEM_MAP.md",
+    "docs/UI_DESIGN_STANDARD.md",
+    "docs/PLANS.md",
+    "docs/QUALITY_SCORE.md",
+    "docs/DECISIONS.md",
+    "docs/DEVELOPMENT_WORKFLOW.md",
+    "docs/GIT_SYNC.md",
+    "docs/BACKUP_RECOVERY.md",
+    "SECURITY.md",
+    "agent/INSTRUCTIONS.md",
+    "agent/context_bundle_generator.md",
+    "runtime/AUTONOMOUS_BACKLOG.md",
+    "runtime/RUN_LOG.md",
+    "runtime/SESSION_HANDOVER.md"
+  ],
+  "git": {
+    "default_branch": "main",
+    "auto_push": false,
+    "require_clean_worktree": true,
+    "sync_before_runtime": true,
+    "sync_strategy": "review-before-push"
+  },
+  "backup": {
+    "required": true,
+    "strategy": "git-plus-offsite",
+    "critical_paths": [
+      "docs",
+      "agent",
+      "runtime",
+      ".ai",
+      "src",
+      "tests"
+    ],
+    "restore_drill": "recommended"
+  },
+  "security": {
+    "secrets_policy": "never-commit-secrets",
+    "dependency_audit_required": true,
+    "allow_untrusted_shell_commands": false,
+    "require_env_example": true
+  },
+  "integrations": {
+    "neuroncompute": {
+      "enabled": false,
+      "workspace_key": null,
+      "project_key": null,
+      "export_types": [
+        "project",
+        "runtime",
+        "doctor",
+        "audit",
+        "away_session"
+      ],
+      "trigger_mode": "manual"
+    }
+  },
+  "autonomy": {
+    "enabled": false,
+    "allowed_agent": "codex",
+    "require_explicit_task_ids": true,
+    "verify_commands": [
+      "node --test tests/*.test.js"
+    ],
+    "max_tasks_per_session": 2,
+    "max_runtime_minutes": 90,
+    "allow_dirty_git": false,
+    "result_mode": "leave_changes_and_handover"
+  },
+  "project": "Sales Dashboard",
+  "template": "web-app",
+  "stack": "Node.js",
+  "description": "Local call intelligence and sales operations dashboard for scheduled CSV transcript imports",
+  "generatedAt": "2026-07-05T08:05:05.791Z",
+  "run_command": "node src/main.js",
+  "runtime_type": "web",
+  "port": 3000,
+  "open_url": "http://127.0.0.1:3000",
+  "healthcheck_url": "http://127.0.0.1:3000/health",
+  "imports_url": "http://127.0.0.1:3000/api/imports",
+  "reports_url": "http://127.0.0.1:3000/api/reports",
+  "local_store_path": "data/store/state.json",
+  "data_guardrails": {
+    "ignored_fields": [
+      "dialled_phone_number",
+      "CustomerCreateDate",
+      "CustomerImportDate"
+    ],
+    "phone_matching": "disabled_for_mvp",
+    "unsupported_metrics": [
+      "confirmed_sales_conversion",
+      "salesperson_revenue_performance",
+      "won_lost_commercial_outcome",
+      "revenue_attribution",
+      "order_value_generated_by_call"
+    ]
+  },
+  "reports": {
+    "save_endpoint": "POST /api/reports",
+    "instruction": "When Codex generates a data extract or report for the user, save it through the report endpoint or saveGeneratedReport so it appears in the dashboard Reports Library."
+  }
+}
