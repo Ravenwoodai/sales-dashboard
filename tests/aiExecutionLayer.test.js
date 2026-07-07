@@ -7,6 +7,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   DEFAULT_LAYER_PATH,
+  buildTranscriptIntelligenceInput,
   buildTranscriptEvaluationInput,
   publicAiExecutionStatus,
   resolveAiExecutionConfig,
@@ -63,6 +64,37 @@ test("transcript evaluation input includes guardrails and sanitized call evidenc
   assert.equal(input.deterministic_baseline.local_outcome, "callback_requested");
   assert.ok(input.guardrails.some((guardrail) => guardrail.includes("Redacted phone")));
   assert.equal(input.sanitized_raw_fields.call_id, "48500001");
+});
+
+test("transcript intelligence input asks local LLM for structured extraction", () => {
+  const deterministic = {
+    call: {
+      extractionVersion: "call_intelligence.v1",
+      leadUtilizationScore: 5,
+      briefReason: "Strong next step.",
+      evidenceSnippet: "Customer: Please call me back later today."
+    },
+    entities: [],
+    events: [
+      {
+        eventType: "customer_requested_callback",
+        evidence: "Customer: Please call me back later today.",
+        confidence: 0.8
+      }
+    ],
+    riskFlags: []
+  };
+  const input = buildTranscriptIntelligenceInput(fakeCall(), deterministic, { importId: "import-test", sourceName: "sample.csv" });
+
+  assert.equal(input.schema_version, "sales_dashboard_call_intelligence_llm.v1");
+  assert.equal(input.source.call_id, "48500001");
+  assert.equal(input.deterministic_intelligence.call.leadUtilizationScore, 5);
+  assert.ok(input.instructions.some((item) => item.includes("strict JSON")));
+  assert.ok(input.instructions.some((item) => item.includes("real transcript phrase")));
+  assert.ok(input.instructions.some((item) => item.includes("payment_or_order_intent")));
+  assert.ok(input.instructions.some((item) => item.includes("mortgage")));
+  assert.ok(input.output_contract.events);
+  assert.ok(input.guardrails.some((item) => item.includes("OrderCount")));
 });
 
 test("submitAiTask calls the execution layer through POST /run-task", async () => {

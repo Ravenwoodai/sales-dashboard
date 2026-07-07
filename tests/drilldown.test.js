@@ -112,10 +112,75 @@ test("call drill-down returns sanitized raw fields and full local transcript pro
 
   assert.equal(result.count, 1);
   assert.equal(result.rows[0].callId, "1");
+  assert.equal(result.rows[0].customerId, "customer-1");
   assert.equal(result.rows[0].rawFields.dialled_phone_number, undefined);
   assert.equal(result.rows[0].rawFields.CustomerCreateDate, undefined);
   assert.equal(result.rows[0].rawFields.CustomerImportDate, undefined);
   assert.match(result.rows[0].transcript, /Please call me back later today/);
+});
+
+test("call drill-down supports New Business and Warm Business segments", () => {
+  const analysis = analyzeCsvText(csv([
+    row({ call_id: "1", OrderCount: "NULL" }),
+    row({ call_id: "2", OrderCount: "0" }),
+    row({ call_id: "3", OrderCount: "4" })
+  ]));
+
+  const warm = buildDrilldownResult(analysis, { metric: "calls.warmBusiness" });
+  assert.equal(warm.count, 1);
+  assert.equal(warm.rows[0].callId, "3");
+  assert.equal(warm.rows[0].businessSegment, "warm");
+  assert.equal(warm.rows[0].businessSegmentLabel, "Warm Business");
+  assert.equal(warm.rows[0].orderCount, 4);
+
+  const newOnly = buildDrilldownResult(analysis, { metric: "calls.unique", businessSegment: "new" });
+  assert.equal(newOnly.count, 2);
+  assert.equal(newOnly.filters.businessSegment, "new");
+  assert.equal(newOnly.filters.businessSegmentLabel, "New Business");
+  assert.deepEqual(newOnly.rows.map((item) => item.callId), ["1", "2"]);
+
+  const warmAlias = buildDrilldownResult(analysis, { metric: "calls.unique", segment: "warm_business" });
+  assert.equal(warmAlias.count, 1);
+  assert.equal(warmAlias.rows[0].callId, "3");
+});
+
+test("source-quality drill-down filters New Business calls by import age threshold", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "old-new",
+      call_date: "1/07/2026",
+      CustomerImportSource: "GoogleMaps",
+      CustomerImportDate: "1/01/2026",
+      OrderCount: "NULL"
+    }),
+    row({
+      call_id: "fresh-new",
+      call_date: "1/07/2026",
+      CustomerImportSource: "GoogleMaps",
+      CustomerImportDate: "28/06/2026",
+      OrderCount: "0"
+    }),
+    row({
+      call_id: "old-warm",
+      call_date: "1/07/2026",
+      CustomerImportSource: "GoogleMaps",
+      CustomerImportDate: "1/01/2026",
+      OrderCount: "3"
+    })
+  ]));
+
+  const result = buildDrilldownResult(analysis, {
+    metric: "source.newBusinessImportedOlderThan",
+    source: "GoogleMaps",
+    minImportAgeDays: "90"
+  });
+
+  assert.equal(result.title, "New Business Imported Older Than 90 Days");
+  assert.equal(result.count, 1);
+  assert.equal(result.rows[0].callId, "old-new");
+  assert.equal(result.rows[0].businessSegment, "new");
+  assert.equal(result.rows[0].daysSinceImport, 181);
+  assert.equal(result.filters.minImportAgeDays, 90);
 });
 
 test("dashboard can submit a call transcript to the AI execution layer", async () => {
@@ -150,6 +215,29 @@ test("dashboard can submit a call transcript to the AI execution layer", async (
         text: async () => JSON.stringify({ job_id: "job-ai-4", status: "queued", links: { job: "/jobs/job-ai-4" } })
       };
     }
+  });
+});
+
+test("branding logo endpoint serves the default and accepts local uploads", async () => {
+  await withServer(csv([row({ call_id: "5" })]), async ({ baseUrl }) => {
+    const defaultLogo = await fetch(`${baseUrl}/branding/logo`);
+    assert.equal(defaultLogo.status, 200);
+    assert.equal(defaultLogo.headers.get("content-type"), "image/png");
+
+    const tinyPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lX4ZKAAAAABJRU5ErkJggg==";
+    const upload = await fetch(`${baseUrl}/api/branding/logo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dataUrl: `data:image/png;base64,${tinyPng}` })
+    });
+    const uploadBody = await upload.json();
+    assert.equal(upload.status, 201);
+    assert.equal(uploadBody.ok, true);
+
+    const customLogo = await fetch(`${baseUrl}/branding/logo`);
+    assert.equal(customLogo.status, 200);
+    assert.equal(customLogo.headers.get("content-type"), "image/png");
+    assert.equal((await customLogo.arrayBuffer()).byteLength, Buffer.from(tinyPng, "base64").length);
   });
 });
 
@@ -192,9 +280,12 @@ test("dashboard drill-down pages expose proof links and manager review saving", 
   await withServer(csv([row({ call_id: "3" })]), async ({ baseUrl, storePath }) => {
     const summary = await fetch(`${baseUrl}/api/summary`).then((response) => response.json());
     assert.equal(summary.drilldownRows, undefined);
+    assert.equal(summary.businessSegmentViews.new.drilldownRows, undefined);
 
     const drilldownHtml = await fetch(`${baseUrl}/drilldown?metric=calls.unique`).then((response) => response.text());
     assert.match(drilldownHtml, /Unique Calls/);
+    assert.match(drilldownHtml, /Customer ID/);
+    assert.match(drilldownHtml, /customer-1/);
     assert.match(drilldownHtml, /\/calls\/3/);
     assert.match(drilldownHtml, /Full JSON/);
     assert.match(drilldownHtml, /Proof/);
@@ -202,6 +293,8 @@ test("dashboard drill-down pages expose proof links and manager review saving", 
     assert.doesNotMatch(drilldownHtml, /Please call me back later today/);
 
     const callHtml = await fetch(`${baseUrl}/calls/3`).then((response) => response.text());
+    assert.match(callHtml, /Customer ID/);
+    assert.match(callHtml, /customer-1/);
     assert.match(callHtml, /Sanitized Raw Source Fields/);
     assert.doesNotMatch(callHtml, /4999999/);
     assert.match(callHtml, /Readable Transcript/);
@@ -224,5 +317,49 @@ test("dashboard drill-down pages expose proof links and manager review saving", 
     const store = readStore({ storePath });
     assert.equal(store.managerReviews.length, 1);
     assert.equal(store.managerReviews[0].status, "incorrect");
+  });
+});
+
+test("dashboard renders Not available when customer id is missing", async () => {
+  await withServer(csv([row({ call_id: "missing-customer", customer_id: "NULL" })]), async ({ baseUrl }) => {
+    const drilldownHtml = await fetch(`${baseUrl}/drilldown?metric=calls.unique`).then((response) => response.text());
+    const callHtml = await fetch(`${baseUrl}/calls/missing-customer`).then((response) => response.text());
+
+    assert.match(drilldownHtml, /Customer ID/);
+    assert.match(drilldownHtml, /Not available/);
+    assert.match(callHtml, /Customer ID/);
+    assert.match(callHtml, /Not available/);
+  });
+});
+
+test("dashboard business segment filter scopes visible dashboard results", async () => {
+  await withServer(csv([
+    row({
+      call_id: "20",
+      Salesperson: "New Seller",
+      CustomerImportSource: "New Source",
+      OrderCount: "NULL"
+    }),
+    row({
+      call_id: "21",
+      Salesperson: "Warm Seller",
+      CustomerImportSource: "Warm Source",
+      OrderCount: "3"
+    })
+  ]), async ({ baseUrl }) => {
+    const warmHtml = await fetch(`${baseUrl}/?businessSegment=warm`).then((response) => response.text());
+
+    assert.match(warmHtml, /Warm Business results only/);
+    assert.match(warmHtml, /Warm Business view/);
+    assert.match(warmHtml, /Warm Seller/);
+    assert.match(warmHtml, /Warm Source/);
+    assert.match(warmHtml, /href="\/drilldown\?metric=calls.unique&amp;businessSegment=warm"/);
+    assert.doesNotMatch(warmHtml, /New Seller/);
+    assert.doesNotMatch(warmHtml, /New Source/);
+
+    const warmSourceQuality = await fetch(`${baseUrl}/api/source-quality?businessSegment=warm`).then((response) => response.json());
+    assert.equal(warmSourceQuality.query.businessSegment, "warm");
+    assert.equal(warmSourceQuality.totals.calls, 1);
+    assert.equal(warmSourceQuality.sourceRows[0].name, "Warm Source");
   });
 });

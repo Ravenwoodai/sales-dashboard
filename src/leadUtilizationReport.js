@@ -3,7 +3,7 @@
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { clean, isMissing } = require("./transcriptEvaluator");
 
-const STABLE_LEAD_FIELDS = ["AllocatedLeadID", "ContactId", "customer_id", "FoundContactID", "FoundCustomerID"]
+const STABLE_LEAD_FIELDS = ["customer_id", "AllocatedLeadID", "ContactId", "FoundContactID", "FoundCustomerID"]
   .filter((field) => ENTITY_FIELDS.includes(field));
 const NO_CONTACT_CLASSIFICATIONS = new Set(["no_answer", "system_audio", "voicemail", "unknown"]);
 
@@ -72,6 +72,11 @@ function stableLeadFor(row) {
     }
   }
   return null;
+}
+
+function customerIdFor(row) {
+  const value = clean(row.customer_id);
+  return isMissing(value) ? "" : value;
 }
 
 function hasAny(text, patterns) {
@@ -248,6 +253,7 @@ function buildLeadUtilizationModel(items) {
       day: group.day,
       salesperson: firstOwner,
       source: isMissing(firstItem.row.CustomerImportSource) ? "Unknown source" : clean(firstItem.row.CustomerImportSource),
+      customerId: customerIdFor(firstItem.row),
       stableLeadSource: group.stableLeadSource,
       stableLeadValue: group.stableLeadValue,
       primaryCallId: clean(firstItem.row.call_id),
@@ -277,6 +283,7 @@ function buildLeadUtilizationModel(items) {
         groupRecord.reason = "Only one same-day attempt; no probable live-human contact.";
         addExample(firstOwnerStats, {
           callId: clean(firstItem.row.call_id),
+          customerId: customerIdFor(firstItem.row),
           salesperson: firstOwner,
           stableLeadSource: group.stableLeadSource,
           reason: "Only one same-day attempt; no probable live-human contact.",
@@ -303,6 +310,7 @@ function buildLeadUtilizationModel(items) {
           day: group.day,
           salesperson: owner,
           source: isMissing(item.row.CustomerImportSource) ? "Unknown source" : clean(item.row.CustomerImportSource),
+          customerId: customerIdFor(item.row),
           stableLeadSource: group.stableLeadSource,
           stableLeadValue: group.stableLeadValue,
           primaryCallId: clean(item.row.call_id),
@@ -323,6 +331,7 @@ function buildLeadUtilizationModel(items) {
         day: group.day,
         salesperson: owner,
         source: isMissing(item.row.CustomerImportSource) ? "Unknown source" : clean(item.row.CustomerImportSource),
+        customerId: customerIdFor(item.row),
         stableLeadSource: group.stableLeadSource,
         stableLeadValue: group.stableLeadValue,
         primaryCallId: clean(item.row.call_id),
@@ -360,6 +369,7 @@ function buildLeadUtilizationModel(items) {
       }
       addExample(stats, {
         callId: clean(item.row.call_id),
+        customerId: customerIdFor(item.row),
         salesperson: owner,
         stableLeadSource: group.stableLeadSource,
         reason: "Explicit callback duty found, but no later same-day call to the same stable lead target appears in the upload.",
@@ -435,7 +445,7 @@ function buildLeadUtilizationReport(analysis, importRecord) {
     `Import ID: ${importRecord.id}`,
     "",
     "## Privacy And Proof Standard",
-    "This report does not use `dialled_phone_number` because that field is intentionally incomplete for security. Lead matching uses the first available stable source identifier from `AllocatedLeadID`, `ContactId`, `customer_id`, `FoundContactID`, or `FoundCustomerID`.",
+    "This report does not use `dialled_phone_number` because that field is intentionally incomplete for security. Lead matching uses the first available stable source identifier from `customer_id`, `AllocatedLeadID`, `ContactId`, `FoundContactID`, or `FoundCustomerID`.",
     "",
     "The callback section uses a strict proof rule. It counts explicit customer callback requests or salesperson callback promises, and does not count ordinary script wording such as `later this year`.",
     "",

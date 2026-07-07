@@ -112,4 +112,15 @@ Status:
 http://127.0.0.1:3000/api/ai/status
 ```
 
+Transcript intelligence is indexed locally in SQLite on import load. These endpoints expose the lead-waste database and optional local LLM enrichment flow:
+
+```text
+GET  /api/intelligence/summary
+GET  /api/intelligence/summary?businessSegment=warm
+GET  /api/intelligence/calls?businessSegment=new&limit=250
+POST /api/intelligence/rebuild
+POST /api/intelligence/llm-extractions
+POST /api/intelligence/llm-results
+```
+
 See `docs/AI_EXECUTION_LAYER.md`.

@@ -31,28 +31,100 @@ function turnText(value) {
   return clean(value).replace(/^[\s\u2013\u2014-]+|[\s\u2013\u2014-]+$/g, "").trim();
 }
 
-function parseTranscriptTurns(text) {
+function parseRawTranscriptTurns(text) {
   const source = clean(text).replace(/\s+/g, " ");
   if (!source) return [];
 
   SPEAKER_LABEL_PATTERN.lastIndex = 0;
   const matches = Array.from(source.matchAll(SPEAKER_LABEL_PATTERN));
   if (!matches.length) {
-    return [{ speaker: "Transcript", text: source, labelStart: 0, start: 0, end: source.length }];
+    return [{ speaker: "Transcript", originalSpeaker: "Transcript", text: source, labelStart: 0, start: 0, end: source.length }];
   }
 
   return matches.map((match, index) => {
     const next = matches[index + 1];
     const start = match.index + match[0].length;
     const end = next ? next.index : source.length;
+    const speaker = turnLabel(match[0]);
     return {
-      speaker: turnLabel(match[0]),
+      speaker,
+      originalSpeaker: speaker,
       text: turnText(source.slice(start, end)),
       labelStart: match.index,
       start,
       end
     };
   }).filter((turn) => turn.text);
+}
+
+function isVoicemailSpeaker(speaker) {
+  return clean(speaker).toLowerCase() === "voicemail";
+}
+
+function isSalespersonSpeaker(speaker) {
+  const text = clean(speaker);
+  return text === "Agent" || /\(CWA\)$/i.test(text);
+}
+
+const MACHINE_VOICEMAIL_PATTERNS = [
+  /\byou have reached\b/i,
+  /\bplease leave (?:a )?message\b/i,
+  /\bleave (?:a )?message\b/i,
+  /\bafter the tone\b/i,
+  /\bmailbox\b/i,
+  /\bmessage bank\b/i,
+  /\bnot available\b/i,
+  /\bunavailable\b/i,
+  /\brecord(?:ing)? (?:your )?message\b/i
+];
+
+const HUMAN_VOICEMAIL_DIALOGUE_PATTERNS = [
+  /\b(?:i|i'm|i am|i'll|i will|i've|i have|me|my|we|we're|we are|we'll|we will|we've|our|us)\b/i,
+  /\b(?:business|customers?|advertis(?:e|ing)|support|ready|busy|priorit(?:y|ies)|visibility|bandwidth|break|pause|capacity)\b/i,
+  /\b(?:not right now|not now|can't|cannot|don't|do not|call you when|save your number|stay in touch)\b/i
+];
+
+function isMachineVoicemailTurn(turn) {
+  const text = clean(turn?.text);
+  return MACHINE_VOICEMAIL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isHumanLikeVoicemailTurn(turn) {
+  if (!isVoicemailSpeaker(turn?.speaker)) return false;
+  const text = clean(turn.text);
+  if (!text || isMachineVoicemailTurn(turn)) return false;
+  const words = wordCount(text);
+  const signals = HUMAN_VOICEMAIL_DIALOGUE_PATTERNS.filter((pattern) => pattern.test(text)).length;
+  return words >= 12 && signals >= 1;
+}
+
+function hasAdjacentSalespersonTurn(turns, index) {
+  const previous = turns[index - 1];
+  const next = turns[index + 1];
+  return isSalespersonSpeaker(previous?.speaker) || isSalespersonSpeaker(next?.speaker);
+}
+
+function hasHumanLikeVoicemailDialogueFromTurns(turns) {
+  const salesTurns = turns.filter((turn) => isSalespersonSpeaker(turn.speaker));
+  if (!salesTurns.length) return false;
+  return turns.some((turn, index) => isHumanLikeVoicemailTurn(turn) && hasAdjacentSalespersonTurn(turns, index));
+}
+
+function normalizeHumanLikeVoicemailTurns(turns) {
+  const shouldNormalize = hasHumanLikeVoicemailDialogueFromTurns(turns);
+  return turns.map((turn) => ({
+    ...turn,
+    originalSpeaker: turn.originalSpeaker || turn.speaker,
+    speaker: shouldNormalize && isVoicemailSpeaker(turn.speaker) ? "Customer" : turn.speaker
+  }));
+}
+
+function parseTranscriptTurns(text) {
+  return normalizeHumanLikeVoicemailTurns(parseRawTranscriptTurns(text));
+}
+
+function hasHumanLikeVoicemailDialogue(text) {
+  return hasHumanLikeVoicemailDialogueFromTurns(parseRawTranscriptTurns(text));
 }
 
 function turnsAroundMatch(source, matchStart, matchEnd) {
@@ -258,10 +330,12 @@ function evaluateCall(row) {
   const durationSeconds = toInt(row.call_duration_seconds) || 0;
   const totalSeconds = toInt(row.CallTotalSeconds) || 0;
   const words = wordCount(transcript);
+  const humanLikeVoicemailDialogue = transcriptAvailable && hasHumanLikeVoicemailDialogue(transcript);
   const speakerLabelsPresent = transcriptAvailable && hasAny(transcript, PATTERNS.speakerLabel);
 
   const noAnswer = transcriptAvailable && hasAny(transcript, PATTERNS.noAnswer);
-  const voicemail = transcriptAvailable && hasAny(transcript, PATTERNS.voicemail);
+  const rawVoicemail = transcriptAvailable && hasAny(transcript, PATTERNS.voicemail);
+  const voicemail = rawVoicemail && !humanLikeVoicemailDialogue;
   const systemAudio = transcriptAvailable && hasAny(transcript, PATTERNS.systemAudio);
   const wrongNumber = transcriptAvailable && hasAny(transcript, PATTERNS.wrongNumber);
   const notInterested = transcriptAvailable && hasAny(transcript, PATTERNS.notInterested);
@@ -379,7 +453,8 @@ function evaluateCall(row) {
       nullFlag: transcriptNull,
       placeholderFlag: transcriptPlaceholder,
       systemGeneratedFlag: transcriptSystemGenerated,
-      tooShortForAnalysisFlag: transcriptTooShort
+      tooShortForAnalysisFlag: transcriptTooShort,
+      humanLikeVoicemailDialogue
     },
     contact: {
       telephonyConnected,

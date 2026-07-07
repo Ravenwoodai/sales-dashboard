@@ -7,6 +7,7 @@ const path = require("path");
 const DEFAULT_LAYER_PATH = "C:\\Users\\User\\Desktop\\ai-execution-layer";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_TASK_TYPE = "sales_transcript_evaluation";
+const INTELLIGENCE_TASK_TYPE = "sales_transcript_intelligence_extraction";
 
 function clean(value) {
   return value === undefined || value === null ? "" : String(value).trim();
@@ -83,6 +84,7 @@ function buildTranscriptEvaluationInput(call, options = {}) {
       import_id: options.importId || null,
       source_name: options.sourceName || null,
       call_id: call.callId,
+      customer_id: call.customerId || "",
       salesperson: call.salesperson,
       call_date: call.date,
       call_time: call.time
@@ -98,13 +100,101 @@ function buildTranscriptEvaluationInput(call, options = {}) {
       stable_ids: call.stableIds || [],
       evidence: call.evidence || []
     },
+    source_attribution: {
+      customer_import_source: call.customerImportSource || call.source || "",
+      customer_import_date: call.customerImportDateIso || "",
+      days_since_import: call.daysSinceImport,
+      customer_created_by: call.customerCreatedBy || "",
+      customer_created_by_type: call.customerCreatedByType || "",
+      customer_create_date: call.customerCreateDateIso || "",
+      days_since_created: call.daysSinceCreated
+    },
     transcript: call.transcript || "",
     sanitized_raw_fields: call.rawFields || {},
     guardrails: [
       "Redacted phone numbers are not available and must not be reconstructed.",
-      "CustomerCreateDate and CustomerImportDate are unreliable in the current export.",
+      "Use normalized source_attribution dates when present; treat blank or malformed raw date fragments as missing.",
       "Treat deterministic scores as baseline evidence, not final truth.",
       "If evidence is insufficient, say so."
+    ]
+  };
+}
+
+function truncatedText(value, maxChars = 8000) {
+  const text = clean(value);
+  const limit = Math.max(500, Number(maxChars || 8000));
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit).trim()}\n\n[Transcript truncated for local model context: ${text.length - limit} characters omitted.]`;
+}
+
+function intelligenceRawFields(rawFields = {}) {
+  const omitted = new Set(["transcription_text", "Baz_DetailedNotes", "transcript"]);
+  return Object.fromEntries(
+    Object.entries(rawFields || {}).filter(([key]) => !omitted.has(key))
+  );
+}
+
+function buildTranscriptIntelligenceInput(call, deterministicIntelligence, options = {}) {
+  if (!call) throw new Error("call is required");
+  if (!deterministicIntelligence?.call) throw new Error("deterministicIntelligence.call is required");
+  const maxTranscriptChars = options.maxTranscriptChars || 8000;
+  return {
+    schema_version: "sales_dashboard_call_intelligence_llm.v1",
+    instructions: [
+      "Return minified strict JSON only, with no markdown, prose, wrappers, or duplicated output fields.",
+      "Keep the whole response under 900 completion tokens.",
+      "Extract facts, events, risk flags, and scoring evidence from the supplied transcript.",
+      "Preserve the distinction between transcript facts, interpretations, and scores.",
+      "Do not infer revenue, conversion, order value, or CRM outcomes that are not in the transcript.",
+      "Every important entity, event, flag, or score must include evidence text and confidence.",
+      "Use null or an empty array when evidence is insufficient; do not invent details.",
+      "Return at most 2 entities, 2 events, and 2 risk_flags; choose only the strongest evidence.",
+      "Keep each evidence string under 140 characters.",
+      "Evidence must be a real transcript phrase that supports the exact label; never use a single keyword or category name as evidence.",
+      "Only emit payment_or_order_intent when the customer clearly agrees to pay/order/book/proceed with this offer, asks for an invoice, or gives/requests payment details.",
+      "Do not infer payment_or_order_intent from unrelated finance wording such as paying a mortgage, bills, wages, rent, fines, debts, tax, or general affordability complaints.",
+      "Do not flag ordinary campaign references to Police, SES, ambulance, schools, charities, or Blue Light as legal/compliance risk unless the transcript includes actual threat, deception, fraud concern, complaint, privacy issue, or coercive pressure."
+    ],
+    output_contract: {
+      call_summary: {
+        decision_maker_status: "unknown|reached|gatekeeper|unavailable|null",
+        overall_call_outcome: "string",
+        customer_sentiment: "interested|neutral|skeptical|confused|annoyed|angry|hostile|unknown",
+        lead_utilization_score: "integer 0-5",
+        salesperson_quality_score: "integer 0-100",
+        manager_review_required: "boolean",
+        brief_reason: "string",
+        confidence: "0-1"
+      },
+      entities: [
+        { entity_type: "string", raw_value: "string", normalized_value: "string|null", speaker: "customer|salesperson|voicemail|unknown", evidence: "string", confidence: "0-1" }
+      ],
+      events: [
+        { event_type: "string", speaker: "customer|salesperson|voicemail|unknown", raw_value: "string|null", normalized_value: "string|null", follow_up_required: "boolean", due_at: "ISO-8601|null", evidence: "string", confidence: "0-1" }
+      ],
+      risk_flags: [
+        { flag_type: "string", severity: "low|medium|high|critical", speaker: "customer|salesperson|unknown", evidence: "string", confidence: "0-1", manager_review_recommended: "boolean" }
+      ],
+      limitations: ["string"]
+    },
+    source: {
+      system: "Sales Dashboard",
+      import_id: options.importId || null,
+      source_name: options.sourceName || null,
+      call_id: call.callId,
+      salesperson: call.salesperson,
+      call_date: call.date,
+      call_time: call.time
+    },
+    deterministic_intelligence: deterministicIntelligence,
+    transcript: truncatedText(call.transcript || "", maxTranscriptChars),
+    sanitized_raw_fields: intelligenceRawFields(call.rawFields || {}),
+    guardrails: [
+      "Redacted phone values are intentionally unavailable and must not be reconstructed.",
+      "OrderCount can indicate historical warmth but is not proof this call converted.",
+      "NoSaleType is a weak imported label and may be wrong.",
+      "Use transcript evidence first; use structured fields only as context.",
+      "If the transcript was truncated, limit conclusions to visible evidence."
     ]
   };
 }
@@ -194,15 +284,37 @@ async function submitTranscriptEvaluation(call, options = {}) {
   });
 }
 
+async function submitTranscriptIntelligenceExtraction(call, deterministicIntelligence, options = {}) {
+  const input = buildTranscriptIntelligenceInput(call, deterministicIntelligence, options);
+  const taskRevision = options.taskRevision || "evidence-grounded-v4";
+  return submitAiTask(input, {
+    ...options,
+    taskType: options.taskType || INTELLIGENCE_TASK_TYPE,
+    metadata: {
+      source_system: "sales_dashboard",
+      source_type: "call_transcript_intelligence",
+      source_record_id: call.callId,
+      import_id: options.importId || null,
+      extraction_version: deterministicIntelligence.call.extractionVersion,
+      task_revision: taskRevision,
+      ...options.metadata
+    },
+    idempotencyKey: options.idempotencyKey || `sales-dashboard:intelligence:${taskRevision}:${call.callId}:${hash(JSON.stringify(input)).slice(0, 24)}`
+  });
+}
+
 module.exports = {
   DEFAULT_BASE_URL,
   DEFAULT_LAYER_PATH,
   DEFAULT_TASK_TYPE,
+  INTELLIGENCE_TASK_TYPE,
+  buildTranscriptIntelligenceInput,
   buildTranscriptEvaluationInput,
   checkAiExecutionHealth,
   getAiJob,
   publicAiExecutionStatus,
   resolveAiExecutionConfig,
   submitAiTask,
+  submitTranscriptIntelligenceExtraction,
   submitTranscriptEvaluation
 };

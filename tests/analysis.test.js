@@ -4,7 +4,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { parseCsv } = require("../src/csvParser");
 const { analyzeCsvText } = require("../src/analysis");
-const { evaluateCall } = require("../src/transcriptEvaluator");
+const { evaluateCall, parseTranscriptTurns } = require("../src/transcriptEvaluator");
+const { buildCallIntelligence } = require("../src/transcriptIntelligence");
 
 const header = [
   "dialled_phone_number",
@@ -89,7 +90,7 @@ test("parseCsv handles quoted commas", () => {
   assert.equal(parsed.rows[0].b, "two, with comma");
 });
 
-test("analysis ignores redacted phone and invalid customer date fields", () => {
+test("analysis ignores redacted phone and treats invalid customer date fragments as missing", () => {
   const analysis = analyzeCsvText(csv([
     row({ call_id: "1", dialled_phone_number: "4000000", customer_id: "customer-1" }),
     row({ call_id: "2", dialled_phone_number: "4000000", customer_id: "customer-2" })
@@ -97,10 +98,99 @@ test("analysis ignores redacted phone and invalid customer date fields", () => {
 
   const ignored = analysis.ignoredFields.map((item) => item.field);
   assert.ok(ignored.includes("dialled_phone_number"));
-  assert.ok(ignored.includes("CustomerCreateDate"));
-  assert.ok(ignored.includes("CustomerImportDate"));
+  assert.equal(ignored.includes("CustomerCreateDate"), false);
+  assert.equal(ignored.includes("CustomerImportDate"), false);
   assert.equal(analysis.totals.uniqueCalls, 2);
+  assert.equal(analysis.sourceQuality.totals.callsWithImportDate, 0);
+  assert.equal(analysis.sourceQuality.totals.callsWithCreateDate, 0);
   assert.equal(analysis.reviewQueue.every((item) => !("dialled_phone_number" in item)), true);
+});
+
+test("analysis classifies New Business and Warm Business from order history", () => {
+  const analysis = analyzeCsvText(csv([
+    row({ call_id: "1", OrderCount: "NULL" }),
+    row({ call_id: "2", OrderCount: "0" }),
+    row({ call_id: "3", OrderCount: "2" })
+  ]));
+
+  assert.equal(analysis.totals.newBusinessCalls, 2);
+  assert.equal(analysis.totals.warmBusinessCalls, 1);
+  assert.equal(analysis.rates.newBusiness, 66.7);
+  assert.equal(analysis.rates.warmBusiness, 33.3);
+
+  const warmRow = analysis.evaluationRows.find((item) => item.callId === "3");
+  assert.equal(warmRow.orderCount, 2);
+  assert.equal(warmRow.businessSegment, "warm");
+  assert.equal(warmRow.businessSegmentLabel, "Warm Business");
+
+  const newRow = analysis.explorerRows.find((item) => item.callId === "2");
+  assert.equal(newRow.orderCount, 0);
+  assert.equal(newRow.businessSegment, "new");
+  assert.equal(newRow.businessSegmentLabel, "New Business");
+  assert.deepEqual(
+    analysis.businessSegmentMetrics.map((item) => [item.segment, item.calls]).sort(),
+    [["new", 2], ["warm", 1]]
+  );
+  assert.equal(analysis.businessSegmentViews.new.totals.uniqueCalls, 2);
+  assert.equal(analysis.businessSegmentViews.warm.totals.uniqueCalls, 1);
+  assert.equal(analysis.businessSegmentViews.warm.drilldownRows[0].businessSegmentLabel, "Warm Business");
+});
+
+test("source quality tracks bulk import dates and manual LG/SP creator fields", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "source-old-new",
+      call_date: "1/07/2026",
+      CustomerImportSource: "GoogleMaps",
+      CustomerImportDate: "1/01/2026",
+      CustomerCreatedBy: "leadgen1",
+      CustomerCreatedByType: "LG",
+      CustomerCreateDate: "1/06/2026",
+      OrderCount: "NULL"
+    }),
+    row({
+      call_id: "source-fresh-warm",
+      call_date: "1/07/2026",
+      CustomerImportSource: "HiPages",
+      CustomerImportDate: "20/06/2026",
+      CustomerCreatedBy: "seller1",
+      CustomerCreatedByType: "SP",
+      CustomerCreateDate: "25/06/2026",
+      OrderCount: "2"
+    }),
+    row({
+      call_id: "source-mid-new",
+      call_date: "1/07/2026",
+      CustomerImportSource: "GoogleMaps",
+      CustomerImportDate: "1/05/2026",
+      CustomerCreatedBy: "",
+      CustomerCreatedByType: "",
+      CustomerCreateDate: "",
+      OrderCount: "0"
+    })
+  ]));
+
+  assert.equal(analysis.sourceQuality.totals.callsWithImportDate, 3);
+  assert.equal(analysis.sourceQuality.totals.callsWithManualCreator, 2);
+  assert.equal(analysis.sourceQuality.totals.leadGeneratorCreatedCalls, 1);
+  assert.equal(analysis.sourceQuality.totals.salespersonCreatedCalls, 1);
+  assert.equal(analysis.sourceQuality.newBusinessImportAgeThresholds.find((item) => item.thresholdDays === 30).calls, 2);
+  assert.equal(analysis.sourceQuality.newBusinessImportAgeThresholds.find((item) => item.thresholdDays === 90).calls, 1);
+
+  const google = analysis.sourceQuality.sourceRows.find((item) => item.name === "GoogleMaps");
+  assert.equal(google.calls, 2);
+  assert.equal(google.newBusinessCalls, 2);
+  assert.equal(google.newBusinessImportedOlderThan90, 1);
+
+  const lg = analysis.sourceQuality.createdByTypeRows.find((item) => item.createdByType === "LG");
+  assert.equal(lg.calls, 1);
+  assert.equal(lg.createdByTypeLabel, "Lead Generator");
+
+  const oldNew = analysis.drilldownRows.find((item) => item.callId === "source-old-new");
+  assert.equal(oldNew.businessSegment, "new");
+  assert.equal(oldNew.daysSinceImport, 181);
+  assert.equal(oldNew.customerCreatedByType, "LG");
+  assert.equal(oldNew.customerImportDateIso, "2026-01-01");
 });
 
 test("local evaluator flags Did Not Answer mismatch when transcript has live follow-up evidence", () => {
@@ -134,6 +224,53 @@ test("local evaluator does not treat sales script later-this-year wording as a c
 
   assert.equal(evaluation.opportunity.requestedCallback, false);
   assert.equal(evaluation.opportunity.followUpRequired, false);
+});
+
+test("local evaluator normalizes human-like Voicemail speaker turns to Customer", () => {
+  const transcript = [
+    "Outbound call Lior Carter (CWA): How they support our community. Can our volunteers count on your support?",
+    "Voicemail: Thank you. Thank you.",
+    "Lior Carter (CWA): Would that be okay? Oh yeah. Well, how long is this break for?",
+    "Voicemail: Like I said, we are taking a short break, so I'm not advertising my business for now because we don't have capacity at the moment to take on more customers.",
+    "Lior Carter (CWA): No, of course I'm happy to stay in touch, mate, absolutely. When do you reckon the business will be up and going again?",
+    "Voicemail: So, maybe I'll just save your number and call you when I'm ready. I have just taken a pause from that venture.",
+    "Lior Carter (CWA): No stress then, mate. We'll leave you out of this journal this year. See ya.",
+    "Voicemail: Sure I will. Thank you. Bye."
+  ].join(" ");
+
+  const turns = parseTranscriptTurns(transcript);
+  const evaluation = evaluateCall({
+    call_id: "human-voicemail-label",
+    CallTotalSeconds: "160",
+    call_duration_seconds: "150",
+    NoSaleType: "NULL",
+    transcription_text: transcript
+  });
+
+  assert.equal(turns.some((turn) => turn.speaker === "Voicemail"), false);
+  assert.equal(turns.filter((turn) => turn.speaker === "Customer").length, 4);
+  assert.equal(evaluation.transcript.humanLikeVoicemailDialogue, true);
+  assert.equal(evaluation.contact.probableLiveHuman, true);
+  assert.equal(evaluation.contact.classification, "customer");
+  assert.equal(evaluation.contact.meaningfulConversation, true);
+  assert.notEqual(evaluation.outcome.localCategory, "voicemail");
+});
+
+test("local evaluator keeps true machine voicemail as voicemail", () => {
+  const transcript = "Outbound call Voicemail: You have reached the office. Please leave a message after the tone.";
+  const turns = parseTranscriptTurns(transcript);
+  const evaluation = evaluateCall({
+    call_id: "machine-voicemail",
+    CallTotalSeconds: "18",
+    call_duration_seconds: "15",
+    NoSaleType: "NULL",
+    transcription_text: transcript
+  });
+
+  assert.equal(turns[0].speaker, "Voicemail");
+  assert.equal(evaluation.transcript.humanLikeVoicemailDialogue, false);
+  assert.equal(evaluation.contact.probableLiveHuman, false);
+  assert.equal(evaluation.contact.classification, "voicemail");
 });
 
 test("follow-up completion links through stable IDs, not partial phone", () => {
@@ -254,4 +391,33 @@ test("lead utilization report counts one-attempt no-contact lead-days", () => {
   assert.equal(analysis.leadUtilization.totals.noContactLeadDays, 2);
   assert.equal(analysis.leadUtilization.totals.noContactRetriedSameDay, 1);
   assert.equal(analysis.leadUtilization.totals.singleAttemptNoContact, 1);
+});
+
+test("call intelligence does not treat unrelated pay wording as payment intent", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "pay-mortgage",
+      transcription_text: "Outbound call Harry Markovski (CWA): The reason for my call is the official journal for the local area. Customer: Preventative medicine, that's a fraud. I don't need the journal and I need to pay my mortgage."
+    })
+  ]));
+
+  const intelligence = buildCallIntelligence(analysis.drilldownRows[0]);
+  assert.equal(intelligence.events.some((event) => event.eventType === "payment_or_order_intent"), false);
+  assert.notEqual(intelligence.call.leadUtilizationScore, 5);
+  assert.notEqual(intelligence.call.customerSentiment, "interested");
+});
+
+test("call intelligence keeps genuine offer payment and order intent", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "send-invoice",
+      transcription_text: "Outbound call Riley Example (CWA): The package is for the official journal. Customer: Yes, go ahead with the journal package and send me the invoice."
+    })
+  ]));
+
+  const intelligence = buildCallIntelligence(analysis.drilldownRows[0]);
+  const paymentEvent = intelligence.events.find((event) => event.eventType === "payment_or_order_intent");
+  assert.ok(paymentEvent);
+  assert.equal(paymentEvent.followUpRequired, 1);
+  assert.equal(intelligence.call.leadUtilizationScore, 5);
 });

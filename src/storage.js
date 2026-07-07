@@ -180,7 +180,7 @@ function buildAutomaticReport(analysis, importRecord) {
     "",
     "## Guardrails",
     "- Redacted phone values were not used for matching, attribution, or display.",
-    "- CustomerCreateDate and CustomerImportDate were ignored because the current export does not contain reliable timestamps.",
+    "- Valid CustomerImportDate and CustomerCreateDate values were parsed for source-quality analytics; malformed date fragments were treated as missing.",
     "- Confirmed sales, revenue, order value, close date, and won/lost outcome are unsupported by the current CSV."
   ].join("\n");
 
