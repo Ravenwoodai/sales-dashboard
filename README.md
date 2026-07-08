@@ -1,11 +1,17 @@
 # Sales Dashboard
 
-Local call intelligence dashboard for scheduled CSV transcript exports.
+Local call intelligence dashboard for scheduled CSV/XLSX transcript exports. Separate campaign/allocation imports are preserved only as parked diagnostics and are excluded from active analytics.
 
 ## Run
 
 ```powershell
 node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"
+```
+
+The legacy allocation flag is still accepted, but allocation data is parked and does not create dashboard metrics:
+
+```powershell
+node src/main.js --csv "C:\Users\User\Downloads\CallData 07.07.2026.xlsx" --allocations "C:\Users\User\Downloads\allocations 07.07.2026.xlsx"
 ```
 
 Open:
@@ -29,9 +35,10 @@ node --test tests/*.test.js
 ## MVP Guardrails
 
 - `dialled_phone_number` is intentionally incomplete for security and ignored for MVP analytics.
-- `CustomerCreateDate` and `CustomerImportDate` are ignored until reliable timestamps are supplied.
+- Valid `CustomerImportDate` and `CustomerCreateDate` are used only for source-quality Record Age; malformed date fragments are treated as missing.
 - The current CSV does not support sales conversion, revenue, order value, or won/lost outcome reporting.
 - No external AI service is used in the MVP.
+- Separate campaign/allocation imports are parked. They are preserved as inactive metadata, but excluded from active dashboard metrics, reports, alerts, filters, source/list quality, and AI transcript context.
 
 ## Local Storage
 
@@ -88,6 +95,20 @@ http://127.0.0.1:3000/calls/<call-id>
 
 The redacted phone field, `CustomerCreateDate`, and `CustomerImportDate` are excluded from raw proof fields.
 
+## Parked Allocation Data
+
+Optional allocation files may still be supplied from `.xlsx` or `.csv` sources, but they are not used by active analytics. The parser is preserved for future review, and `/api/allocations` returns only parked status metadata.
+
+```text
+LEAD CAMPAIGN, QTY ALLOCATED, QTY ACTIONED, QTY REMAINING, DATE, SALES MANAGER, SALESPERSON, TYPE
+```
+
+JSON is available at:
+
+```text
+GET /api/allocations
+```
+
 ## Local AI Execution Layer
 
 When local model processing is required, Sales Dashboard uses:
@@ -112,7 +133,7 @@ Status:
 http://127.0.0.1:3000/api/ai/status
 ```
 
-Transcript intelligence is indexed locally in SQLite on import load. These endpoints expose the lead-waste database and optional local LLM enrichment flow:
+Transcript intelligence is indexed locally in SQLite on import load. These endpoints expose the lead-utilisation database and optional local LLM enrichment flow:
 
 ```text
 GET  /api/intelligence/summary

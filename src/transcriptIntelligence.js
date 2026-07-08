@@ -120,6 +120,13 @@ function addRiskFlag(flags, call, flagType, severity, match, options = {}) {
   });
 }
 
+function aiAssistantEvidenceFor(call) {
+  const evidence = Array.isArray(call.evidence)
+    ? call.evidence.find((item) => item.signal === "ai_voice_assistant")
+    : null;
+  return clean(evidence?.text || call.transcriptPreview || call.transcript || "");
+}
+
 function extractEntities(call) {
   const transcript = call.transcript || "";
   const entities = [];
@@ -179,6 +186,45 @@ function extractEventsAndFlags(call) {
       addEvent(events, call, eventType, match, { followUpRequired });
     });
   });
+
+  if (call.aiVoiceAssistantDetected) {
+    const evidence = aiAssistantEvidenceFor(call);
+    addEvent(events, call, "ai_call_assistant_encountered", null, {
+      speaker: "system",
+      rawValue: call.aiVoiceAssistantResponse || "ai_call_assistant",
+      normalizedValue: call.aiVoiceAssistantResponse || "detected",
+      evidence,
+      confidence: Number(call.aiVoiceAssistantConfidence || 0.86)
+    });
+
+    if (call.aiVoiceAssistantBailed) {
+      addEvent(events, call, "ai_assistant_bail", null, {
+        speaker: "salesperson",
+        rawValue: "bailed",
+        normalizedValue: "bailed",
+        evidence,
+        confidence: Number(call.aiVoiceAssistantConfidence || 0.76)
+      });
+    } else if (call.aiVoiceAssistantHandledSuccessfully) {
+      addEvent(events, call, "ai_assistant_handled_well", null, {
+        speaker: "salesperson",
+        rawValue: "handled_well",
+        normalizedValue: "handled_well",
+        evidence,
+        confidence: Number(call.aiVoiceAssistantConfidence || 0.76)
+      });
+    }
+
+    (call.aiVoiceAssistantTactics || []).forEach((label) => {
+      addEvent(events, call, "ai_assistant_tactic", null, {
+        speaker: "salesperson",
+        rawValue: label,
+        normalizedValue: label,
+        evidence,
+        confidence: Number(call.aiVoiceAssistantConfidence || 0.7)
+      });
+    });
+  }
 
   extractPaymentOrOrderIntentEvents(call, events);
 

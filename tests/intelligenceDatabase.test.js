@@ -139,6 +139,32 @@ test("SQLite intelligence database stores call and lead waste rollups", () => {
   assert.equal(calls.some((call) => call.call_id === "waste" && call.lead_utilization_score <= 1), true);
 });
 
+test("SQLite intelligence database stores deterministic AI call assistant events", () => {
+  const storePath = tempStorePath();
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "ai-handled",
+      transcription_text: "Outbound call Customer: Hi, I'm a call assistant recording this call. Please say who you are and why you're calling. Riley Example (CWA): Hi, this is Riley from Countrywide Austral. The reason for my call is the official journal for the local area. Please ask them to call me back."
+    })
+  ]));
+
+  replaceImportIntelligence(analysis, { storePath, importId: "import-ai" });
+  const db = openIntelligenceDb({ storePath });
+  try {
+    const events = db.prepare(`
+      SELECT event_type, normalized_value
+      FROM intelligence_events
+      WHERE import_id = ? AND call_id = ? AND source = 'deterministic'
+      ORDER BY id
+    `).all("import-ai", "ai-handled");
+    assert.equal(events.some((event) => event.event_type === "ai_call_assistant_encountered"), true);
+    assert.equal(events.some((event) => event.event_type === "ai_assistant_handled_well"), true);
+    assert.equal(events.some((event) => event.event_type === "ai_assistant_tactic" && event.normalized_value === "Explained reason"), true);
+  } finally {
+    db.close();
+  }
+});
+
 test("SQLite intelligence database stores completed local LLM extraction results", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csv([

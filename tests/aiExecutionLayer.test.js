@@ -32,6 +32,14 @@ function fakeCall() {
     followUpChannel: "call",
     transcriptQuality: "high",
     durationSeconds: 60,
+    aiVoiceAssistantDetected: true,
+    aiVoiceAssistantConfidence: 0.94,
+    aiVoiceAssistantResponse: "handled_well",
+    aiVoiceAssistantHandledSuccessfully: true,
+    aiVoiceAssistantBailed: false,
+    aiVoiceAssistantTactics: ["Explained reason", "Asked for callback"],
+    aiVoiceAssistantFutureStatus: "future_human_contact",
+    aiVoiceAssistantFutureCallId: "48500002",
     stableIds: [{ field: "AllocatedLeadID", value: "lead-1" }],
     evidence: [{ signal: "follow_up", text: "Please call me back.", confidence: 0.86 }],
     transcript: "Customer: Please call me back later today.",
@@ -62,6 +70,8 @@ test("transcript evaluation input includes guardrails and sanitized call evidenc
   assert.equal(input.source.call_id, "48500001");
   assert.match(input.transcript, /Please call me back/);
   assert.equal(input.deterministic_baseline.local_outcome, "callback_requested");
+  assert.equal(input.deterministic_baseline.ai_voice_assistant.detected, true);
+  assert.equal(input.deterministic_baseline.ai_voice_assistant.response_classification, "handled_well");
   assert.ok(input.guardrails.some((guardrail) => guardrail.includes("Redacted phone")));
   assert.equal(input.sanitized_raw_fields.call_id, "48500001");
 });
@@ -91,10 +101,50 @@ test("transcript intelligence input asks local LLM for structured extraction", (
   assert.equal(input.deterministic_intelligence.call.leadUtilizationScore, 5);
   assert.ok(input.instructions.some((item) => item.includes("strict JSON")));
   assert.ok(input.instructions.some((item) => item.includes("real transcript phrase")));
+  assert.ok(input.instructions.some((item) => item.includes("ai_call_assistant_encountered")));
   assert.ok(input.instructions.some((item) => item.includes("payment_or_order_intent")));
   assert.ok(input.instructions.some((item) => item.includes("mortgage")));
   assert.ok(input.output_contract.events);
   assert.ok(input.guardrails.some((item) => item.includes("OrderCount")));
+});
+
+test("AI inputs exclude parked allocation import fields but keep call AllocatedLeadID", () => {
+  const call = fakeCall();
+  call.rawFields = {
+    call_id: "48500001",
+    Salesperson: "Riley Example",
+    AllocatedLeadID: "lead-1",
+    allocationCoverage: { totals: { allocated: 10 } },
+    allocationRows: [{ campaign: "Fresh Leads" }],
+    campaignRows: [{ campaign: "Fresh Leads" }],
+    "QTY ACTIONED": "3",
+    allocated: "10",
+    actioned: "3",
+    remaining: "7",
+    reconciliationStatus: "matched"
+  };
+  const deterministic = {
+    call: { extractionVersion: "call_intelligence.v1" },
+    entities: [],
+    events: [],
+    riskFlags: []
+  };
+
+  const evaluationInput = buildTranscriptEvaluationInput(call);
+  const intelligenceInput = buildTranscriptIntelligenceInput(call, deterministic);
+
+  assert.equal(evaluationInput.sanitized_raw_fields.AllocatedLeadID, "lead-1");
+  assert.equal(intelligenceInput.sanitized_raw_fields.AllocatedLeadID, "lead-1");
+  for (const fields of [evaluationInput.sanitized_raw_fields, intelligenceInput.sanitized_raw_fields]) {
+    assert.equal(fields.allocationCoverage, undefined);
+    assert.equal(fields.allocationRows, undefined);
+    assert.equal(fields.campaignRows, undefined);
+    assert.equal(fields["QTY ACTIONED"], undefined);
+    assert.equal(fields.allocated, undefined);
+    assert.equal(fields.actioned, undefined);
+    assert.equal(fields.remaining, undefined);
+    assert.equal(fields.reconciliationStatus, undefined);
+  }
 });
 
 test("submitAiTask calls the execution layer through POST /run-task", async () => {

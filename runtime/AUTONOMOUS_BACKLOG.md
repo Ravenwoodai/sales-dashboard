@@ -21,5 +21,5 @@ TODO  IN_PROGRESS  BLOCKED  DONE
 | 10 | P1 | Build the first user journey in the UI | 5 | DONE | - | - | A real user can complete one key journey in the browser |
 | 11 | P0 | Add durable scheduled import storage and manager review state | 5 | DONE | - | - | Multiple scheduled CSVs can be tracked without losing history or storing sensitive imports in Git |
 | 12 | P1 | Add strict-schema LLM evaluator option | 11 | TODO | - | Add versioned local/approved model evaluation behind schema validation and retry/quarantine states | AI outputs are structured, evidence-backed, confidence-scored, and auditable |
-| 13 | P1 | Add dashboard controls for review and alert lifecycle state | 11 | TODO | - | Add UI actions to acknowledge alerts, save manager confirmations, and filter review states | Managers can manage review state without calling APIs directly |
+| 13 | P1 | Add dashboard controls for manager review governance state | 11 | DONE | - | - | Managers can govern review state without relying on alert lifecycle actions |
 | 14 | P2 | Add scheduled import automation | 11 | TODO | - | Define the watched/drop folder or scheduler contract for recurring CSV arrivals | New CSV exports can be ingested predictably without manual restart |

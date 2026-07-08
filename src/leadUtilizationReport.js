@@ -1,6 +1,7 @@
 "use strict";
 
 const { ENTITY_FIELDS } = require("./analysisConstants");
+const { sourceNameFor } = require("./sourceQuality");
 const { clean, isMissing } = require("./transcriptEvaluator");
 
 const STABLE_LEAD_FIELDS = ["customer_id", "AllocatedLeadID", "ContactId", "FoundContactID", "FoundCustomerID"]
@@ -49,6 +50,10 @@ function formatNumber(value) {
 
 function formatPercent(value) {
   return value === null || value === undefined ? "n/a" : `${(value * 100).toFixed(1)}%`;
+}
+
+function formatModelPercent(value) {
+  return value === null || value === undefined ? "n/a" : `${Number(value || 0).toFixed(1)}%`;
 }
 
 function dayKeyFor(item) {
@@ -252,15 +257,15 @@ function buildLeadUtilizationModel(items) {
       id: group.key,
       day: group.day,
       salesperson: firstOwner,
-      source: isMissing(firstItem.row.CustomerImportSource) ? "Unknown source" : clean(firstItem.row.CustomerImportSource),
+      source: sourceNameFor(firstItem.row),
       customerId: customerIdFor(firstItem.row),
       stableLeadSource: group.stableLeadSource,
       stableLeadValue: group.stableLeadValue,
       primaryCallId: clean(firstItem.row.call_id),
       callIds: groupItems.map((call) => clean(call.row.call_id)).filter(Boolean),
       metricKeys: ["lead.stableLeadDaysWorked"],
-      reason: "Stable lead-day worked.",
-      evidence: evidenceSummary(firstItem, "Stable lead-day worked"),
+      reason: "Matched record worked.",
+      evidence: evidenceSummary(firstItem, "Matched record worked"),
       evidenceExcerpt: evidenceExcerpt(firstItem)
     };
 
@@ -273,7 +278,7 @@ function buildLeadUtilizationModel(items) {
         totals.noContactRetriedSameDay += 1;
         firstOwnerStats.noContactRetriedSameDay += 1;
         groupRecord.metricKeys.push("lead.noContactRetriedSameDay");
-        groupRecord.reason = "No probable live-human contact, but the lead was retried same day.";
+        groupRecord.reason = "No probable live-human contact, but the matched record was retried same day.";
       } else {
         totals.singleAttemptNoContact += 1;
         firstOwnerStats.singleAttemptNoContact += 1;
@@ -309,7 +314,7 @@ function buildLeadUtilizationModel(items) {
           id: `${group.key}|callback|${clean(item.row.call_id)}`,
           day: group.day,
           salesperson: owner,
-          source: isMissing(item.row.CustomerImportSource) ? "Unknown source" : clean(item.row.CustomerImportSource),
+          source: sourceNameFor(item.row),
           customerId: customerIdFor(item.row),
           stableLeadSource: group.stableLeadSource,
           stableLeadValue: group.stableLeadValue,
@@ -330,7 +335,7 @@ function buildLeadUtilizationModel(items) {
         id: `${group.key}|callback|${clean(item.row.call_id)}`,
         day: group.day,
         salesperson: owner,
-        source: isMissing(item.row.CustomerImportSource) ? "Unknown source" : clean(item.row.CustomerImportSource),
+        source: sourceNameFor(item.row),
         customerId: customerIdFor(item.row),
         stableLeadSource: group.stableLeadSource,
         stableLeadValue: group.stableLeadValue,
@@ -348,7 +353,7 @@ function buildLeadUtilizationModel(items) {
         totals.callbackCompletedSameDay += 1;
         callbackRecord.metricKeys.push("lead.callbackCompletedSameDay");
         callbackRecord.matchedCallId = clean(laterCall.row.call_id);
-        callbackRecord.reason = "Explicit callback duty had a later same-day call to the same stable lead target.";
+        callbackRecord.reason = "Explicit callback duty had a later same-day call to the same matched target.";
         if (ownerFor(laterCall) !== owner) {
           stats.teamCoveredCallbacks += 1;
           totals.teamCoveredCallbacks += 1;
@@ -362,7 +367,7 @@ function buildLeadUtilizationModel(items) {
       stats.wastedLeadDayKeys.add(group.key);
       wastedLeadDayKeys.add(group.key);
       callbackRecord.metricKeys.push("lead.callbackMissedSameDay");
-      callbackRecord.reason = "Explicit callback duty found, but no later same-day call to the same stable lead target appears in the upload.";
+      callbackRecord.reason = "Explicit callback duty found, but no later same-day call to the same matched target appears in the upload.";
       records.push(callbackRecord);
       if (!groupRecord.metricKeys.includes("lead.wastedLeadIndicators")) {
         groupRecord.metricKeys.push("lead.wastedLeadIndicators");
@@ -372,7 +377,7 @@ function buildLeadUtilizationModel(items) {
         customerId: customerIdFor(item.row),
         salesperson: owner,
         stableLeadSource: group.stableLeadSource,
-        reason: "Explicit callback duty found, but no later same-day call to the same stable lead target appears in the upload.",
+        reason: "Explicit callback duty found, but no later same-day call to the same matched target appears in the upload.",
         evidence: evidenceSummary(item, "Explicit callback duty found"),
         evidenceExcerpt: evidenceExcerpt(item, "Callback evidence")
       });
@@ -394,8 +399,8 @@ function buildLeadUtilizationModel(items) {
     schemaVersion: "lead_utilization.v1",
     stableLeadFields: STABLE_LEAD_FIELDS,
     definitions: {
-      callbackLeakage: "Explicit customer callback request or salesperson callback promise, with no later same-day call to the same stable lead target.",
-      noContactLeakage: "A stable lead-day with only one attempt and no probable live-human contact.",
+      callbackLeakage: "Explicit customer callback request or salesperson callback promise, with no later same-day call to the same matched target.",
+      noContactLeakage: "A matched record with only one attempt and no probable live-human contact.",
       futureCallback: "Callback wording points to a future day, so the item requires a later CSV upload before it can be judged."
     },
     totals,
@@ -410,34 +415,44 @@ function tableRow(values) {
 }
 
 function buildLeadUtilizationReport(analysis, importRecord) {
-  const model = analysis.leadUtilization;
+  const model = analysis.leadReattempt;
   if (!model) return null;
 
-  const title = `Lead Utilization And Follow-Up Leakage - ${importRecord.sourceName}`;
-  const topRisk = model.salespeople.slice(0, 8);
-  const tableRows = model.salespeople.map((person) => tableRow([
+  const title = `Lead Utilization No-Contact Risk - ${importRecord.sourceName}`;
+  const salespersonRows = model.salespersonRows || [];
+  const topRisk = [...salespersonRows]
+    .sort((a, b) => b.oneDialNoContactNoLaterLeads - a.oneDialNoContactNoLaterLeads || b.oneDialNoContactNoLaterRate - a.oneDialNoContactNoLaterRate || a.salesperson.localeCompare(b.salesperson));
+  const tableRows = salespersonRows.map((person) => tableRow([
     person.salesperson,
-    formatNumber(person.stableLeadDaysWorked),
-    formatNumber(person.callbackSameDayRequired),
-    formatNumber(person.callbackCompletedSameDay),
-    formatNumber(person.callbackMissedSameDay),
-    formatPercent(person.callbackCompletionRate),
-    formatNumber(person.noContactLeadDays),
-    formatNumber(person.noContactRetriedSameDay),
-    formatNumber(person.singleAttemptNoContact),
-    formatNumber(person.wastedLeadIndicators),
-    formatPercent(person.riskRate),
-    person.utilizationScore === null ? "n/a" : formatNumber(person.utilizationScore)
+    formatNumber(person.leadsTouched),
+    formatNumber(person.oneAndDoneLeads),
+    formatNumber(person.riskyOneDialNoContactLeads),
+    formatNumber(person.oneDialNoContactNoLaterLeads),
+    formatModelPercent(person.oneDialNoContactNoLaterRate),
+    formatModelPercent(person.personalRetryRate),
+    formatNumber(person.validOneDialOutcomeLeads),
+    formatNumber(person.oneDialNeedsReviewLeads)
   ]));
 
-  const evidenceRows = model.evidenceSamples.map((example) => tableRow([
-    example.salesperson,
-    example.callId || "Unknown",
-    example.stableLeadSource,
-    example.reason,
-    clean(example.evidence).replace(/\|/g, "/")
-  ]));
+  const evidenceRows = (model.records || [])
+    .filter((record) => (record.metricKeys || []).includes("reattempt.oneDialNoContactNoLater"))
+    .slice(0, 40)
+    .map((record) => {
+      const firstCall = record.callProof?.[0] || {};
+      return tableRow([
+        record.salesperson,
+        record.firstCallId || record.primaryCallId || "Unknown",
+        record.stableLeadSource || "Stable ID",
+        `${clean(firstCall.date)} ${clean(firstCall.time)}`.trim() || clean(record.firstCallAt),
+        clean(firstCall.contactClassification || record.oneDialBucketLabel).replace(/\|/g, "/"),
+        clean(record.oneDialReason || "One-dial no-contact with no later matching call observed").replace(/\|/g, "/")
+      ]);
+    });
 
+  const topRows = topRisk.slice(0, 12)
+    .map((person, index) => `${index + 1}. ${person.salesperson}: ${formatNumber(person.oneDialNoContactNoLaterLeads)} one-dial no-contact records with no later matching call observed (${formatModelPercent(person.oneDialNoContactNoLaterRate)} of dialed matched records).`);
+
+  const totals = model.totals || {};
   const content = [
     `# ${title}`,
     "",
@@ -445,70 +460,56 @@ function buildLeadUtilizationReport(analysis, importRecord) {
     `Import ID: ${importRecord.id}`,
     "",
     "## Privacy And Proof Standard",
-    "This report does not use `dialled_phone_number` because that field is intentionally incomplete for security. Lead matching uses the first available stable source identifier from `customer_id`, `AllocatedLeadID`, `ContactId`, `FoundContactID`, or `FoundCustomerID`.",
+    "This report does not use `dialled_phone_number` because that field is intentionally incomplete for security. Matching uses stable source identifiers such as `customer_id`, `AllocatedLeadID`, `ContactId`, `FoundContactID`, or `FoundCustomerID`.",
     "",
-    "The callback section uses a strict proof rule. It counts explicit customer callback requests or salesperson callback promises, and does not count ordinary script wording such as `later this year`.",
+    "This report intentionally avoids judging live conversations or ambiguous outcomes. The reportable signal is one dial, clear no-contact evidence or no usable speech evidence, and no later matching call observed for the same stable customer/contact/lead ID.",
     "",
-    "## Executive Answer",
-    `- Stable lead-days reviewed: ${formatNumber(model.totals.stableLeadDaysWorked)}`,
-    `- Calls without a stable lead ID excluded: ${formatNumber(model.totals.callsWithoutStableLead)}`,
-    `- Explicit same-day or unspecified callback duties: ${formatNumber(model.totals.callbackSameDayRequired)}`,
-    `- Callback duties followed up later the same day: ${formatNumber(model.totals.callbackCompletedSameDay)}`,
-    `- Callback duties not followed up later the same day: ${formatNumber(model.totals.callbackMissedSameDay)}`,
-    `- Callback duties with future wording requiring later upload: ${formatNumber(model.totals.callbackFutureNeedsUpload)}`,
-    `- No-contact lead-days: ${formatNumber(model.totals.noContactLeadDays)}`,
-    `- No-contact lead-days retried same day: ${formatNumber(model.totals.noContactRetriedSameDay)}`,
-    `- Single-attempt/no-contact lead-days with no retry: ${formatNumber(model.totals.singleAttemptNoContact)}`,
-    `- Potential wasted lead-day indicators: ${formatNumber(model.totals.wastedLeadIndicators)}`,
-    `- Same-day callback completion rate: ${formatPercent(model.totals.callbackCompletionRate)}`,
-    `- No-contact same-day retry coverage: ${formatPercent(model.totals.noContactRetryRate)}`,
+    "## No-Contact Utilisation Answer",
+    `- Matched records dialed: ${formatNumber(totals.leadsTouched)}`,
+    `- Calls without a matching ID excluded: ${formatNumber(totals.callsWithoutStableLead)}`,
+    `- Records dialed once: ${formatNumber(totals.oneAndDoneLeads)}`,
+    `- One-dial no-contact records: ${formatNumber(totals.riskyOneDialNoContactLeads)}`,
+    `- Potential lead under-utilisation: ${formatNumber(totals.oneDialNoContactNoLaterLeads)} one-dial no-contact records with no later matching call observed`,
+    `- Valid one-dial outcomes excluded: ${formatNumber(totals.validOneDialOutcomeLeads)}`,
+    `- Ambiguous one-dial records excluded: ${formatNumber(totals.oneDialNeedsReviewLeads)}`,
     "",
-    "## Highest Risk Salespeople",
-    ...topRisk.map((person, index) => `${index + 1}. ${person.salesperson}: ${formatNumber(person.wastedLeadIndicators)} at-risk lead-day indicators (${formatNumber(person.callbackMissedSameDay)} missed callback, ${formatNumber(person.singleAttemptNoContact)} single-attempt/no-contact).`),
+    "## Highest No-Contact Utilisation Risk",
+    ...topRows,
     "",
     "## Full Salesperson Table",
     tableRow([
       "Salesperson",
-      "Lead-days worked",
-      "Same-day callback req.",
-      "Callback completed",
-      "Callback missed",
-      "Callback completion",
-      "No-contact lead-days",
-      "No-contact retried",
-      "Single-attempt no-contact",
-      "Potential wasted indicators",
-      "Risk rate",
-      "Utilization score"
-    ]),
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+      "Records dialed",
+      "One-dial records",
+      "One-dial no-contact",
+      "No-contact, no later",
+      "Issue rate",
+      "Retry coverage",
+      "Valid one-dial outcomes",
+      "Ambiguous excluded"
+    ])
+  ];
+  content.push(
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ...tableRows,
     "",
     "## Evidence Samples",
-    tableRow(["Salesperson", "Call ID", "Lead key source", "Reason", "Proof summary"]),
-    "| --- | --- | --- | --- | --- |",
-    ...(evidenceRows.length ? evidenceRows : [tableRow(["None", "", "", "No at-risk examples in this import.", ""])]),
-    "",
-    "## How To Monitor This Going Forward",
-    "1. Capture every scheduled CSV import into the dashboard store.",
-    "2. Track stable lead-days, not redacted phone numbers.",
-    "3. Use two daily leakage rules: explicit callback duties with no same-day follow-up, and single-attempt/no-contact lead-days.",
-    "4. Split statuses into completed, missed, pending future upload, and insufficient stable ID.",
-    "5. Score each salesperson on both callback completion and no-contact retry coverage, always showing sample size.",
-    "6. Add manager review so false positives can be corrected, especially where follow-up happened outside the CSV by email, SMS, or another system.",
+    tableRow(["Salesperson", "Call ID", "Lead key source", "Source call time", "No-contact evidence", "Proof summary"]),
+    "| --- | --- | --- | --- | --- | --- |",
+    ...(evidenceRows.length ? evidenceRows : [tableRow(["None", "", "", "", "No at-risk examples in this import.", ""])]),
     "",
     "## Recommended Dashboard Metrics",
-    "- Wasted lead-day indicators by salesperson",
-    "- Same-day callback completion rate",
-    "- No-contact retry coverage",
-    "- Single-attempt/no-contact lead count",
-    "- Future callback pending count",
-    "- Team-covered callback count",
+    "- Potential lead under-utilisation by salesperson",
+    "- One-dial no-contact records",
+    "- No-contact/no-later records",
+    "- Matched records dialed",
+    "- Ambiguous one-dial records excluded from ranking",
     "- Manager-confirmed false positives",
     "",
     "## Limitations",
-    "This is strong for same-day monitoring. It cannot prove callbacks due on future days until later CSV files are imported, and it cannot prove email/SMS follow-up unless those actions are added as future source fields."
-  ].join("\n");
+    "This is strong for no-contact process review. It does not claim confirmed sales, revenue, close rate, or true conversion outcome, and it does not judge live conversations or ambiguous records."
+  );
+  const contentText = content.join("\n");
 
   return {
     id: `report_${importRecord.id}_lead_utilization`,
@@ -516,8 +517,8 @@ function buildLeadUtilizationReport(analysis, importRecord) {
     type: "lead_utilization_report",
     source: "system",
     format: "markdown",
-    summary: `${formatNumber(model.totals.wastedLeadIndicators)} potential wasted lead-day indicators: ${formatNumber(model.totals.callbackMissedSameDay)} missed explicit callback follow-ups and ${formatNumber(model.totals.singleAttemptNoContact)} single-attempt/no-contact lead-days.`,
-    content,
+    summary: `${formatNumber(totals.oneDialNoContactNoLaterLeads)} one-dial no-contact records with no later matching call observed.`,
+    content: contentText,
     metadata: {
       importId: importRecord.id,
       sourceName: importRecord.sourceName,
@@ -525,7 +526,7 @@ function buildLeadUtilizationReport(analysis, importRecord) {
       generatedBy: "automatic_lead_utilization_report",
       privacy: "dialled_phone_number ignored",
       stableLeadFields: STABLE_LEAD_FIELDS,
-      totals: model.totals
+      totals
     },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()

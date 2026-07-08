@@ -3,6 +3,29 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const {
+  activeReportsOnly,
+  buildParkedAllocationDiagnostic,
+  classifyReportVisibility,
+  parkedAllocationFromLegacyCoverage,
+  reportContainsParkedAllocationData
+} = require("./allocationParking");
+const {
+  alertIdFor,
+  applyAlertLifecycleAction,
+  isActiveAlertStatus,
+  isClosedAlertStatus,
+  normalizeAlertEvent,
+  ruleIdForAlert,
+  summarizeAlerts
+} = require("./alertLifecycle");
+const {
+  applyManagerReviewAction,
+  latestReviewByCallId,
+  normalizeManagerReview,
+  reviewIdFor,
+  summarizeManagerReviews
+} = require("./managerReview");
 const { buildLeadUtilizationReport } = require("./leadUtilizationReport");
 
 const STORE_SCHEMA_VERSION = "sales_dashboard_store.v1";
@@ -45,7 +68,7 @@ function readStore(options = {}) {
       ...parsed,
       imports: Array.isArray(parsed.imports) ? parsed.imports : [],
       alertEvents: Array.isArray(parsed.alertEvents) ? parsed.alertEvents : [],
-      managerReviews: Array.isArray(parsed.managerReviews) ? parsed.managerReviews : [],
+      managerReviews: Array.isArray(parsed.managerReviews) ? parsed.managerReviews.map(normalizeManagerReview) : [],
       aiJobs: Array.isArray(parsed.aiJobs) ? parsed.aiJobs : [],
       reports: Array.isArray(parsed.reports) ? parsed.reports : []
     };
@@ -88,8 +111,15 @@ function importIdForAnalysis(analysis) {
   return `import_${String(analysis.inputHash || digest(Date.now())).slice(0, 20)}`;
 }
 
+function parkedAllocationForAnalysis(analysis = {}) {
+  const parkedAllocation = analysis.parkedAllocation || parkedAllocationFromLegacyCoverage(analysis.allocationCoverage);
+  if (!parkedAllocation?.configured) return null;
+  return buildParkedAllocationDiagnostic(parkedAllocation);
+}
+
 function buildImportRecord(analysis, options = {}) {
   const importId = options.importId || importIdForAnalysis(analysis);
+  const parkedAllocation = parkedAllocationForAnalysis(analysis);
   return {
     id: importId,
     sourceName: analysis.sourceName || "CSV import",
@@ -99,10 +129,14 @@ function buildImportRecord(analysis, options = {}) {
     lastImportedAt: new Date().toISOString(),
     generatedAt: analysis.generatedAt,
     dateRange: analysis.dateRange,
+    dataWindow: analysis.dataWindow,
+    intelligenceGovernance: analysis.intelligenceGovernance,
     totals: analysis.totals,
     rates: analysis.rates,
     ignoredFields: analysis.ignoredFields,
     unsupportedMetrics: analysis.unsupportedMetrics,
+    parkedAllocation,
+    containsParkedAllocationData: Boolean(parkedAllocation || analysis.allocationCoverage),
     artifactPath: path.join("imports", `${importId}.json`),
     alertCount: analysis.alerts.length,
     reviewQueueCount: analysis.reviewQueue.length,
@@ -121,6 +155,8 @@ function writeImportArtifact(analysis, importRecord, options = {}) {
     generatedAt: new Date().toISOString(),
     inputHash: analysis.inputHash,
     dateRange: analysis.dateRange,
+    dataWindow: analysis.dataWindow,
+    intelligenceGovernance: analysis.intelligenceGovernance,
     totals: analysis.totals,
     rates: analysis.rates,
     ignoredFields: analysis.ignoredFields,
@@ -129,20 +165,38 @@ function writeImportArtifact(analysis, importRecord, options = {}) {
     alerts: analysis.alerts || [],
     reviewQueue: analysis.reviewQueue || [],
     salespersonScorecards: analysis.salespersonScorecards || [],
-    sourceMetrics: analysis.sourceMetrics || []
+    sourceMetrics: analysis.sourceMetrics || [],
+    parkedAllocation: parkedAllocationForAnalysis(analysis),
+    containsParkedAllocationData: Boolean(parkedAllocationForAnalysis(analysis) || analysis.allocationCoverage),
+    aiVoiceAssistant: analysis.aiVoiceAssistant || null,
+    systemAudio: analysis.systemAudio
+      ? {
+        ...analysis.systemAudio,
+        records: []
+      }
+      : null,
+    leadReattempt: analysis.leadReattempt
+      ? {
+        ...analysis.leadReattempt,
+        records: []
+      }
+      : null
   };
   fs.writeFileSync(artifactPath, `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
   return artifactPath;
 }
 
 function buildAlertEvents(analysis, importId, existingEvents = []) {
-  const existingById = new Map(existingEvents.map((event) => [event.id, event]));
+  const existingById = new Map(existingEvents.map((event) => [event.id, normalizeAlertEvent(event)]));
   return (analysis.alerts || []).map((alert) => {
-    const id = `alert_${digest(`${importId}|${alert.category}|${alert.callId}|${alert.severity}`, 20)}`;
+    const id = alertIdFor(importId, alert);
     const existing = existingById.get(id);
-    return {
+    return normalizeAlertEvent({
+      ...existing,
       id,
+      alertId: id,
       importId,
+      ruleId: existing?.ruleId || ruleIdForAlert(alert),
       callId: alert.callId,
       category: alert.category,
       severity: alert.severity,
@@ -150,17 +204,38 @@ function buildAlertEvents(analysis, importId, existingEvents = []) {
       message: alert.message,
       evidence: alert.evidence,
       evidenceSummary: alert.evidenceSummary,
+      source: alert.source || "call_transcript",
+      parkedDataRelated: Boolean(alert.parkedDataRelated || alert.source === "allocation" || String(alert.category || "").toLowerCase().includes("allocation")),
       status: existing?.status || "new",
       falsePositive: existing?.falsePositive || false,
       managerNotes: existing?.managerNotes || "",
+      managerNoteEntries: existing?.managerNoteEntries || [],
+      lifecycleHistory: existing?.lifecycleHistory || [],
+      acknowledgedBy: existing?.acknowledgedBy || "",
+      acknowledgedAt: existing?.acknowledgedAt || "",
+      inProgressBy: existing?.inProgressBy || "",
+      inProgressAt: existing?.inProgressAt || "",
+      resolvedBy: existing?.resolvedBy || "",
+      resolvedAt: existing?.resolvedAt || "",
+      dismissedBy: existing?.dismissedBy || "",
+      dismissedAt: existing?.dismissedAt || "",
+      falsePositiveBy: existing?.falsePositiveBy || "",
+      falsePositiveAt: existing?.falsePositiveAt || "",
+      latestAction: existing?.latestAction || "",
+      latestActionAt: existing?.latestActionAt || "",
+      provenance: alert.provenance || alert.alertProvenance || existing?.provenance || "Deterministic",
+      alertProvenance: alert.alertProvenance || existing?.alertProvenance || "Deterministic",
+      confidence: alert.confidence ?? existing?.confidence ?? null,
+      confidenceLabel: alert.confidenceLabel || existing?.confidenceLabel || "",
       createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    };
+    });
   });
 }
 
 function buildAutomaticReport(analysis, importRecord) {
   const title = `Executive Summary - ${importRecord.sourceName}`;
+  const parkedAllocation = parkedAllocationForAnalysis(analysis);
   const content = [
     `# ${title}`,
     "",
@@ -175,8 +250,23 @@ function buildAutomaticReport(analysis, importRecord) {
     `- Probable live-human rate: ${analysis.rates.probableLiveHuman}%`,
     `- Meaningful conversation rate: ${analysis.rates.meaningfulConversation}%`,
     `- Follow-up signals: ${analysis.totals.followUpRequired}`,
+    `- AI call assistant encounters: ${analysis.totals.aiVoiceAssistantEncounters || 0}`,
+    `- AI call assistant bail rate: ${analysis.rates.aiVoiceAssistantBail || 0}%`,
+    `- System audio barriers: ${analysis.systemAudio?.totals?.encounters || 0}`,
+    `- System audio recovered later: ${analysis.systemAudio?.totals?.futureHumanContact || 0}`,
+    `- Lead personal retry rate: ${analysis.leadReattempt?.totals?.personalRetryRate || 0}%`,
+    `- One-dial records: ${analysis.leadReattempt?.totals?.oneAndDoneLeads || 0} (${analysis.leadReattempt?.totals?.oneAndDoneRate || 0}% of matched records dialed)`,
+    `- Potential lead under-utilisation: ${analysis.leadReattempt?.totals?.oneDialNoContactNoLaterLeads || 0} one-dial no-contact records with no later matching call observed`,
+    `- One-dial no-contact records: ${analysis.leadReattempt?.totals?.riskyOneDialNoContactLeads || 0} (${analysis.leadReattempt?.totals?.riskyOneDialNoContactRate || 0}% of one-dial records)`,
+    `- Ambiguous one-dial records excluded from utilisation-risk scoring: ${analysis.leadReattempt?.totals?.oneDialNeedsReviewLeads || 0}`,
     `- Outcome mismatches: ${analysis.totals.outcomeMismatches}`,
     `- Risk reviews: ${analysis.totals.riskReviews}`,
+    `- Manager-reviewed calls: ${analysis.managerReviewGovernance?.reviewedCalls || 0}`,
+    `- Manager-corrected calls: ${analysis.managerReviewGovernance?.correctedCalls || 0}`,
+    `- Manager review-needed calls: ${analysis.managerReviewGovernance?.reviewNeededCalls || 0}`,
+    `- Manager-escalated calls: ${analysis.managerReviewGovernance?.escalatedCalls || 0}`,
+    `- Active alerts: ${analysis.alertLifecycleSummary?.active ?? (analysis.alerts || []).length}`,
+    `- New alerts: ${analysis.alertLifecycleSummary?.new ?? (analysis.alerts || []).length}`,
     "",
     "## Guardrails",
     "- Redacted phone values were not used for matching, attribution, or display.",
@@ -190,13 +280,14 @@ function buildAutomaticReport(analysis, importRecord) {
     type: "executive_summary",
     source: "system",
     format: "markdown",
-    summary: `${analysis.totals.uniqueCalls} unique calls, ${analysis.totals.followUpRequired} follow-up signals, ${analysis.totals.outcomeMismatches} outcome mismatches.`,
+    summary: `${analysis.totals.uniqueCalls} unique calls, ${analysis.totals.followUpRequired} follow-up signals, ${analysis.totals.outcomeMismatches} outcome mismatches, ${analysis.managerReviewGovernance?.reviewedCalls || 0} manager-reviewed calls.`,
     content,
     metadata: {
       importId: importRecord.id,
       sourceName: importRecord.sourceName,
       inputHash: analysis.inputHash,
-      generatedBy: "automatic_import_summary"
+      generatedBy: "automatic_import_summary",
+      parkedAllocationExcluded: Boolean(parkedAllocation)
     },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
@@ -260,9 +351,12 @@ function saveGeneratedReport(report, options = {}) {
     summary: String(report.summary || content.slice(0, 220)).trim(),
     content,
     metadata: report.metadata || {},
+    containsParkedAllocationData: Boolean(report.containsParkedAllocationData || report.parkedDataRelated),
     createdAt: report.createdAt || now,
     updatedAt: now
   };
+  record.containsParkedAllocationData = Boolean(record.containsParkedAllocationData || reportContainsParkedAllocationData(record));
+  record.reportVisibility = classifyReportVisibility(record);
 
   const store = updateStore((currentStore) => ({
     ...currentStore,
@@ -275,37 +369,103 @@ function saveGeneratedReport(report, options = {}) {
   };
 }
 
-function saveManagerReview(review, options = {}) {
-  const now = new Date().toISOString();
-  const callId = String(review.callId || "").trim();
-  if (!callId) {
-    throw new Error("callId is required for manager review");
-  }
-  const importId = review.importId || "current";
-  const id = review.id || `review_${digest(`${importId}|${callId}`, 20)}`;
-  const record = {
-    id,
-    importId,
-    callId,
-    status: review.status || "reviewed",
-    confirmedOutcome: review.confirmedOutcome || "",
-    confirmedFollowUpRequired: Boolean(review.confirmedFollowUpRequired),
-    notes: review.notes || "",
-    reviewedBy: review.reviewedBy || "Manager",
-    createdAt: review.createdAt || now,
-    updatedAt: now
-  };
+function findManagerReview(reviews = [], reviewId, importId = null) {
+  const id = String(reviewId || "").trim();
+  if (!id) return null;
+  return reviews.map(normalizeManagerReview).find((review) => {
+    if (review.id !== id && review.reviewId !== id) return false;
+    if (importId && review.importId !== importId) return false;
+    return true;
+  }) || null;
+}
 
-  const store = updateStore((currentStore) => ({
-    ...currentStore,
-    managerReviews: [
-      record,
-      ...currentStore.managerReviews.filter((item) => item.id !== id)
-    ].slice(0, 10000)
-  }), options);
+function saveManagerReview(review, options = {}) {
+  const importId = review.importId || options.importId || "current";
+  const reviewInput = { ...review, importId };
+  const id = reviewInput.id || reviewInput.reviewId || reviewIdFor(reviewInput);
+  let savedReview = null;
+  const store = updateStore((currentStore) => {
+    const existing = findManagerReview(currentStore.managerReviews, id, importId);
+    savedReview = applyManagerReviewAction(existing, {
+      action: reviewInput.action || reviewInput.reviewAction || (reviewInput.corrections?.length ? "correct" : ""),
+      ...reviewInput,
+      id,
+      reviewId: id
+    });
+    return {
+      ...currentStore,
+      managerReviews: [
+        savedReview,
+        ...currentStore.managerReviews.map(normalizeManagerReview).filter((item) => item.id !== id && item.reviewId !== id)
+      ].slice(0, 10000)
+    };
+  }, options);
 
   return {
-    review: record,
+    review: normalizeManagerReview(savedReview),
+    store
+  };
+}
+
+function updateManagerReview(reviewId, input = {}, options = {}) {
+  const importId = input.importId || options.importId || null;
+  let savedReview = null;
+  const store = updateStore((currentStore) => {
+    const existing = findManagerReview(currentStore.managerReviews, reviewId, importId);
+    if (!existing) {
+      const error = new Error("Manager review not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    savedReview = applyManagerReviewAction(existing, input);
+    return {
+      ...currentStore,
+      managerReviews: [
+        savedReview,
+        ...currentStore.managerReviews.map(normalizeManagerReview).filter((item) => item.id !== existing.id && item.reviewId !== existing.reviewId)
+      ].slice(0, 10000)
+    };
+  }, options);
+  return { review: normalizeManagerReview(savedReview), store };
+}
+
+function bulkUpdateManagerReviews(reviewIds = [], input = {}, options = {}) {
+  const ids = Array.from(new Set((Array.isArray(reviewIds) ? reviewIds : [reviewIds])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean)));
+  if (!ids.length) {
+    const error = new Error("At least one manager review ID is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const importId = input.importId || options.importId || null;
+  const updated = [];
+  const missingReviewIds = [];
+  const store = updateStore((currentStore) => {
+    const idSet = new Set(ids);
+    const reviews = (currentStore.managerReviews || []).map(normalizeManagerReview).map((review) => {
+      if (!idSet.has(review.id) && !idSet.has(review.reviewId)) return review;
+      if (importId && review.importId !== importId) return review;
+      const next = applyManagerReviewAction(review, input);
+      updated.push(next);
+      return next;
+    });
+    ids.forEach((id) => {
+      if (!updated.some((review) => review.id === id || review.reviewId === id)) missingReviewIds.push(id);
+    });
+    if (!updated.length) {
+      const error = new Error("No matching manager reviews were updated.");
+      error.statusCode = 404;
+      throw error;
+    }
+    return {
+      ...currentStore,
+      managerReviews: reviews.slice(0, 10000)
+    };
+  }, options);
+  return {
+    reviews: updated.map(normalizeManagerReview),
+    missingReviewIds,
     store
   };
 }
@@ -346,15 +506,114 @@ function saveAiJobReference(job, options = {}) {
   };
 }
 
+function findActiveAlertIndex(events = [], alertId, importId = null) {
+  const id = String(alertId || "").trim();
+  if (!id) return -1;
+  return events.findIndex((event) => {
+    if (event.id !== id && event.alertId !== id) return false;
+    if (importId && event.importId !== importId) return false;
+    return true;
+  });
+}
+
+function updateAlertLifecycle(alertId, input = {}, options = {}) {
+  const importId = input.importId || options.importId || null;
+  const store = updateStore((currentStore) => {
+    const index = findActiveAlertIndex(currentStore.alertEvents || [], alertId, importId);
+    if (index < 0) {
+      const error = new Error("Alert not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    const current = currentStore.alertEvents[index];
+    const next = applyAlertLifecycleAction(current, input);
+    const alertEvents = currentStore.alertEvents.slice();
+    alertEvents[index] = next;
+    return {
+      ...currentStore,
+      alertEvents
+    };
+  }, options);
+  const alertEvent = (store.alertEvents || []).find((event) => {
+    if (event.id !== alertId && event.alertId !== alertId) return false;
+    if (importId && event.importId !== importId) return false;
+    return true;
+  });
+  return { alertEvent: normalizeAlertEvent(alertEvent), store };
+}
+
+function bulkUpdateAlertLifecycle(alertIds = [], input = {}, options = {}) {
+  const ids = Array.from(new Set((Array.isArray(alertIds) ? alertIds : [alertIds])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean)));
+  if (!ids.length) {
+    const error = new Error("At least one alert ID is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const importId = input.importId || options.importId || null;
+  const updatedIds = [];
+  const missingAlertIds = [];
+  const store = updateStore((currentStore) => {
+    const idSet = new Set(ids);
+    const alertEvents = (currentStore.alertEvents || []).map((event) => {
+      const eventId = event.id || event.alertId;
+      if (!idSet.has(eventId) || (importId && event.importId !== importId)) return event;
+      updatedIds.push(eventId);
+      return applyAlertLifecycleAction(event, input);
+    });
+    ids.forEach((id) => {
+      if (!updatedIds.includes(id)) missingAlertIds.push(id);
+    });
+    if (!updatedIds.length) {
+      const error = new Error("No matching alerts were updated.");
+      error.statusCode = 404;
+      throw error;
+    }
+    return {
+      ...currentStore,
+      alertEvents
+    };
+  }, options);
+  const updatedSet = new Set(updatedIds);
+  return {
+    alertEvents: (store.alertEvents || []).filter((event) => updatedSet.has(event.id || event.alertId)).map(normalizeAlertEvent),
+    missingAlertIds,
+    store
+  };
+}
+
 function dashboardPersistence(store, currentImportId = null) {
-  const reports = [...store.reports].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const allReports = [...store.reports].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const reports = activeReportsOnly(allReports).map((report) => ({
+    ...report,
+    reportVisibility: classifyReportVisibility(report)
+  }));
   const imports = [...store.imports].sort((a, b) => String(b.lastImportedAt).localeCompare(String(a.lastImportedAt)));
-  const currentAlerts = currentImportId
+  const rawCurrentAlerts = currentImportId
     ? store.alertEvents.filter((event) => event.importId === currentImportId)
     : store.alertEvents;
-  const currentReviews = currentImportId
+  const currentAlerts = rawCurrentAlerts.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated);
+  const currentAlertSummary = summarizeAlerts(currentAlerts);
+  const currentReviews = (currentImportId
     ? store.managerReviews.filter((review) => review.importId === currentImportId)
-    : store.managerReviews;
+    : store.managerReviews).map(normalizeManagerReview);
+  const latestReviews = latestReviewByCallId(currentReviews);
+  const managerReviewSummaries = Array.from(latestReviews.values()).map((review) => ({
+    reviewId: review.reviewId,
+    callId: review.callId,
+    alertId: review.alertId,
+    reviewScope: review.reviewScope,
+    reviewStatus: review.reviewStatus,
+    reviewedBy: review.reviewedBy,
+    reviewedAt: review.reviewedAt,
+    updatedAt: review.updatedAt,
+    managerNotes: review.managerNotes,
+    correctionCount: (review.corrections || []).length,
+    correctedFields: (review.corrections || []).map((correction) => correction.fieldName),
+    latestCorrection: (review.corrections || []).slice(-1)[0] || null
+  }));
+  const managerReviewGovernance = summarizeManagerReviews(currentReviews);
   const currentAiJobs = currentImportId
     ? store.aiJobs.filter((job) => job.importId === currentImportId)
     : store.aiJobs;
@@ -362,19 +621,39 @@ function dashboardPersistence(store, currentImportId = null) {
   return {
     schemaVersion: "sales_dashboard_persistence_view.v1",
     currentImportId,
+    managerReviewedCallIds: Array.from(new Set(currentReviews.map((review) => review.callId).filter(Boolean))).slice(0, 5000),
+    managerReviewSummaries,
+    managerReviewStatusByCallId: Object.fromEntries(managerReviewSummaries.map((review) => [review.callId, review.reviewStatus])),
+    managerReviewGovernance,
     importHistory: imports.slice(0, 20),
     reports: reports.slice(0, 30),
     counts: {
       imports: store.imports.length,
-      reports: store.reports.length,
-      alertEvents: store.alertEvents.length,
+      reports: reports.length,
+      hiddenParkedReports: allReports.length - reports.length,
+      alertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && isActiveAlertStatus(event.status)).length,
+      closedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && isClosedAlertStatus(event.status)).length,
+      totalUnparkedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated).length,
+      parkedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => event.parkedDataRelated).length,
       managerReviews: store.managerReviews.length,
       aiJobs: store.aiJobs.length,
-      currentAlertEvents: currentAlerts.length,
+      currentAlertEvents: currentAlertSummary.active,
+      currentTotalAlertEvents: currentAlertSummary.total,
+      currentClosedAlertEvents: currentAlertSummary.closed,
+      newAlerts: currentAlertSummary.new,
+      acknowledgedAlerts: currentAlertSummary.acknowledged,
+      inProgressAlerts: currentAlertSummary.inProgress,
+      resolvedAlerts: currentAlertSummary.resolved,
+      dismissedAlerts: currentAlertSummary.dismissed,
+      falsePositiveAlerts: currentAlertSummary.falsePositive,
       currentManagerReviews: currentReviews.length,
-      currentAiJobs: currentAiJobs.length,
-      acknowledgedAlerts: currentAlerts.filter((event) => event.status !== "new").length
-    }
+      currentManagerReviewedCalls: managerReviewGovernance.reviewedCalls,
+      currentManagerCorrectedCalls: managerReviewGovernance.correctedCalls,
+      currentManagerEscalatedCalls: managerReviewGovernance.escalatedCalls,
+      currentManagerReviewNeededCalls: managerReviewGovernance.reviewNeededCalls,
+      currentAiJobs: currentAiJobs.length
+    },
+    alertLifecycleSummary: currentAlertSummary
   };
 }
 
@@ -389,5 +668,9 @@ module.exports = {
   saveGeneratedReport,
   saveAiJobReference,
   saveManagerReview,
+  updateManagerReview,
+  bulkUpdateManagerReviews,
+  updateAlertLifecycle,
+  bulkUpdateAlertLifecycle,
   dashboardPersistence
 };

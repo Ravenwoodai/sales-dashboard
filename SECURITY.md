@@ -23,6 +23,10 @@ This file defines the minimum safety expectations for Sales Dashboard.
 ## Display Safety
 - Escape transcript and evidence text before rendering.
 - Hide ignored privacy-sensitive fields from standard dashboard tables.
+- Treat alert lifecycle actors as local placeholders until authentication exists; normal lifecycle actions resolve to `local_manager` server-side and ignore client-supplied actor names.
+- Treat manager review actors the same way: review actions resolve to `local_manager` server-side, client-supplied actor/reviewer fields are not authoritative, and manager corrections must not overwrite raw imported fields, deterministic outputs, LLM outputs, or generated alert evidence.
+- Manager review notes, correction reasons, and evidence assessments are untrusted display text and must be escaped when rendered.
+- Hide parked or superseded report content from normal report APIs and dashboard report views while preserving local store records.
 - Add role-based access before exposing transcript detail outside localhost.
 
 ## Dependencies

@@ -497,7 +497,12 @@ function getIntelligenceSummary(options = {}) {
         SUM(CASE WHEN llm_status = 'queued' THEN 1 ELSE 0 END) AS llmQueued,
         SUM(CASE WHEN llm_status = 'completed' THEN 1 ELSE 0 END) AS llmCompleted,
         SUM(CASE WHEN llm_status = 'failed' THEN 1 ELSE 0 END) AS llmFailed,
-        SUM(CASE WHEN llm_status = 'not_requested' THEN 1 ELSE 0 END) AS llmNotRequested
+        SUM(CASE WHEN llm_status = 'not_requested' THEN 1 ELSE 0 END) AS llmNotRequested,
+        SUM(CASE WHEN transcript_quality = 'high' OR ((transcript_quality IS NULL OR transcript_quality NOT IN ('high', 'medium', 'low', 'unusable')) AND deterministic_confidence >= 0.75) THEN 1 ELSE 0 END) AS deterministicHighConfidence,
+        SUM(CASE WHEN transcript_quality = 'medium' OR ((transcript_quality IS NULL OR transcript_quality NOT IN ('high', 'medium', 'low', 'unusable')) AND deterministic_confidence >= 0.55 AND deterministic_confidence < 0.75) THEN 1 ELSE 0 END) AS deterministicMediumConfidence,
+        SUM(CASE WHEN transcript_quality = 'low' OR ((transcript_quality IS NULL OR transcript_quality NOT IN ('high', 'medium', 'low', 'unusable')) AND deterministic_confidence > 0 AND deterministic_confidence < 0.55) THEN 1 ELSE 0 END) AS deterministicLowConfidence,
+        SUM(CASE WHEN transcript_quality = 'unusable' THEN 1 ELSE 0 END) AS deterministicUnusableTranscript,
+        SUM(CASE WHEN COALESCE(deterministic_confidence, 0) <= 0 THEN 1 ELSE 0 END) AS deterministicUnknownConfidence
       FROM call_intelligence
       ${callScope.where}
     `).get(...callScope.params) || {};
@@ -558,7 +563,12 @@ function getIntelligenceSummary(options = {}) {
         llmQueued: Number(callTotals.llmQueued || 0),
         llmCompleted: Number(callTotals.llmCompleted || 0),
         llmFailed: Number(callTotals.llmFailed || 0),
-        llmNotRequested: Number(callTotals.llmNotRequested || 0)
+        llmNotRequested: Number(callTotals.llmNotRequested || 0),
+        deterministicHighConfidence: Number(callTotals.deterministicHighConfidence || 0),
+        deterministicMediumConfidence: Number(callTotals.deterministicMediumConfidence || 0),
+        deterministicLowConfidence: Number(callTotals.deterministicLowConfidence || 0),
+        deterministicUnusableTranscript: Number(callTotals.deterministicUnusableTranscript || 0),
+        deterministicUnknownConfidence: Number(callTotals.deterministicUnknownConfidence || 0)
       },
       salespeople: salespeople.map((row) => ({
         salesperson: row.salesperson || "Unknown",

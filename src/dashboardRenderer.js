@@ -1,5 +1,14 @@
 "use strict";
 
+const {
+  CORRECTION_FIELDS,
+  MANAGER_REVIEW_STATUSES,
+  REVIEW_SCOPES,
+  normalizeManagerReview,
+  reviewStatusLabel,
+  reviewStatusTone
+} = require("./managerReview");
+
 function escapeHtml(value) {
   return String(value === undefined || value === null ? "" : value)
     .replace(/&/g, "&amp;")
@@ -24,21 +33,45 @@ function formatRatioPercent(value) {
 
 function formatDateRange(range) {
   if (!range || !range.start || !range.end) return "No CSV loaded";
+  if (range.display) return range.display;
+  if (range.sourceStart && range.sourceEnd) {
+    return `${range.sourceStart} to ${range.sourceEnd} (${range.sourceTimezoneLabel || "source call time"})`;
+  }
   const start = new Date(range.start);
   const end = new Date(range.end);
-  return `${start.toLocaleDateString("en-AU")} ${start.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })} - ${end.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}`;
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "Date range unavailable";
+  return `${start.toISOString().slice(0, 19).replace("T", " ")} to ${end.toISOString().slice(0, 19).replace("T", " ")} UTC`;
 }
 
 function formatDateTime(value) {
   if (!value) return "Unknown";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return String(value);
-  return `${parsed.toLocaleDateString("en-AU")} ${parsed.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}`;
+  return `${parsed.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
+function shortHash(value) {
+  const text = String(value || "").trim();
+  return text ? text.slice(0, 12) : "Unavailable";
+}
+
+function safeSourceFilename(value) {
+  const text = String(value || "CSV import").trim();
+  const filename = text.split(/[\\/]/).filter(Boolean).pop() || text;
+  return filename.slice(0, 160);
 }
 
 function formatDays(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "n/a";
   return `${formatNumber(Math.round(Number(value)))}d`;
+}
+
+function formatRecordAge(row = {}) {
+  if (row.daysSinceRecord === null || row.daysSinceRecord === undefined || Number.isNaN(Number(row.daysSinceRecord))) {
+    return `<span class="muted small">No valid date</span>`;
+  }
+  const basis = row.recordAgeBasisLabel || "Record date";
+  return `${formatDays(row.daysSinceRecord)}<br /><span class="muted small">${escapeHtml(basis)}</span>`;
 }
 
 function drilldownUrl(metric, filters = {}) {
@@ -76,9 +109,19 @@ function customerIdValue(row) {
   return String(value || "").trim() || "Not available";
 }
 
+function contactIdValue(row) {
+  const direct = row?.contactId || row?.ContactId || row?.rawFields?.ContactId || "";
+  if (String(direct || "").trim()) return String(direct).trim();
+  const stable = (row?.stableIds || []).find((item) => item.field === "ContactId");
+  if (stable?.value) return String(stable.value).trim();
+  if (row?.stableLeadSource === "ContactId" && row?.stableLeadValue) return String(row.stableLeadValue).trim();
+  return "";
+}
+
 function customerIdCell(row, href = "") {
   const value = customerIdValue(row);
-  const content = `<span class="mono">${escapeHtml(value)}</span>`;
+  const backupContactId = value === "Not available" ? contactIdValue(row) : "";
+  const content = `<span class="mono">${escapeHtml(value)}</span>${backupContactId ? `<br /><span class="muted small">ContactId: <span class="mono">${escapeHtml(backupContactId)}</span></span>` : ""}`;
   return href && value !== "Not available"
     ? `<a class="data-link mono" href="${escapeHtml(href)}">${escapeHtml(value)}</a>`
     : content;
@@ -86,6 +129,288 @@ function customerIdCell(row, href = "") {
 
 function badge(label, tone = "neutral") {
   return `<span class="badge ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function provenanceTone(label) {
+  const text = String(label || "").toLowerCase();
+  if (text.includes("needed")) return "critical";
+  if (text.includes("manager")) return "success";
+  if (text.includes("llm-reviewed")) return "success";
+  if (text.includes("deterministic")) return "notice";
+  if (text.includes("raw imported")) return "neutral";
+  if (text.includes("failed")) return "critical";
+  if (text.includes("unprocessed") || text.includes("not requested")) return "warning";
+  return "neutral";
+}
+
+function provenanceBadge(label) {
+  return badge(label || "Unknown", provenanceTone(label));
+}
+
+function llmReviewState(row = {}) {
+  const status = String(row.llm_status || row.llmStatus || "not_requested").trim() || "not_requested";
+  const quality = String(row.llm_result_quality || "").trim();
+  const hasResult = Boolean(String(row.llm_result_json || "").trim());
+  const validQuality = ["complete_json", "salvaged_raw", "salvage_available"].includes(quality);
+  if (status === "completed" && hasResult && validQuality) return "LLM-reviewed";
+  if (status === "failed" || (status === "completed" && (!hasResult || !validQuality))) return "Failed";
+  if (status === "queued") return "Unprocessed";
+  if (status === "not_requested") return "Not requested";
+  return status ? status.replace(/_/g, " ") : "Unknown";
+}
+
+function confidenceBandLabel(band) {
+  if (band === "high") return "High confidence";
+  if (band === "medium") return "Medium confidence";
+  if (band === "low") return "Low confidence";
+  if (band === "unusable") return "Unusable transcript";
+  return "Confidence unavailable";
+}
+
+function confidenceBandTone(band) {
+  if (band === "high") return "success";
+  if (band === "medium") return "notice";
+  if (band === "low") return "warning";
+  if (band === "unusable") return "critical";
+  return "neutral";
+}
+
+function confidenceBadgeForRow(row = {}) {
+  const band = row.confidenceBand || row.transcriptQuality || "unknown";
+  return badge(row.confidenceLabel || confidenceBandLabel(band), confidenceBandTone(band));
+}
+
+function alertStatusTone(status = "") {
+  const normalized = String(status || "new").toLowerCase();
+  if (normalized === "new") return "critical";
+  if (normalized === "acknowledged" || normalized === "in_progress") return "notice";
+  if (normalized === "resolved") return "success";
+  if (normalized === "dismissed" || normalized === "false_positive") return "neutral";
+  if (normalized === "parked") return "warning";
+  return "neutral";
+}
+
+function alertStatusLabel(status = "") {
+  const labels = {
+    new: "New",
+    acknowledged: "Acknowledged",
+    in_progress: "In progress",
+    resolved: "Resolved",
+    dismissed: "Dismissed",
+    false_positive: "Likely false positive",
+    parked: "Parked"
+  };
+  return labels[status] || String(status || "New").replace(/_/g, " ");
+}
+
+function alertConfidenceBadge(row = {}) {
+  if (row.confidenceLabel) return badge(row.confidenceLabel, row.confidence ? "notice" : "neutral");
+  return badge("Confidence unavailable", "neutral");
+}
+
+function alertLifecycleCounts(summary = {}) {
+  const status = summary.byStatus || {};
+  return [
+    badge(`${formatNumber(summary.active || 0)} active`, (summary.active || 0) ? "critical" : "neutral"),
+    badge(`${formatNumber(status.new || 0)} new`, (status.new || 0) ? "critical" : "neutral"),
+    badge(`${formatNumber(status.acknowledged || 0)} acknowledged`, (status.acknowledged || 0) ? "notice" : "neutral"),
+    badge(`${formatNumber(status.in_progress || 0)} in progress`, (status.in_progress || 0) ? "notice" : "neutral"),
+    badge(`${formatNumber(summary.closed || 0)} closed`, (summary.closed || 0) ? "success" : "neutral")
+  ].join("");
+}
+
+function alertSeverityCounts(summary = {}) {
+  const severity = summary.bySeverity || {};
+  return [
+    badge(`${formatNumber(severity.critical || 0)} critical`, (severity.critical || 0) ? "critical" : "neutral"),
+    badge(`${formatNumber(severity.warning || 0)} warning`, (severity.warning || 0) ? "warning" : "neutral"),
+    badge(`${formatNumber(severity.notice || 0)} notice`, (severity.notice || 0) ? "notice" : "neutral")
+  ].join("");
+}
+
+function hiddenAlertFormFields(row = {}, returnTo = "", importId = "") {
+  return `
+    <input type="hidden" name="alertId" value="${escapeHtml(row.id || row.alertId || "")}" />
+    <input type="hidden" name="importId" value="${escapeHtml(importId || row.importId || "")}" />
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo || "/#alerts")}" />`;
+}
+
+function alertActionForm(row = {}, action, label, returnTo = "", importId = "") {
+  return `<form class="inline-alert-form" method="post" action="/alerts">
+    ${hiddenAlertFormFields(row, returnTo, importId)}
+    <input type="hidden" name="action" value="${escapeHtml(action)}" />
+    <button type="submit">${escapeHtml(label)}</button>
+  </form>`;
+}
+
+function managerReviewActionForm(row = {}, action, label, options = {}) {
+  const returnTo = options.returnTo || "/#alerts";
+  const importId = options.importId || row.importId || "";
+  const scope = options.reviewScope || row.reviewScope || (row.alertId || row.id ? "alert" : "call");
+  const source = options.source || (scope === "alert" ? "alert_centre" : "dashboard");
+  const reviewId = row.managerReviewId || options.reviewId || "";
+  return `<form class="inline-alert-form" method="post" action="/reviews">
+    <input type="hidden" name="callId" value="${escapeHtml(row.callId || row.call_id || "")}" />
+    <input type="hidden" name="alertId" value="${escapeHtml(row.alertId || row.id || "")}" />
+    <input type="hidden" name="reviewId" value="${escapeHtml(reviewId)}" />
+    <input type="hidden" name="importId" value="${escapeHtml(importId)}" />
+    <input type="hidden" name="reviewScope" value="${escapeHtml(scope)}" />
+    <input type="hidden" name="source" value="${escapeHtml(source)}" />
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+    <input type="hidden" name="action" value="${escapeHtml(action)}" />
+    <button type="submit">${escapeHtml(label)}</button>
+  </form>`;
+}
+
+function alertLifecycleControls(row = {}, returnTo = "", importId = "") {
+  const status = row.status || "new";
+  const actions = [];
+  if (status === "new") actions.push(["acknowledge", "Acknowledge"], ["in_progress", "In progress"]);
+  if (status === "acknowledged") actions.push(["in_progress", "In progress"]);
+  if (status === "resolved" || status === "dismissed" || status === "false_positive") actions.push(["reopen", "Reopen"]);
+  if (status !== "resolved") actions.push(["resolve", "Resolve"]);
+  if (status !== "dismissed") actions.push(["dismiss", "Dismiss"]);
+  if (status !== "false_positive") actions.push(["false_positive", "False positive"]);
+  return `<div class="alert-actions">${actions.map(([action, label]) => alertActionForm(row, action, label, returnTo, importId)).join("")}</div>`;
+}
+
+function renderManagerNotes(row = {}) {
+  const notes = String(row.managerNotes || "").trim();
+  return notes
+    ? `<span class="evidence">${escapeHtml(compactText(notes, 480))}</span>`
+    : `<span class="muted small">No manager notes</span>`;
+}
+
+function renderAlertCentre(alertRows = [], summary = {}, options = {}) {
+  const returnTo = options.returnTo || "/#alerts";
+  const importId = options.importId || "";
+  const filterSummary = options.filterSummary || {};
+  const activeFilterText = filterSummary.active
+    ? `${formatNumber(filterSummary.filteredRecords || 0)} of ${formatNumber(filterSummary.totalRecords || 0)} calls included by global filters.`
+    : "All active call records are included.";
+  const bulkForm = `<form id="alert-bulk-form" class="bulk-alert-form" method="post" action="/alerts">
+    <input type="hidden" name="importId" value="${escapeHtml(importId)}" />
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+    <label>
+      <span class="muted small">Bulk note</span>
+      <textarea name="note" placeholder="Optional note for selected alerts"></textarea>
+    </label>
+    <div class="filter-actions">
+      <button type="submit" name="action" value="acknowledge">Acknowledge selected</button>
+      <button type="submit" name="action" value="in_progress">Mark in progress</button>
+      <button type="submit" name="action" value="resolve">Resolve selected</button>
+      <button type="submit" name="action" value="dismiss">Dismiss selected</button>
+      <button type="submit" name="action" value="false_positive">False positive selected</button>
+    </div>
+  </form>`;
+  return `
+    <div class="alert-summary">
+      <div class="stack">${alertLifecycleCounts(summary)}</div>
+      <div class="stack">${alertSeverityCounts(summary)}</div>
+      <p class="muted small">${escapeHtml(activeFilterText)} Active alerts are New, Acknowledged, and In progress. Parked allocation-related alerts are excluded.</p>
+    </div>
+    ${bulkForm}
+    ${table([
+      { label: "Select", render: (row) => `<input class="table-checkbox" form="alert-bulk-form" type="checkbox" name="alertIds" value="${escapeHtml(row.id || row.alertId || "")}" />` },
+      { label: "Status", render: (row) => badge(alertStatusLabel(row.status), alertStatusTone(row.status)) },
+      { label: "Manager review", render: (row) => `${managerReviewBadge(row, new Map())}<br />${managerCorrectionSummary(row, new Map())}<div class="alert-actions">${managerReviewActionForm(row, "mark_review_needed", "Review call", { returnTo, importId, reviewScope: "alert", source: "alert_centre" })}</div>` },
+      { label: "Severity", render: (row) => badge(row.severity, row.severity === "critical" ? "critical" : row.severity === "warning" ? "warning" : "notice") },
+      { label: "Alert", render: (row) => `<strong>${escapeHtml(row.category || row.ruleId || "Alert")}</strong><br /><span class="muted small">${escapeHtml(row.message || "")}</span><br /><span class="muted small mono">${escapeHtml(row.ruleId || "")}</span>` },
+      { label: "Affected", render: (row) => `${customerIdCell(row)}<br /><span class="muted small">Owner: ${escapeHtml(row.owner || "Unknown")}</span><br />${callLink(row.callId)}` },
+      { label: "Evidence", render: (row) => `${renderEvidenceSummary(row, { fallback: row.message })}<br /><span class="muted small">${escapeHtml(row.recommendedAction || "Review the linked call proof.")}</span>` },
+      { label: "Trust", render: (row) => `${provenanceBadge(row.alertProvenance || row.provenance || "Deterministic")} ${alertConfidenceBadge(row)}<br /><span class="muted small">Created ${escapeHtml(formatDateTime(row.createdAt))}<br />Latest ${escapeHtml(formatDateTime(row.latestActionAt || row.updatedAt || row.createdAt))}</span>` },
+      { label: "Notes", render: (row) => renderManagerNotes(row) },
+      { label: "Actions", render: (row) => `${alertLifecycleControls(row, returnTo, importId)}
+        <form class="alert-note-form" method="post" action="/alerts">
+          ${hiddenAlertFormFields(row, returnTo, importId)}
+          <input type="hidden" name="action" value="note" />
+          <textarea name="note" placeholder="Add note"></textarea>
+          <button type="submit">Save note</button>
+        </form>` }
+    ], alertRows, "No active alerts match the current filters.")}
+  `;
+}
+
+function confidenceMix(row = {}) {
+  const parts = [
+    `H ${formatNumber(row.highConfidence || 0)}`,
+    `M ${formatNumber(row.mediumConfidence || 0)}`,
+    `L ${formatNumber(row.lowConfidence || 0)}`,
+    `Unusable ${formatNumber(row.unusableTranscript || 0)}`
+  ];
+  const reviewOnly = Number(row.reviewOnlySignals || 0);
+  return `${parts.join(" / ")}${reviewOnly ? ` | ${formatNumber(reviewOnly)} review-only` : ""}`;
+}
+
+function countRate(count, total) {
+  return `${formatNumber(count)} (${formatPercent(percentOf(count, total))})`;
+}
+
+function managerReviewedCallIds(persistence = {}) {
+  return new Set(Array.isArray(persistence.managerReviewedCallIds) ? persistence.managerReviewedCallIds : []);
+}
+
+function managerReviewSummaryMap(persistence = {}) {
+  return new Map((persistence.managerReviewSummaries || []).map((review) => [review.callId, review]));
+}
+
+function managerReviewSummaryFor(row = {}, persistenceOrMap = new Map()) {
+  const callId = row.callId || row.call_id || "";
+  if (persistenceOrMap instanceof Map) return persistenceOrMap.get(callId) || null;
+  return managerReviewSummaryMap(persistenceOrMap).get(callId) || null;
+}
+
+function managerReviewState(row = {}, reviewedIdsOrPersistence = new Set()) {
+  const callId = row.callId || row.call_id || "";
+  if (reviewedIdsOrPersistence instanceof Set) return reviewedIdsOrPersistence.has(callId) ? "Manager-reviewed" : (row.managerReviewStatus || "Unreviewed");
+  const summary = managerReviewSummaryFor(row, reviewedIdsOrPersistence);
+  return summary?.reviewStatus || row.managerReviewStatus || "unreviewed";
+}
+
+function managerReviewBadge(row = {}, persistenceOrMap = new Map()) {
+  const status = managerReviewState(row, persistenceOrMap);
+  return badge(reviewStatusLabel(status), reviewStatusTone(status));
+}
+
+function managerCorrectionSummary(row = {}, persistenceOrMap = new Map()) {
+  const summary = managerReviewSummaryFor(row, persistenceOrMap);
+  const fields = row.managerCorrectedFields || summary?.correctedFields || [];
+  const latest = row.managerCorrectedOutcome || summary?.latestCorrection?.managerCorrectedValue || "";
+  if (!fields.length && !latest) return `<span class="muted small">No manager correction</span>`;
+  const fieldText = fields.length ? fields.slice(0, 3).join(", ") : "corrected value";
+  return `<span class="evidence">${escapeHtml(fieldText)}${latest ? `<br /><span class="muted small">Preferred: ${escapeHtml(latest)}</span>` : ""}</span>`;
+}
+
+function aiAssistantResponseBadge(row) {
+  if (!row?.aiVoiceAssistantDetected) return badge("Not detected", "neutral");
+  if (row.aiVoiceAssistantBailed) return badge("Bailed", "critical");
+  if (row.aiVoiceAssistantHandledSuccessfully) return badge("Handled well", "success");
+  return badge(row.aiVoiceAssistantResponse || "Partial", "warning");
+}
+
+function tacticList(labels) {
+  const rows = Array.isArray(labels) ? labels.filter(Boolean) : [];
+  if (!rows.length) return `<span class="muted small">No clear tactic</span>`;
+  return `<span class="evidence">${escapeHtml(rows.slice(0, 4).join(", "))}</span>`;
+}
+
+function aiAssistantFutureStatus(row) {
+  const status = row?.aiVoiceAssistantFutureStatus || "not_applicable";
+  const futureCallId = row?.aiVoiceAssistantFutureCallId || "";
+  if (futureCallId) {
+    return `<span class="evidence">${escapeHtml(status.replace(/_/g, " "))}${callLink(futureCallId, "Future call")}</span>`;
+  }
+  return `<span class="muted small">${escapeHtml(status.replace(/_/g, " "))}</span>`;
+}
+
+function callLinks(callIds = []) {
+  const rows = Array.isArray(callIds) ? callIds.filter(Boolean) : [];
+  if (!rows.length) return `<span class="muted small">No calls</span>`;
+  return rows.slice(0, 8).map((callId) => callLink(callId)).join("<br />");
+}
+
+function formatDecimal(value) {
+  return Number(value || 0).toFixed(2);
 }
 
 function metricCard(label, value, detail, tone = "", href = "") {
@@ -142,7 +467,7 @@ function auditList(items, type) {
       return `<div class="audit-item">
         <div><strong>${escapeHtml(label)}</strong>${value ? ` <span class="mono">${escapeHtml(value)}</span>` : ""}</div>
         <div class="muted small">${escapeHtml(meta)}</div>
-        ${evidence ? `<div class="audit-evidence">${escapeHtml(compactText(evidence, 220))}</div>` : ""}
+        <div class="audit-evidence">${escapeHtml(evidence ? compactText(evidence, 220) : "Evidence unavailable")}</div>
       </div>`;
     }).join("")}
   </div>`;
@@ -165,6 +490,7 @@ function renderIntelligenceAuditDetails(row) {
   return `<details class="audit-details" id="${escapeHtml(detailsId)}">
     <summary>
       <span>Audit extraction</span>
+      ${provenanceBadge(llmReviewState(row))}
       ${badge(qualityLabel, toneForResultQuality(quality))}
       ${needsRerun ? badge("Needs rerun", "critical") : ""}
     </summary>
@@ -173,6 +499,7 @@ function renderIntelligenceAuditDetails(row) {
         <h3>Model Summary</h3>
         <div class="audit-kv">
           <span>Confidence</span><strong class="mono">${escapeHtml(formatConfidence(row.llm_confidence))}</strong>
+          <span>Provenance</span><strong>${escapeHtml(llmReviewState(row))}</strong>
           <span>Outcome</span><strong>${escapeHtml(row.overall_call_outcome || "unknown")}</strong>
           <span>Sentiment</span><strong>${escapeHtml(row.customer_sentiment || "unknown")}</strong>
           <span>Decision maker</span><strong>${escapeHtml(row.decision_maker_status || "unknown")}</strong>
@@ -182,7 +509,7 @@ function renderIntelligenceAuditDetails(row) {
         <p class="audit-reason">${escapeHtml(row.brief_reason || row.lead_reason || "No model summary reason was stored.")}</p>
         <p class="audit-evidence">${escapeHtml(compactText(row.evidence_snippet || "", 360))}</p>
         <div class="stack">
-          ${row.lead_waste_risk ? badge("Lead waste risk", "critical") : ""}
+          ${row.lead_waste_risk ? badge("Utilisation review signal", "critical") : ""}
           ${row.lead_high_quality_utilized ? badge("High quality use", "success") : ""}
           ${row.manager_review_required ? badge("Manager review", "critical") : ""}
           ${row.risk_flag_exists ? badge("Risk flag", "warning") : ""}
@@ -297,11 +624,12 @@ function renderMarkdownTable(lines) {
 function renderReportDrilldownPanel(report) {
   if (!report || report.type !== "lead_utilization_report") return "";
   const links = [
-    ["Potential wasted indicators", "lead.wastedLeadIndicators"],
-    ["Missed callbacks", "lead.callbackMissedSameDay"],
-    ["Single-attempt no-contact", "lead.singleAttemptNoContact"],
-    ["Future callbacks pending", "lead.callbackFutureNeedsUpload"],
-    ["No-contact retried", "lead.noContactRetriedSameDay"]
+    ["Potential lead under-utilisation", "reattempt.oneDialNoContactNoLater"],
+    ["One-dial no-contact", "reattempt.oneDialRiskyNoContact"],
+    ["Records dialed", "reattempt.leadsTouched"],
+    ["Records dialed once", "reattempt.oneAndDone"],
+    ["Valid one-dial outcomes", "reattempt.oneDialValidOutcome"],
+    ["Ambiguous one-dial excluded", "reattempt.oneDialNeedsReview"]
   ];
   return `<div class="drill-actions">
     ${links.map(([label, metric]) => `<a class="button-link" href="${escapeHtml(drilldownUrl(metric))}">${escapeHtml(label)}</a>`).join("")}
@@ -314,12 +642,27 @@ function renderEmptyState(message) {
     sourceName: "No CSV loaded",
     generatedAt: new Date().toISOString(),
     dateRange: { start: null, end: null },
+    dataWindow: { warnings: [], callDataOnly: true },
+    intelligenceGovernance: {
+      processing: {},
+      confidence: {},
+      provenance: {}
+    },
     totals: {},
     rates: {},
     ignoredFields: [],
     unsupportedMetrics: [],
     missingColumns: [],
     alerts: [],
+    alertLifecycleSummary: {
+      schemaVersion: "sales_dashboard_alert_lifecycle_summary.v1",
+      total: 0,
+      active: 0,
+      closed: 0,
+      parked: 0,
+      byStatus: {},
+      bySeverity: {}
+    },
     reviewQueue: [],
     salespersonScorecards: [],
     sourceMetrics: [],
@@ -328,11 +671,41 @@ function renderEmptyState(message) {
       sourceRows: [],
       creatorRows: [],
       createdByTypeRows: [],
+      recordAgeBuckets: [],
       importAgeBuckets: [],
       creatorAgeBuckets: [],
+      newBusinessRecordAgeThresholds: [],
       newBusinessImportAgeThresholds: [],
       lowestHumanAnswerSource: null,
       lowestHumanAnswerSources: []
+    },
+    aiVoiceAssistant: {
+      totals: {},
+      trendRows: [],
+      salespersonRows: [],
+      sourceRows: [],
+      tacticRows: [],
+      latestRows: [],
+      topSuccessTactic: null
+    },
+    systemAudio: {
+      totals: {},
+      subtypeRows: [],
+      salespersonRows: [],
+      sourceRows: [],
+      trendRows: [],
+      latestRows: [],
+      records: []
+    },
+    leadReattempt: {
+      totals: {},
+      salespersonRows: [],
+      sourceRows: [],
+      regionRows: [],
+      businessSegmentRows: [],
+      highestRetrySalespeople: [],
+      lowestRetrySalespeople: [],
+      records: []
     },
     businessSegmentMetrics: [],
     businessSegmentViews: {},
@@ -345,11 +718,21 @@ function renderEmptyState(message) {
         imports: 0,
         reports: 0,
         alertEvents: 0,
+        totalUnparkedAlertEvents: 0,
+        closedAlertEvents: 0,
+        parkedAlertEvents: 0,
         managerReviews: 0,
         currentAlertEvents: 0,
+        currentTotalAlertEvents: 0,
+        currentClosedAlertEvents: 0,
         currentManagerReviews: 0,
-        acknowledgedAlerts: 0
-      }
+        acknowledgedAlerts: 0,
+        inProgressAlerts: 0,
+        resolvedAlerts: 0,
+        dismissedAlerts: 0,
+        falsePositiveAlerts: 0
+      },
+      alertLifecycleSummary: {}
     },
     emptyMessage: message
   };
@@ -368,7 +751,8 @@ function signalLabel(signal) {
     follow_up: "Follow-up signal found",
     outcome_mismatch: "Imported outcome may not match transcript",
     complaint: "Complaint or risk wording found",
-    opt_out: "Opt-out request found"
+    opt_out: "Opt-out request found",
+    ai_voice_assistant: "AI call assistant encountered"
   };
   return labels[signal] || String(signal || "Transcript proof").replace(/_/g, " ");
 }
@@ -377,7 +761,7 @@ function evidenceItems(row) {
   return Array.isArray(row?.evidence) ? row.evidence.filter((item) => item) : [];
 }
 
-function evidenceSummary(row, fallback = "Open the call proof to review transcript evidence") {
+function evidenceSummary(row, fallback = "Evidence unavailable") {
   if (row?.alertEvidenceSummary) return row.alertEvidenceSummary;
   if (row?.evidenceSummary) return row.evidenceSummary;
   if (row?.reason) return row.reason;
@@ -392,7 +776,6 @@ function evidenceSummary(row, fallback = "Open the call proof to review transcri
   if (row?.alertMessage) return row.alertMessage;
   if (row?.message) return row.message;
   if (typeof row?.evidence === "string" && row.evidence.trim()) return compactText(row.evidence);
-  if (row?.transcriptPreview) return compactText(row.transcriptPreview);
   return fallback;
 }
 
@@ -426,7 +809,7 @@ function renderTurnList(turns, emptyMessage = "No ordered speaker turns were det
 function renderEvidenceProofCards(items) {
   const rows = (items || []).filter(Boolean);
   if (!rows.length) {
-    return `<div class="empty">No evidence snippets were generated for this call.</div>`;
+    return `<div class="empty">Evidence unavailable</div>`;
   }
 
   return `<div class="proof-list">
@@ -436,7 +819,7 @@ function renderEvidenceProofCards(items) {
         <span class="muted small">${escapeHtml(signalLabel(item.signal))} | ${Math.round(Number(item.confidence || 0) * 100)}%</span>
       </div>
       ${item.matchText ? `<p class="muted small">Matched phrase: <span class="mono">${escapeHtml(item.matchText)}</span></p>` : ""}
-      ${item.turns?.length ? renderTurnList(item.turns) : `<p class="proof-text">${escapeHtml(item.text || "No ordered speaker turns were detected for this proof point.")}</p>`}
+      ${item.turns?.length ? renderTurnList(item.turns) : `<p class="proof-text">${escapeHtml(item.text || "Evidence unavailable")}</p>`}
     </article>`).join("")}
   </div>`;
 }
@@ -445,14 +828,21 @@ function renderDrilldownPage(result) {
   const rows = result.rows || [];
   const baseParams = {
     metric: result.metric,
+    ...(result.filterState?.query || {}),
     ...(result.filters?.salesperson ? { salesperson: result.filters.salesperson } : {}),
     ...(result.filters?.source ? { source: result.filters.source } : {}),
     ...(result.filters?.customerId ? { customerId: result.filters.customerId } : {}),
     ...(result.filters?.createdBy ? { createdBy: result.filters.createdBy } : {}),
     ...(result.filters?.createdByType ? { createdByType: result.filters.createdByType } : {}),
+    ...(result.filters?.recordAgeBucket ? { recordAgeBucket: result.filters.recordAgeBucket } : {}),
     ...(result.filters?.importAgeBucket ? { importAgeBucket: result.filters.importAgeBucket } : {}),
     ...(result.filters?.createAgeBucket ? { createAgeBucket: result.filters.createAgeBucket } : {}),
+    ...(result.filters?.region ? { region: result.filters.region } : {}),
+    ...(result.filters?.aiAssistantResponse ? { aiAssistantResponse: result.filters.aiAssistantResponse } : {}),
+    ...(result.filters?.aiAssistantTactic ? { aiAssistantTactic: result.filters.aiAssistantTactic } : {}),
+    ...(result.filters?.systemAudioSubtype ? { systemAudioSubtype: result.filters.systemAudioSubtype } : {}),
     ...(result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? { minImportAgeDays: result.filters.minImportAgeDays } : {}),
+    ...(result.filters?.maxAttempts !== null && result.filters?.maxAttempts !== undefined ? { maxAttempts: result.filters.maxAttempts } : {}),
     ...(result.filters?.businessSegment ? { businessSegment: result.filters.businessSegment } : {})
   };
   const pageUrl = (extra = {}) => `/drilldown?${new URLSearchParams({
@@ -472,29 +862,65 @@ function renderDrilldownPage(result) {
   }).toString()}`;
   const isLead = result.kind === "lead";
   const filters = [
+    ...(result.filterSummary?.activeFilters || []).map((entry) => `${entry.label}: ${entry.display}`),
     result.filters?.salesperson ? `Salesperson: ${result.filters.salesperson}` : "",
     result.filters?.source ? `Source: ${result.filters.source}` : "",
     result.filters?.customerId ? `Customer ID: ${result.filters.customerId}` : "",
     result.filters?.createdBy ? `Created by: ${result.filters.createdBy}` : "",
     result.filters?.createdByType ? `Creator type: ${result.filters.createdByType}` : "",
-    result.filters?.importAgeBucket ? `Import age: ${result.filters.importAgeBucket}` : "",
+    result.filters?.recordAgeBucket ? `Record age: ${result.filters.recordAgeBucket}` : "",
+    result.filters?.importAgeBucket ? `Import-date age: ${result.filters.importAgeBucket}` : "",
     result.filters?.createAgeBucket ? `Create age: ${result.filters.createAgeBucket}` : "",
-    result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? `Imported older than: ${result.filters.minImportAgeDays} days` : "",
+    result.filters?.region ? `Region: ${result.filters.region}` : "",
+    result.filters?.aiAssistantResponse ? `AI response: ${result.filters.aiAssistantResponse}` : "",
+    result.filters?.aiAssistantTactic ? `AI tactic: ${result.filters.aiAssistantTactic}` : "",
+    result.filters?.systemAudioSubtype ? `System audio: ${result.filters.systemAudioSubtype}` : "",
+    result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? `Record age older than: ${result.filters.minImportAgeDays} days` : "",
+    result.filters?.maxAttempts !== null && result.filters?.maxAttempts !== undefined ? `Attempts: ${result.filters.maxAttempts}` : "",
     result.filters?.businessSegmentLabel ? `Business: ${result.filters.businessSegmentLabel}` : ""
   ].filter(Boolean);
   const visibleStart = result.count ? (result.offset || 0) + 1 : 0;
   const visibleEnd = result.count ? (result.offset || 0) + result.displayedCount : 0;
+  const isReattempt = result.kind === "reattempt";
+  const isSystemAudio = result.kind === "systemAudio";
 
   const rowTable = isLead
     ? table([
       { label: "Day", key: "day" },
       { label: "Customer ID", render: (row) => customerIdCell(row) },
       { label: "Salesperson", key: "salesperson" },
-      { label: "Stable lead", render: (row) => `<span class="mono">${escapeHtml(row.stableLeadSource)}:${escapeHtml(row.stableLeadValue)}</span>` },
+      { label: "Match key", render: (row) => `<span class="mono">${escapeHtml(row.stableLeadSource)}:${escapeHtml(row.stableLeadValue)}</span>` },
       { label: "Reason", key: "reason" },
       { label: "Calls", render: (row) => row.callIds.map((callId) => callLink(callId)).join("<br />") },
       { label: "Proof", render: (row) => renderEvidenceSummary(row, { fallback: row.reason }) }
-    ], rows, "No lead-day records match this drill-down.")
+    ], rows, "No matched contact records match this drill-down.")
+    : isReattempt
+      ? table([
+        { label: "Customer ID", render: (row) => customerIdCell(row) },
+        { label: "Salesperson", key: "salesperson" },
+        { label: "Match key", render: (row) => `<span class="mono">${escapeHtml(row.stableLeadSource)}:${escapeHtml(row.stableLeadValue)}</span>` },
+        { label: "Source", key: "source" },
+        { label: "Region", key: "region" },
+        { label: "Business", key: "businessSegmentLabel" },
+        { label: "Personal calls", render: (row) => `<span class="mono">${formatNumber(row.personalCallCount)}</span>` },
+        { label: "One-dial bucket", render: (row) => row.oneAndDone ? badge(row.oneDialBucketLabel || "One-dial", row.oneDialBucket === "risky_one_dial_no_contact" ? "critical" : row.oneDialBucket === "valid_one_dial_outcome" ? "success" : "warning") : `<span class="muted small">Retried</span>` },
+        { label: "Bucket reason", render: (row) => `<span class="evidence">${escapeHtml(row.oneDialReason || "n/a")}</span>` },
+        { label: "Same salesperson calls", render: (row) => callLinks(row.callIds) },
+        { label: "Later by anyone", render: (row) => row.laterCallByAnyone ? callLinks(row.laterCallIdsByAnyone) : `<span class="muted small">No later call found</span>` },
+        { label: "All calls", render: (row) => callLinks(row.allCallIds) }
+      ], rows, "No reattempt records match this drill-down.")
+    : isSystemAudio
+      ? table([
+        { label: "Call", render: (row) => callLink(row.callId) },
+        { label: "Customer ID", render: (row) => customerIdCell(row) },
+        { label: "Time", render: (row) => `${escapeHtml(row.date)} ${escapeHtml(row.time)}` },
+        { label: "Salesperson", key: "salesperson" },
+        { label: "Source", key: "source" },
+        { label: "Subtype", key: "subtypeLabel" },
+        { label: "Response", render: (row) => row.handledSuccessfully ? badge("Handled", "success") : row.bailed ? badge("Bailed", "critical") : row.partial ? badge("Partial", "warning") : `<span class="muted small">n/a</span>` },
+        { label: "Recovered", render: (row) => row.futureCallId ? callLink(row.futureCallId, "Future call") : `<span class="muted small">${escapeHtml(String(row.futureStatus || "").replace(/_/g, " "))}</span>` },
+        { label: "Proof", render: (row) => `<span class="evidence">${escapeHtml(row.transcriptPreview || "Open call proof")}</span>` }
+      ], rows, "No system audio records match this drill-down.")
     : table([
       { label: "Call", render: (row) => callLink(row.callId) },
       { label: "Customer ID", render: (row) => customerIdCell(row) },
@@ -502,12 +928,15 @@ function renderDrilldownPage(result) {
       { label: "Salesperson", key: "salesperson" },
       { label: "Source", key: "source" },
       { label: "Business", key: "businessSegmentLabel" },
-      { label: "Import age", render: (row) => formatDays(row.daysSinceImport) },
+      { label: "Record age", render: (row) => formatRecordAge(row) },
       { label: "Created by", render: (row) => row.customerCreatedBy ? `${escapeHtml(row.customerCreatedBy)}<br /><span class="muted small">${escapeHtml(row.customerCreatedByType || "Unknown")}</span>` : `<span class="muted">n/a</span>` },
       { label: "Duration", render: (row) => `${formatNumber(row.durationSeconds)}s` },
       { label: "Contact", key: "contactClassification" },
       { label: "Outcome", key: "localOutcome" },
       { label: "Follow-up", key: "followUpStatus" },
+      { label: "AI assistant", render: (row) => aiAssistantResponseBadge(row) },
+      { label: "Tactics", render: (row) => tacticList(row.aiVoiceAssistantTactics) },
+      { label: "Future", render: (row) => aiAssistantFutureStatus(row) },
       { label: "Proof", render: (row) => renderEvidenceSummary(row) }
     ], rows, "No call records match this drill-down.");
 
@@ -673,7 +1102,7 @@ function renderDrilldownPage(result) {
       <section class="panel">
         <div class="stack" style="margin-bottom: 12px;">
           <span class="badge">${escapeHtml(result.metric)}</span>
-          <span class="badge">${escapeHtml(isLead ? "Lead-day proof" : "Call-row proof")}</span>
+          <span class="badge">${escapeHtml(isLead ? "Matched-record proof" : isReattempt ? "Reattempt proof" : isSystemAudio ? "System audio proof" : "Call-row proof")}</span>
           <span class="badge">Ignored: ${escapeHtml(result.excludedRawFields.join(", "))}</span>
         </div>
         <div class="drill-actions" style="margin-bottom: 12px;">
@@ -701,7 +1130,11 @@ function renderSourceAttributionTable(call) {
     { label: "Value", render: (row) => row.mono ? `<span class="mono">${escapeHtml(row.value)}</span>` : escapeHtml(row.value) }
   ], [
     { field: "Customer ID", value: customerIdValue(call), mono: true },
-    { field: "CustomerImportSource", value: call.customerImportSource || call.source || "Unknown source" },
+    ...(contactIdValue(call) && customerIdValue(call) === "Not available" ? [{ field: "ContactId backup", value: contactIdValue(call), mono: true }] : []),
+    { field: "Source category", value: call.customerImportSource || call.source || "Self Sourced" },
+    { field: "Source rule", value: call.customerImportSourceInferred ? call.customerImportSourceInferenceReason || "Inferred source category" : "Raw CustomerImportSource" },
+    { field: "Raw CustomerImportSource", value: call.customerImportSourceRaw || "Blank" },
+    { field: "Record age", value: call.daysSinceRecord === null || call.daysSinceRecord === undefined ? "No valid date" : `${formatDays(call.daysSinceRecord)} (${call.recordAgeBasisLabel || "Record date"})`, mono: true },
     { field: "CustomerImportDate", value: call.customerImportDateIso || "Not available", mono: true },
     { field: "Bulk source age", value: formatDays(call.daysSinceImport), mono: true },
     { field: "CustomerCreatedBy", value: call.customerCreatedBy || "Not available" },
@@ -711,14 +1144,66 @@ function renderSourceAttributionTable(call) {
   ], "No source attribution fields available for this call.");
 }
 
+function renderReviewCorrections(review) {
+  const corrections = review?.corrections || [];
+  if (!corrections.length) return `<span class="muted small">No corrections recorded</span>`;
+  return corrections.slice(-4).map((correction) => [
+    `<strong>${escapeHtml(correction.fieldName)}</strong>`,
+    `Previous: ${escapeHtml(correction.previousDisplayValue || correction.deterministicValue || "Not supplied")}`,
+    `Manager: ${escapeHtml(correction.managerCorrectedValue || "Not supplied")}`,
+    correction.evidenceAssessment ? `Evidence: ${escapeHtml(correction.evidenceAssessment)}` : ""
+  ].filter(Boolean).join("<br />")).join("<hr />");
+}
+
 function renderReviewHistory(reviews) {
+  const rows = (reviews || []).map(normalizeManagerReview);
   return table([
-    { label: "Status", key: "status" },
-    { label: "Outcome", key: "confirmedOutcome" },
-    { label: "Follow-up required", render: (row) => row.confirmedFollowUpRequired ? "Yes" : "No" },
-    { label: "Notes", key: "notes" },
-    { label: "Reviewed", render: (row) => formatDateTime(row.updatedAt || row.createdAt) }
-  ], reviews || [], "No manager reviews saved for this call.");
+    { label: "Status", render: (row) => badge(reviewStatusLabel(row.reviewStatus), reviewStatusTone(row.reviewStatus)) },
+    { label: "Scope", render: (row) => escapeHtml(row.reviewScope || "call") },
+    { label: "Corrections", render: (row) => renderReviewCorrections(row) },
+    { label: "Notes", render: (row) => `<span class="evidence">${escapeHtml(row.managerNotes || "No notes")}</span>` },
+    { label: "Reviewed", render: (row) => `${escapeHtml(row.reviewedBy || "local_manager")}<br /><span class="muted small">${escapeHtml(formatDateTime(row.updatedAt || row.reviewedAt || row.createdAt))}</span>` }
+  ], rows, "No manager reviews saved for this call.");
+}
+
+function renderReviewEventHistory(reviews) {
+  const events = (reviews || []).flatMap((review) => normalizeManagerReview(review).reviewHistory || [])
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
+  return table([
+    { label: "Action", key: "action" },
+    { label: "From", key: "previousStatus" },
+    { label: "To", key: "newStatus" },
+    { label: "Actor", key: "actor" },
+    { label: "Note", render: (row) => `<span class="evidence">${escapeHtml(row.note || "")}</span>` },
+    { label: "When", render: (row) => formatDateTime(row.timestamp) }
+  ], events, "No manager review history events yet.");
+}
+
+function correctionFieldOptions(selected = "") {
+  const labels = {
+    contact_classification: "Contact classification",
+    local_outcome_category: "Local outcome category",
+    local_outcome_detail: "Local outcome detail",
+    follow_up_required: "Follow-up required",
+    follow_up_status: "Follow-up status",
+    follow_up_channel: "Follow-up channel",
+    follow_up_due_text: "Follow-up due text",
+    follow_up_due_datetime: "Follow-up due date/time",
+    follow_up_manually_completed: "Follow-up manually completed",
+    follow_up_dismissed: "Follow-up dismissed",
+    coaching_flag_confirmed: "Coaching flag confirmed",
+    coaching_priority: "Coaching priority",
+    coaching_note: "Coaching note",
+    risk_flag_confirmed: "Risk flag confirmed",
+    complaint_confirmed: "Complaint confirmed",
+    opt_out_confirmed: "Opt-out confirmed",
+    compliance_review_required: "Compliance review required",
+    evidence_assessment: "Evidence assessment"
+  };
+  return [
+    `<option value="">No field correction</option>`,
+    ...CORRECTION_FIELDS.map((field) => `<option value="${escapeHtml(field)}" ${selected === field ? "selected" : ""}>${escapeHtml(labels[field] || field.replace(/_/g, " "))}</option>`)
+  ].join("");
 }
 
 function renderAiJobHistory(aiJobs) {
@@ -774,6 +1259,253 @@ function pipelineBar(label, value, percent, tone = "primary", href = "") {
     : `<div class="pipeline-row">${content}</div>`;
 }
 
+function datasetFact(label, value, options = {}) {
+  const tag = options.mono ? "strong" : "strong";
+  const className = options.mono ? "mono" : "";
+  return `<div class="dataset-fact">
+    <span>${escapeHtml(label)}</span>
+    <${tag} class="${className}">${escapeHtml(value)}</${tag}>
+  </div>`;
+}
+
+function renderDataWindowWarnings(data) {
+  const warnings = Array.isArray(data.dataWindow?.warnings) ? data.dataWindow.warnings : [];
+  const unsupportedWarning = {
+    code: "unsupported_sales_revenue_conversion",
+    severity: "notice",
+    message: "Current active call data does not contain reliable confirmed sales, revenue, order value, close date, or true conversion outcome."
+  };
+  const rows = [...warnings, unsupportedWarning];
+  if (!rows.length) return "";
+  return `<div class="window-warnings" aria-label="Reporting-period warnings">
+    ${rows.map((warning) => `<div class="window-warning ${escapeHtml(warning.severity || "notice")}">
+      <strong>${escapeHtml(warning.code.replace(/_/g, " "))}</strong>
+      <p class="muted small">${escapeHtml(warning.message)}</p>
+    </div>`).join("")}
+  </div>`;
+}
+
+function renderDatasetBanner(data, persistence) {
+  if (!data || !data.totals || !(data.filterSummary?.totalRecords || data.totals.uniqueCalls)) return "";
+  const totals = data.datasetTotals || data.totals || {};
+  const importId = persistence?.currentImportId || "Current import";
+  const duplicateCount = Number(totals.duplicateCallIds || 0);
+  const lastProcessed = persistence?.importHistory?.find((row) => row.id === importId)?.lastImportedAt || data.generatedAt;
+  return `<section class="panel dataset-context" id="dataset-context">
+    <div class="panel-header">
+      <div>
+        <h2>Active Dataset</h2>
+        <p class="muted small">This dashboard is using active call data only. Dates below are labelled with their data timezone/source.</p>
+      </div>
+      ${badge("Active call data only", "success")}
+    </div>
+    <div class="panel-body">
+      <div class="dataset-grid">
+        ${datasetFact("Import ID", importId, { mono: true })}
+        ${datasetFact("Source file", safeSourceFilename(data.sourceName))}
+        ${datasetFact("File hash", shortHash(data.inputHash), { mono: true })}
+        ${datasetFact("Imported rows", formatNumber(totals.rawRows || 0), { mono: true })}
+        ${datasetFact("Deduplicated calls", formatNumber(totals.uniqueCalls || 0), { mono: true })}
+        ${datasetFact("Duplicate rows ignored", formatNumber(duplicateCount), { mono: true })}
+        ${datasetFact("Active range", formatDateRange(data.dateRange))}
+        ${datasetFact("Last processed", formatDateTime(lastProcessed))}
+      </div>
+      ${renderDataWindowWarnings(data)}
+    </div>
+  </section>`;
+}
+
+function selectedFilterValues(filterState = {}, key) {
+  return new Set((filterState.values?.[key] || []).map((value) => String(value)));
+}
+
+function filterOptionHtml(options = [], selected = new Set()) {
+  return options.slice(0, 80).map((option) => {
+    const value = String(option.value || "");
+    const label = `${option.label || value} (${formatNumber(option.count || 0)})`;
+    return `<option value="${escapeHtml(value)}" ${selected.has(value) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+}
+
+function filterSelect(name, label, options, selected, attributes = "") {
+  return `<label class="filter-control">${escapeHtml(label)}
+    <select name="${escapeHtml(name)}" ${attributes}>
+      ${attributes.includes("multiple") ? "" : `<option value="">All</option>`}
+      ${filterOptionHtml(options, selected)}
+    </select>
+  </label>`;
+}
+
+function filterQueryUrl(query = {}, hash = "filters") {
+  const params = new URLSearchParams();
+  Object.entries(query || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim()) params.set(key, String(value));
+  });
+  return `/${params.toString() ? `?${params.toString()}` : ""}${hash ? `#${hash}` : ""}`;
+}
+
+function removeFilterEntryQuery(filterState = {}, entry = {}) {
+  const query = { ...(filterState.query || {}) };
+  if (entry.key === "businessSegment" || entry.key === "dateFrom" || entry.key === "dateTo" || entry.key === "dateTimeFrom" || entry.key === "dateTimeTo") {
+    delete query[entry.key];
+    return query;
+  }
+  const values = String(query[entry.key] || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => value !== entry.value);
+  if (values.length) query[entry.key] = values.join(",");
+  else delete query[entry.key];
+  return query;
+}
+
+function renderFilterChips(filterState = {}) {
+  const entries = filterState.activeFilters || [];
+  if (!entries.length) return `<span class="muted small">No filters active</span>`;
+  return entries.map((entry) => `<a class="filter-chip" href="${escapeHtml(filterQueryUrl(removeFilterEntryQuery(filterState, entry)))}">
+    <span>${escapeHtml(entry.label)}: ${escapeHtml(entry.display)}</span>
+    <strong aria-hidden="true">x</strong>
+  </a>`).join("");
+}
+
+function renderGlobalFilters(data) {
+  const filterState = data.filterState || { values: {}, query: {}, activeFilters: [] };
+  const summary = data.filterSummary || {
+    totalRecords: data.totals?.uniqueCalls || 0,
+    filteredRecords: data.totals?.uniqueCalls || 0,
+    excludedRecords: 0,
+    includedRate: 100,
+    warnings: [],
+    activeFilters: []
+  };
+  const options = data.filterOptions || {};
+  const warnings = summary.warnings || [];
+  return `<section class="panel filter-panel" id="filters">
+    <div class="panel-header">
+      <div>
+        <h2>Global Filters</h2>
+        <p class="muted small">All active dashboard cards, tables, alerts, scorecards, explorer rows, and drill-downs use this same filtered call population.</p>
+      </div>
+      ${summary.active ? badge("Filtered view", "notice") : badge("All calls", "success")}
+    </div>
+    <div class="panel-body">
+      <div class="dataset-grid">
+        ${datasetFact("Filtered calls", formatNumber(summary.filteredRecords || 0), { mono: true })}
+        ${datasetFact("Total calls", formatNumber(summary.totalRecords || 0), { mono: true })}
+        ${datasetFact("Records excluded", formatNumber(summary.excludedRecords || 0), { mono: true })}
+        ${datasetFact("Included", formatPercent(summary.includedRate || 0), { mono: true })}
+      </div>
+      ${warnings.length ? `<div class="window-warnings">${warnings.map((warning) => `<div class="window-warning ${escapeHtml(warning.severity || "notice")}">
+        <strong>${escapeHtml(warning.code.replace(/_/g, " "))}</strong>
+        <p class="muted small">${escapeHtml(warning.message)}</p>
+      </div>`).join("")}</div>` : ""}
+      <div class="active-filters" aria-label="Active filters">
+        ${renderFilterChips({ ...filterState, activeFilters: summary.activeFilters || [] })}
+      </div>
+      <form class="filter-form" method="get" action="/">
+        <label class="filter-control">From source date
+          <input type="date" name="dateFrom" value="${escapeHtml(filterState.dateFrom || "")}" />
+        </label>
+        <label class="filter-control">To source date
+          <input type="date" name="dateTo" value="${escapeHtml(filterState.dateTo || "")}" />
+        </label>
+        ${filterSelect("salesperson", "Salesperson", options.salesperson, selectedFilterValues(filterState, "salesperson"))}
+        ${filterSelect("callDirection", "Call direction", options.callDirection, selectedFilterValues(filterState, "callDirection"))}
+        ${filterSelect("callType", "Call type", options.callType, selectedFilterValues(filterState, "callType"))}
+        ${filterSelect("customerImportSource", "Call CSV source", options.customerImportSource, selectedFilterValues(filterState, "customerImportSource"))}
+        ${filterSelect("contactClassification", "Contact", options.contactClassification, selectedFilterValues(filterState, "contactClassification"))}
+        ${filterSelect("localOutcome", "Derived outcome", options.localOutcome, selectedFilterValues(filterState, "localOutcome"))}
+        ${filterSelect("followUpStatus", "Follow-up status", options.followUpStatus, selectedFilterValues(filterState, "followUpStatus"))}
+        ${filterSelect("confidenceBand", "Confidence", options.confidenceBand, selectedFilterValues(filterState, "confidenceBand"))}
+        ${filterSelect("llmStatus", "LLM status", options.llmStatus, selectedFilterValues(filterState, "llmStatus"))}
+        ${filterSelect("managerReviewStatus", "Manager review", options.managerReviewStatus, selectedFilterValues(filterState, "managerReviewStatus"))}
+        ${filterSelect("alertSeverity", "Alert severity", options.alertSeverity, selectedFilterValues(filterState, "alertSeverity"))}
+        <details class="filter-advanced">
+          <summary>More call-data filters</summary>
+          <div class="filter-form advanced">
+            ${filterSelect("userId", "User ID", options.userId, selectedFilterValues(filterState, "userId"))}
+            ${filterSelect("callerId", "Caller ID", options.callerId, selectedFilterValues(filterState, "callerId"))}
+            ${filterSelect("mobile", "Mobile", options.mobile, selectedFilterValues(filterState, "mobile"))}
+            ${filterSelect("followUpChannel", "Follow-up channel", options.followUpChannel, selectedFilterValues(filterState, "followUpChannel"))}
+            ${filterSelect("transcriptState", "Transcript state", options.transcriptState, selectedFilterValues(filterState, "transcriptState"))}
+            ${filterSelect("intelligenceProvenance", "Intelligence provenance", options.intelligenceProvenance, selectedFilterValues(filterState, "intelligenceProvenance"))}
+            ${filterSelect("alertStatus", "Alert status", options.alertStatus, selectedFilterValues(filterState, "alertStatus"))}
+            ${filterSelect("rawNoSaleType", "Raw NoSaleType", options.rawNoSaleType, selectedFilterValues(filterState, "rawNoSaleType"))}
+            ${filterSelect("bazNotes", "Baz notes", options.bazNotes, selectedFilterValues(filterState, "bazNotes"))}
+            ${filterSelect("sourceQualityBucket", "Source quality bucket", options.sourceQualityBucket, selectedFilterValues(filterState, "sourceQualityBucket"))}
+          </div>
+        </details>
+        <div class="filter-actions">
+          <button type="submit">Apply filters</button>
+          <a class="filter-link" href="/#filters">Reset filters</a>
+        </div>
+      </form>
+      <div class="guardrails" style="margin-top: 12px;">
+        <div class="note">
+          <h3>Denominators</h3>
+          <p class="muted small">Executive rates use filtered deduplicated calls unless a card says otherwise. Transcript-derived metrics use calls with transcript evidence; follow-up completion uses calls with follow-up required; alert counts use alerts linked to filtered calls.</p>
+        </div>
+        <div class="note">
+          <h3>Source time</h3>
+          <p class="muted small">Date filters use source call date/time and keep ${escapeHtml(summary.sourceTimezoneLabel || "source call time")} boundaries. Date-only filters include the full source call day.</p>
+        </div>
+      </div>
+    </div>
+  </section>`;
+}
+
+function renderProcessingStatePanel(data, persistence = {}, intelligenceTotals = {}) {
+  if (!data || !data.totals || !data.totals.uniqueCalls) return "";
+  const governance = data.intelligenceGovernance || {};
+  const processing = governance.processing || {};
+  const confidence = governance.confidence || {};
+  const totalCalls = Number(data.totals.uniqueCalls || processing.totalCalls || 0);
+  const llmCompleted = Number(intelligenceTotals.llmCompleted || processing.llmEvaluationsCompleted || 0);
+  const llmFailed = Number(intelligenceTotals.llmFailed || processing.llmFailed || 0);
+  const llmNotRequested = Number(intelligenceTotals.llmNotRequested || (totalCalls ? Math.max(0, totalCalls - llmCompleted - llmFailed - Number(intelligenceTotals.llmQueued || 0)) : processing.llmNotRequested || 0));
+  const reviewGovernance = data.managerReviewGovernance || persistence.managerReviewGovernance || {};
+  const managerReviewed = Number(reviewGovernance.reviewedCalls || persistence.counts?.currentManagerReviewedCalls || persistence.counts?.currentManagerReviews || processing.managerReviewedCalls || 0);
+  const managerCorrected = Number(reviewGovernance.correctedCalls || persistence.counts?.currentManagerCorrectedCalls || 0);
+  const managerReviewNeeded = Number(reviewGovernance.reviewNeededCalls || persistence.counts?.currentManagerReviewNeededCalls || 0);
+  const managerEscalated = Number(reviewGovernance.escalatedCalls || persistence.counts?.currentManagerEscalatedCalls || 0);
+  const lowUnusable = Number(processing.lowOrUnusableTranscriptCount || 0);
+  return `<section class="panel" id="provenance">
+    <div class="panel-header">
+      <div>
+        <h2>Intelligence Provenance</h2>
+        <p class="muted small">Transcript-derived metrics are deterministic unless a row is explicitly marked LLM-reviewed or Manager-reviewed.</p>
+      </div>
+      ${provenanceBadge("Deterministic")}
+    </div>
+    <div class="panel-body">
+      <div class="metrics">
+        ${metricCard("Total calls", formatNumber(totalCalls), "Active deduplicated call rows", "info")}
+        ${metricCard("Transcripts available", formatNumber(data.totals.transcriptAvailable || 0), `${formatPercent(data.rates.transcriptCoverage || 0)} of calls`, "info")}
+        ${metricCard("Deterministic evaluations", formatNumber(processing.deterministicEvaluationsCompleted || totalCalls), "Rules-based local evaluation completed", "good")}
+        ${metricCard("LLM-reviewed", formatNumber(llmCompleted), `${formatNumber(llmNotRequested)} not requested, ${formatNumber(llmFailed)} failed`, "info")}
+        ${metricCard("Manager-reviewed", formatNumber(managerReviewed), `${formatPercent(reviewGovernance.coverageRate || percentOf(managerReviewed, totalCalls))} coverage`, "good")}
+        ${metricCard("Manager-corrected", formatNumber(managerCorrected), `${formatPercent(reviewGovernance.correctionRate || percentOf(managerCorrected, totalCalls))} of filtered calls`, managerCorrected ? "warn" : "good")}
+        ${metricCard("Review needed", formatNumber(managerReviewNeeded), "System or manager marked for review", managerReviewNeeded ? "warn" : "good")}
+        ${metricCard("Escalated", formatNumber(managerEscalated), "Manager-escalated review items", managerEscalated ? "risk" : "good")}
+        ${metricCard("Unprocessed", formatNumber(processing.unprocessedCalls || 0), "No deterministic evaluation available", "warn")}
+        ${metricCard("Transcript-derived coverage", formatPercent(processing.transcriptDerivedMetricsCoverageRate || data.rates.transcriptUsableForCoaching || 0), "Usable for coaching-style conclusions", "info")}
+        ${metricCard("Low/unusable transcripts", formatNumber(lowUnusable), "Review-only unless supported by stronger evidence", lowUnusable ? "warn" : "good")}
+      </div>
+      <div class="guardrails" style="margin-top: 12px;">
+        <div class="note">
+          <h3>Confidence mix</h3>
+          <p class="muted small">High: ${countRate(confidence.high || 0, totalCalls)}<br />Medium: ${countRate(confidence.medium || 0, totalCalls)}<br />Low: ${countRate(confidence.low || 0, totalCalls)}<br />Unusable: ${countRate(confidence.unusable || 0, totalCalls)}<br />Unavailable: ${countRate(confidence.unknown || 0, totalCalls)}</p>
+        </div>
+        <div class="note">
+          <h3>Guardrail</h3>
+          <p class="muted small">Coaching queues and scorecards include deterministic signals; not all calls are LLM-reviewed. Low-confidence or unusable transcript rows are shown as review-only context and should not be treated as final coaching conclusions without proof.</p>
+        </div>
+      </div>
+    </div>
+  </section>`;
+}
+
 function normalizeBusinessSegment(value) {
   const text = String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
   if (["new", "new_business"].includes(text)) return "new";
@@ -793,13 +1525,13 @@ function dashboardSegmentUrl(segment = "") {
 
 function intelligenceQueueLabel(queue) {
   const labels = {
-    waste: "Lead Waste",
+    waste: "Utilisation Review",
     manager_review: "Manager Review",
     llm_completed: "LLM Completed",
     llm_queued: "LLM Queued",
     high_quality: "High Quality"
   };
-  return labels[queue] || "Lead Waste";
+  return labels[queue] || "Utilisation Review";
 }
 
 function scopedDashboardData(data, segment) {
@@ -812,6 +1544,8 @@ function scopedDashboardData(data, segment) {
     sourceName: data.sourceName,
     generatedAt: data.generatedAt,
     dateRange: data.dateRange,
+    dataWindow: data.dataWindow,
+    intelligenceGovernance: view.intelligenceGovernance || data.intelligenceGovernance,
     columns: data.columns,
     missingColumns: data.missingColumns,
     ignoredFields: data.ignoredFields,
@@ -827,6 +1561,9 @@ function scopedDashboardData(data, segment) {
 function renderCallPage(call, options = {}) {
   const callId = options.callId || call?.callId || "Unknown";
   const intelligenceAudit = options.intelligenceAudit || null;
+  const managerReviews = (options.reviews || []).map(normalizeManagerReview);
+  const latestManagerReview = managerReviews.slice().sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))[0] || null;
+  const hasManagerReview = managerReviews.length > 0;
   const evidenceRows = (call?.evidence || []).map((item) => ({
     signal: item.signal,
     summary: item.summary,
@@ -973,11 +1710,22 @@ function renderCallPage(call, options = {}) {
             { label: "Value", key: "value" }
           ], [
             { item: "Customer ID", value: customerIdValue(call) },
-            { item: "Contact", value: call.contactClassification },
-            { item: "Local outcome", value: call.localOutcome },
-            { item: "Imported NoSaleType", value: call.importedNoSale },
-            { item: "Follow-up status", value: call.followUpStatus },
+            ...(contactIdValue(call) && customerIdValue(call) === "Not available" ? [{ item: "ContactId backup", value: contactIdValue(call) }] : []),
+            { item: "Contact", value: `${call.contactClassification} | ${call.contactClassificationProvenance || "Deterministic"} | ${call.confidenceLabel || "Confidence unavailable"}` },
+            { item: "Deterministic derived outcome", value: `${call.localOutcome} | ${call.localOutcomeProvenance || "Deterministic"}` },
+            { item: "Raw imported NoSaleType", value: `${call.importedNoSale} | ${call.rawImportedProvenance || "Raw imported"}` },
+            { item: "NoSaleType priority", value: call.importedNoSalePriority === "secondary_to_local_ai" ? "Raw imported field is secondary to deterministic transcript result" : "Raw imported field; not final truth" },
+            { item: "LLM review state", value: llmReviewState(intelligenceAudit || call) },
+            { item: "Manager review state", value: hasManagerReview ? `${reviewStatusLabel(latestManagerReview.reviewStatus)} | Manager-reviewed` : "Unreviewed" },
+            ...(latestManagerReview?.corrections?.length ? [{ item: "Manager-corrected fields", value: latestManagerReview.corrections.map((correction) => `${correction.fieldName}: ${correction.managerCorrectedValue}`).join(" | ") }] : []),
+            { item: "Order history", value: call.orderHistoryLabel || (Number(call.orderCount || 0) > 0 ? "Previous Sales History" : "No Sales History") },
+            { item: "Follow-up status", value: `${call.followUpStatus} | ${call.followUpProvenance || "Deterministic"}` },
             { item: "Follow-up channel", value: call.followUpChannel },
+            { item: "AI assistant", value: call.aiVoiceAssistantDetected ? `${call.aiVoiceAssistantResponse || "detected"} (${Math.round(Number(call.aiVoiceAssistantConfidence || 0) * 100)}% confidence)` : "Not detected" },
+            { item: "AI response", value: call.aiVoiceAssistantDetected ? call.aiVoiceAssistantBailed ? "Bailed" : call.aiVoiceAssistantHandledSuccessfully ? "Handled well" : "Partial" : "Not applicable" },
+            { item: "AI tactics", value: call.aiVoiceAssistantDetected ? (call.aiVoiceAssistantTactics || []).join(", ") || "No clear tactic" : "Not applicable" },
+            { item: "AI future status", value: call.aiVoiceAssistantFutureStatus ? call.aiVoiceAssistantFutureStatus.replace(/_/g, " ") : "Not applicable" },
+            { item: "System audio subtype", value: call.systemAudioDetected ? call.systemAudioSubtypeLabel || call.systemAudioSubtype : "Not detected" },
             { item: "Transcript quality", value: call.transcriptQuality },
             { item: "Duration", value: `${formatNumber(call.durationSeconds)}s` }
           ])}
@@ -992,12 +1740,12 @@ function renderCallPage(call, options = {}) {
       </section>
       <section class="panel">
         <h2>Evidence</h2>
-        <p class="muted small" style="margin-bottom: 12px;">Tables show the summary. These ordered transcript turns show the proof behind it.</p>
+        <p class="muted small" style="margin-bottom: 12px;">Tables show deterministic summaries. These ordered transcript turns show the proof behind them; missing proof is labelled explicitly.</p>
         ${renderEvidenceProofCards(evidenceRows)}
       </section>
       <section class="panel">
         <h2>LLM Audit Extraction</h2>
-        <p class="muted small" style="margin-bottom: 12px;">This is the model extraction saved in SQLite for this call, separate from the raw transcript proof below.</p>
+        <p class="muted small" style="margin-bottom: 12px;">Current state: ${escapeHtml(llmReviewState(intelligenceAudit || {}))}. This model extraction is separate from deterministic transcript proof and raw imported fields.</p>
         ${intelligenceAudit ? renderIntelligenceAuditDetails(intelligenceAudit) : `<div class="empty">No LLM intelligence extraction is saved for this call yet.</div>`}
       </section>
       <section class="panel">
@@ -1021,35 +1769,66 @@ function renderCallPage(call, options = {}) {
       <section class="grid-2">
         <div class="panel">
           <h2>Manager Review</h2>
+          <p class="muted small" style="margin-bottom: 12px;">Manager review is separate from alert lifecycle. Corrections are stored as manager-reviewed overlays; raw imported, deterministic, and LLM values remain available.</p>
           <form method="post" action="/reviews">
             <input type="hidden" name="callId" value="${escapeHtml(call.callId)}" />
             <input type="hidden" name="importId" value="${escapeHtml(options.importId || "")}" />
             <input type="hidden" name="returnTo" value="${escapeHtml(options.returnTo || `/calls/${encodeURIComponent(call.callId)}`)}" />
+            ${latestManagerReview ? `<input type="hidden" name="reviewId" value="${escapeHtml(latestManagerReview.reviewId)}" />` : ""}
+            <input type="hidden" name="source" value="call_detail" />
             <div class="form-grid">
-              <label>Status
-                <select name="status">
-                  <option value="confirmed">Confirmed correct</option>
-                  <option value="incorrect">Incorrect / false positive</option>
-                  <option value="follow_up_elsewhere">Follow-up happened elsewhere</option>
-                  <option value="needs_review">Needs more review</option>
+              <label>Review action
+                <select name="action">
+                  <option value="confirm">Confirm classification</option>
+                  <option value="correct">Correct classification</option>
+                  <option value="mark_review_needed">Mark review needed</option>
+                  <option value="start_review">Start review</option>
+                  <option value="dismiss">Dismiss review item</option>
+                  <option value="escalate">Escalate</option>
+                  <option value="reopen">Reopen</option>
+                  <option value="note">Add note only</option>
                 </select>
               </label>
-              <label>Confirmed outcome
-                <input name="confirmedOutcome" value="${escapeHtml(call.localOutcome || "")}" />
+              <label>Review scope
+                <select name="reviewScope">
+                  ${REVIEW_SCOPES.map((scope) => `<option value="${escapeHtml(scope)}" ${latestManagerReview?.reviewScope === scope ? "selected" : ""}>${escapeHtml(scope.replace(/_/g, " "))}</option>`).join("")}
+                </select>
+              </label>
+              <label>Correction field
+                <select name="fieldName">
+                  ${correctionFieldOptions()}
+                </select>
+              </label>
+              <label>Manager corrected value
+                <input name="managerCorrectedValue" placeholder="Leave blank unless correcting a field" />
               </label>
             </div>
-            <label style="margin: 10px 0;">
-              <span><input style="width: auto;" type="checkbox" name="confirmedFollowUpRequired" /> Follow-up required</span>
+            <input type="hidden" name="previousDisplayValue" value="${escapeHtml(call.localOutcome || "")}" />
+            <input type="hidden" name="deterministicValue" value="${escapeHtml(call.localOutcome || "")}" />
+            <input type="hidden" name="rawValue" value="${escapeHtml(call.importedNoSaleRaw || call.importedNoSale || "")}" />
+            <label style="margin-top: 10px;">Evidence assessment
+              <select name="evidenceAssessment">
+                <option value="">Not assessed</option>
+                <option value="evidence_accepted">Evidence accepted</option>
+                <option value="evidence_insufficient">Evidence insufficient</option>
+                <option value="evidence_unavailable_accepted">Evidence unavailable but accepted</option>
+                <option value="evidence_unavailable_rejected">Evidence unavailable and rejected</option>
+              </select>
             </label>
-            <label>Notes
-              <textarea name="notes" placeholder="Why is this correct or incorrect?"></textarea>
+            <label style="margin-top: 10px;">Review reason
+              <input name="reviewReason" placeholder="Why is this being reviewed?" />
             </label>
-            <div style="margin-top: 10px;"><button type="submit">Save Review</button></div>
+            <label style="margin-top: 10px;">Manager note
+              <textarea name="note" placeholder="Decision, coaching note, or correction reason"></textarea>
+            </label>
+            <div style="margin-top: 10px;"><button type="submit">Save Manager Review</button></div>
           </form>
         </div>
         <div class="panel">
           <h2>Review History</h2>
-          ${renderReviewHistory(options.reviews || [])}
+          ${renderReviewHistory(managerReviews)}
+          <h2 style="margin-top: 16px;">Audit Trail</h2>
+          ${renderReviewEventHistory(managerReviews)}
         </div>
       </section>` : `<section class="panel"><div class="empty">Use a call link from a drill-down page or the explorer.</div></section>`}
     </main>
@@ -1062,18 +1841,30 @@ function renderDashboard(analysis, options = {}) {
   const activeSegment = normalizeBusinessSegment(options.businessSegment || options.segment);
   const data = scopedDashboardData(sourceData, activeSegment);
   const segmentLabel = businessSegmentLabel(activeSegment);
+  const globalFilterQuery = data.filterState?.query || {};
+  const filterQueryWithoutBusiness = { ...globalFilterQuery };
+  delete filterQueryWithoutBusiness.businessSegment;
   const segmentFilters = activeSegment ? { businessSegment: activeSegment } : {};
-  const withSegment = (filters = {}) => ({ ...filters, ...segmentFilters });
+  const withSegment = (filters = {}) => ({ ...globalFilterQuery, ...filters, ...segmentFilters });
+  const dashboardSegmentHref = (segment = "") => dashboardFilterUrl({
+    ...filterQueryWithoutBusiness,
+    ...(segment ? { businessSegment: segment } : {})
+  }, "business-split");
   const activeIntelligenceQueue = String(options.intelligenceQueue || "waste").trim() || "waste";
   const intelligenceFilterBase = {
+    ...globalFilterQuery,
     ...segmentFilters,
     intelligenceQueue: activeIntelligenceQueue
   };
-  const hasData = Boolean(analysis && analysis.totals && analysis.totals.uniqueCalls);
-  const criticalAlerts = data.alerts.filter((alert) => alert.severity === "critical").length;
-  const warningAlerts = data.alerts.filter((alert) => alert.severity === "warning").length;
-  const noticeAlerts = data.alerts.filter((alert) => alert.severity === "notice").length;
+  const hasAnyData = Boolean(analysis && analysis.totals && (data.filterSummary?.totalRecords || data.totals.uniqueCalls));
+  const hasData = Boolean(analysis && analysis.totals && data.totals.uniqueCalls);
   const persistence = data.persistence || renderEmptyState("").persistence;
+  const alertSummary = data.alertLifecycleSummary || persistence.alertLifecycleSummary || { bySeverity: {}, byStatus: {} };
+  const criticalAlerts = alertSummary.bySeverity?.critical ?? data.alerts.filter((alert) => alert.severity === "critical").length;
+  const warningAlerts = alertSummary.bySeverity?.warning ?? data.alerts.filter((alert) => alert.severity === "warning").length;
+  const noticeAlerts = alertSummary.bySeverity?.notice ?? data.alerts.filter((alert) => alert.severity === "notice").length;
+  const reviewedIds = managerReviewedCallIds(persistence);
+  const reviewSummaryMap = managerReviewSummaryMap(persistence);
   const leadUtilization = data.leadUtilization || { totals: {} };
   const leadTotals = leadUtilization.totals || {};
   const intelligence = data.intelligence || { totals: {}, salespeople: [], sources: [] };
@@ -1086,9 +1877,31 @@ function renderDashboard(analysis, options = {}) {
   const sourceQualitySourceRows = (sourceQuality.sourceRows || []).slice(0, 14);
   const sourceQualityCreatorRows = (sourceQuality.creatorRows || []).slice(0, 12);
   const sourceQualityTypeRows = (sourceQuality.createdByTypeRows || []).slice(0, 6);
-  const sourceQualityAgeRows = (sourceQuality.importAgeBuckets || []).slice(0, 8);
-  const sourceQualityThresholdRows = sourceQuality.newBusinessImportAgeThresholds || [];
+  const sourceQualityAgeRows = (sourceQuality.recordAgeBuckets || sourceQuality.importAgeBuckets || []).slice(0, 8);
+  const sourceQualityThresholdRows = sourceQuality.newBusinessRecordAgeThresholds || sourceQuality.newBusinessImportAgeThresholds || [];
   const sourceQualityWorstSource = sourceQuality.lowestHumanAnswerSource || null;
+  const aiVoiceAssistant = data.aiVoiceAssistant || renderEmptyState("").aiVoiceAssistant;
+  const aiAssistantTotals = aiVoiceAssistant.totals || {};
+  const aiAssistantTrendRows = (aiVoiceAssistant.trendRows || []).slice(-12);
+  const aiAssistantSalespersonRows = (aiVoiceAssistant.salespersonRows || []).slice(0, 12);
+  const aiAssistantTacticRows = (aiVoiceAssistant.tacticRows || []).slice(0, 10);
+  const aiAssistantLatestRows = (aiVoiceAssistant.latestRows || []).slice(0, 12);
+  const aiAssistantTopTactic = aiVoiceAssistant.topSuccessTactic || null;
+  const systemAudio = data.systemAudio || renderEmptyState("").systemAudio;
+  const systemAudioTotals = systemAudio.totals || {};
+  const systemAudioSubtypeRows = (systemAudio.subtypeRows || []).slice(0, 8);
+  const systemAudioSalespersonRows = (systemAudio.salespersonRows || []).slice(0, 12);
+  const systemAudioSourceRows = (systemAudio.sourceRows || []).slice(0, 10);
+  const systemAudioTrendRows = (systemAudio.trendRows || []).slice(-12);
+  const systemAudioLatestRows = (systemAudio.latestRows || []).slice(0, 12);
+  const leadReattempt = data.leadReattempt || renderEmptyState("").leadReattempt;
+  const leadReattemptTotals = leadReattempt.totals || {};
+  const leadReattemptSalespersonRows = (leadReattempt.salespersonRows || []).slice(0, 18);
+  const leadReattemptHighestRows = (leadReattempt.highestRetrySalespeople || []).slice(0, 10);
+  const leadReattemptRiskRows = (leadReattempt.highestUnderUtilizationSalespeople || leadReattempt.highestOneDialRiskSalespeople || leadReattempt.lowestRetrySalespeople || []).slice(0, 10);
+  const leadReattemptSourceRows = (leadReattempt.sourceRows || []).slice(0, 12);
+  const leadReattemptRegionRows = (leadReattempt.regionRows || []).slice(0, 12);
+  const leadReattemptSegmentRows = leadReattempt.businessSegmentRows || [];
   const intelligenceSalespersonRows = (intelligence.salespeople || []).slice(0, 10);
   const intelligenceSourceRows = (intelligence.sources || []).slice(0, 10);
   const intelligenceQueueRows = options.intelligenceCalls || [];
@@ -1102,8 +1915,12 @@ function renderDashboard(analysis, options = {}) {
   const liveHumanRate = Number(data.rates.probableLiveHuman || 0);
   const meaningfulRate = Number(data.rates.meaningfulConversation || 0);
   const followUpRate = Number(data.rates.followUpRequired || 0);
+  const aiAssistantEncounterRate = Number(data.rates.aiVoiceAssistantEncounter || aiAssistantTotals.encounterRate || 0);
+  const aiAssistantBailRate = Number(data.rates.aiVoiceAssistantBail || aiAssistantTotals.bailRate || 0);
+  const aiAssistantHandledRate = Number(data.rates.aiVoiceAssistantHandled || aiAssistantTotals.handledRate || 0);
+  const aiAssistantFutureHumanRate = Number(data.rates.aiVoiceAssistantFutureHuman || aiAssistantTotals.futureHumanContactRate || 0);
   const riskReviewRate = percentOf(data.totals.riskReviews, uniqueCalls);
-  const leadRiskRate = Number(leadTotals.riskRate || 0) * 100;
+  const leadRiskRate = Number(leadReattemptTotals.oneDialNoContactNoLaterRate || 0);
   const totalUniqueCalls = Number(sourceData.totals.uniqueCalls || 0);
   const warmBusinessCalls = Number(sourceData.totals.warmBusinessCalls || 0);
   const newBusinessCalls = Number(sourceData.totals.newBusinessCalls || Math.max(0, totalUniqueCalls - warmBusinessCalls));
@@ -1113,7 +1930,9 @@ function renderDashboard(analysis, options = {}) {
   const scopeNote = activeSegment
     ? `${segmentLabel} results only. Click All Business to return to the full dashboard.`
     : "All calls are included. Click New Business or Warm Business to scope the results below.";
+  const alertReturnTo = dashboardFilterUrl(withSegment(), "alerts");
   const queueFilterUrl = (filters = {}) => dashboardFilterUrl({
+    ...globalFilterQuery,
     ...segmentFilters,
     intelligenceQueue: activeIntelligenceQueue,
     ...filters
@@ -1339,6 +2158,200 @@ function renderDashboard(analysis, options = {}) {
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 10px;
         margin-top: 18px;
+      }
+      .dataset-context .panel-header {
+        align-items: flex-start;
+      }
+      .dataset-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 10px;
+      }
+      .dataset-fact {
+        min-width: 0;
+        padding: 11px;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+      }
+      .dataset-fact span {
+        display: block;
+        color: var(--muted-foreground);
+        font-size: 11px;
+        font-weight: 750;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+      }
+      .dataset-fact strong {
+        display: block;
+        overflow-wrap: anywhere;
+        color: var(--foreground);
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .filter-panel .panel-body {
+        display: grid;
+        gap: 12px;
+      }
+      .filter-form {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 10px;
+        align-items: end;
+      }
+      .filter-form.advanced {
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        padding: 12px 0 0;
+      }
+      .filter-control {
+        display: grid;
+        gap: 6px;
+        color: var(--muted-foreground);
+        font-size: 12px;
+        font-weight: 750;
+        text-transform: uppercase;
+      }
+      .filter-control input,
+      .filter-control select {
+        width: 100%;
+        min-height: 36px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        padding: 8px 9px;
+        font: inherit;
+        text-transform: none;
+      }
+      .active-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .filter-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        padding: 5px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(86, 214, 229, 0.30);
+        background: rgba(86, 214, 229, 0.08);
+        color: var(--foreground);
+        font-size: 12px;
+        font-weight: 750;
+        text-decoration: none;
+      }
+      .filter-chip strong {
+        color: var(--muted-foreground);
+      }
+      .filter-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .filter-actions button {
+        min-height: 36px;
+        padding: 8px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(86, 214, 229, 0.45);
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        font: inherit;
+        font-weight: 760;
+        cursor: pointer;
+      }
+      .bulk-alert-form {
+        display: grid;
+        gap: 10px;
+        margin: 12px 0;
+        padding: 12px;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+      .bulk-alert-form textarea,
+      .alert-note-form textarea {
+        width: 100%;
+        min-height: 54px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        padding: 8px 9px;
+        font: inherit;
+        resize: vertical;
+      }
+      .alert-summary {
+        display: grid;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .alert-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .inline-alert-form {
+        display: inline;
+      }
+      .inline-alert-form button,
+      .alert-note-form button {
+        min-height: 30px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(86, 214, 229, 0.36);
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 740;
+        cursor: pointer;
+      }
+      .alert-note-form {
+        display: grid;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .table-checkbox {
+        width: 18px;
+        height: 18px;
+      }
+      .filter-advanced {
+        grid-column: 1 / -1;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+      .filter-advanced summary {
+        padding: 10px 12px;
+      }
+      .filtered-no-data-body {
+        display: none;
+      }
+      .window-warnings {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .window-warning {
+        padding: 11px;
+        border: 1px solid var(--border-subtle);
+        border-left: 3px solid var(--accent);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+      .window-warning.warning { border-left-color: var(--warning); }
+      .window-warning.critical { border-left-color: var(--danger); }
+      .window-warning strong {
+        display: block;
+        margin-bottom: 5px;
+        color: var(--foreground);
+        font-size: 13px;
+        text-transform: capitalize;
       }
       .mini-stat {
         padding: 10px;
@@ -1726,8 +2739,9 @@ function renderDashboard(analysis, options = {}) {
         .brand-logo img { width: min(190px, 48vw); }
         nav { grid-auto-flow: column; overflow-x: auto; }
         .command-grid { grid-template-columns: 1fr; }
-        .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .grid-2, .guardrails, .audit-grid { grid-template-columns: 1fr; }
+        .metrics, .filter-form, .filter-form.advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .dataset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .grid-2, .guardrails, .audit-grid, .window-warnings { grid-template-columns: 1fr; }
         .command-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       }
       @media (max-width: 640px) {
@@ -1735,7 +2749,7 @@ function renderDashboard(analysis, options = {}) {
         .topbar, .panel-header, aside { flex-direction: column; align-items: stretch; }
         nav { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
         nav a { padding: 8px 6px; font-size: 13px; }
-        .metrics { grid-template-columns: 1fr; }
+        .metrics, .dataset-grid, .filter-form, .filter-form.advanced { grid-template-columns: 1fr; }
         .segment-split { grid-template-columns: 1fr; }
         .command-meta, .pipeline-row { grid-template-columns: 1fr; }
         .pipeline-value { text-align: left; }
@@ -1761,10 +2775,15 @@ function renderDashboard(analysis, options = {}) {
         </div>
         <nav aria-label="Dashboard sections">
           <a href="#overview">Overview</a>
+          <a href="#filters">Filters</a>
           <a href="#business-split">Business Split</a>
+          <a href="#ai-assistants">AI Assistants</a>
+          <a href="#system-audio">System Audio</a>
+          <a href="#lead-reattempts">Reattempts</a>
           <a href="#source-quality">Source Quality</a>
           <a href="#intelligence">Intelligence</a>
-          <a href="#lead-utilization">Lead Use</a>
+          <a href="#provenance">Provenance</a>
+          <a href="#lead-utilization">Follow-Up</a>
           <a href="#confidence">Data Confidence</a>
           <a href="#history">Imports</a>
           <a href="#reports">Reports</a>
@@ -1782,21 +2801,29 @@ function renderDashboard(analysis, options = {}) {
             <p class="muted">Local CSV transcript analysis with privacy-safe matching, lead utilization proof, and confidence-aware metrics.</p>
           </div>
           <div class="stack">
-            ${hasData ? badge("CSV loaded", "success") : badge("No CSV loaded", "warning")}
+            ${hasAnyData ? badge("CSV loaded", "success") : badge("No CSV loaded", "warning")}
             ${activeSegment ? badge(`${segmentLabel} view`, "notice") : ""}
             ${badge(formatDateRange(data.dateRange), "neutral")}
           </div>
         </header>
 
-        ${!hasData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
+        ${renderDatasetBanner(sourceData, persistence)}
 
+        ${hasAnyData ? renderGlobalFilters(data) : ""}
+
+        ${renderProcessingStatePanel(data, persistence, intelligenceTotals)}
+
+        ${!hasAnyData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
+        ${hasAnyData && !hasData ? `<section class="panel"><div class="panel-body"><div class="empty">No calls match the selected filters. Clear filters or broaden the date range before interpreting performance.</div></div></section>` : ""}
+
+        <div class="${hasAnyData && !hasData ? "filtered-no-data-body" : ""}">
         <section class="command-grid" aria-label="Executive command overview">
           <article class="command-panel primary">
             <div class="command-panel-inner">
               <p class="page-kicker">Primary operating signal</p>
               <h2>Conversation Quality</h2>
               <div class="command-value mono">${formatPercent(meaningfulRate)}</div>
-              <p class="muted small" style="margin-top: 10px;">${formatNumber(data.totals.meaningfulConversation)} meaningful conversations from ${formatNumber(uniqueCalls)} unique calls.</p>
+              <p class="muted small" style="margin-top: 10px;">${formatNumber(data.totals.meaningfulConversation)} deterministic meaningful-conversation signals from ${formatNumber(uniqueCalls)} unique calls.</p>
               <div class="command-meta">
                 <div class="mini-stat"><span>Live-human</span><strong class="mono">${formatPercent(liveHumanRate)}</strong></div>
                 <div class="mini-stat"><span>Follow-up</span><strong class="mono">${formatNumber(data.totals.followUpRequired)}</strong></div>
@@ -1815,14 +2842,15 @@ function renderDashboard(analysis, options = {}) {
             <div class="command-panel-inner">
               <div class="pipeline">
                 ${pipelineBar("Unique calls", formatNumber(uniqueCalls), 100, "primary", drilldownUrl("calls.unique", withSegment()))}
-                ${pipelineBar("New business", `${formatNumber(newBusinessCalls)} (${formatPercent(newBusinessRate)})`, newBusinessRate, "accent", dashboardSegmentUrl("new"))}
-                ${pipelineBar("Warm business", `${formatNumber(warmBusinessCalls)} (${formatPercent(warmBusinessRate)})`, warmBusinessRate, "primary", dashboardSegmentUrl("warm"))}
+                ${pipelineBar("New business", `${formatNumber(newBusinessCalls)} (${formatPercent(newBusinessRate)})`, newBusinessRate, "accent", dashboardSegmentHref("new"))}
+                ${pipelineBar("Warm business", `${formatNumber(warmBusinessCalls)} (${formatPercent(warmBusinessRate)})`, warmBusinessRate, "primary", dashboardSegmentHref("warm"))}
                 ${pipelineBar("Transcript coverage", formatPercent(transcriptCoverage), transcriptCoverage, "accent", drilldownUrl("calls.transcriptAvailable", withSegment()))}
+                ${pipelineBar("AI assistants", `${formatNumber(aiAssistantTotals.encounters || 0)} (${formatPercent(aiAssistantEncounterRate)})`, aiAssistantEncounterRate, "warning", drilldownUrl("calls.aiVoiceAssistant", withSegment()))}
                 ${pipelineBar("Probable live-human", formatPercent(liveHumanRate), liveHumanRate, "primary", drilldownUrl("calls.probableLiveHuman", withSegment()))}
                 ${pipelineBar("Meaningful", formatPercent(meaningfulRate), meaningfulRate, "success", drilldownUrl("calls.meaningfulConversation", withSegment()))}
                 ${pipelineBar("Follow-up signals", formatPercent(followUpRate), followUpRate, "warning", drilldownUrl("calls.followUpRequired", withSegment()))}
                 ${pipelineBar("Risk reviews", formatPercent(riskReviewRate), riskReviewRate, "danger", drilldownUrl("calls.riskReviews", withSegment()))}
-                ${pipelineBar("Lead risk indicators", formatRatioPercent(leadTotals.riskRate), leadRiskRate, "danger", drilldownUrl("lead.wastedLeadIndicators", withSegment()))}
+                ${pipelineBar("No-contact utilisation risk", formatPercent(leadRiskRate), leadRiskRate, "danger", drilldownUrl("reattempt.oneDialNoContactNoLater", withSegment()))}
               </div>
             </div>
           </article>
@@ -1835,20 +2863,20 @@ function renderDashboard(analysis, options = {}) {
               <p class="muted small">${escapeHtml(scopeNote)}</p>
             </div>
             <div class="segment-actions">
-              <a class="filter-link ${activeSegment ? "" : "selected"}" href="${escapeHtml(dashboardSegmentUrl(""))}">All Business</a>
+              <a class="filter-link ${activeSegment ? "" : "selected"}" href="${escapeHtml(dashboardSegmentHref(""))}">All Business</a>
               ${badge("OrderCount based", "neutral")}
             </div>
           </div>
           <div class="panel-body segment-split">
-            <a class="segment-card accent ${activeSegment === "new" ? "selected" : ""}" href="${escapeHtml(dashboardSegmentUrl("new"))}" aria-current="${activeSegment === "new" ? "true" : "false"}">
+            <a class="segment-card accent ${activeSegment === "new" ? "selected" : ""}" href="${escapeHtml(dashboardSegmentHref("new"))}" aria-current="${activeSegment === "new" ? "true" : "false"}">
               <span>New Business</span>
               <strong class="mono">${formatNumber(newBusinessCalls)}</strong>
-              <small>${formatPercent(newBusinessRate)} of unique calls | click to filter dashboard</small>
+              <small>${formatPercent(newBusinessRate)} of unique calls | No Sales History</small>
             </a>
-            <a class="segment-card primary ${activeSegment === "warm" ? "selected" : ""}" href="${escapeHtml(dashboardSegmentUrl("warm"))}" aria-current="${activeSegment === "warm" ? "true" : "false"}">
+            <a class="segment-card primary ${activeSegment === "warm" ? "selected" : ""}" href="${escapeHtml(dashboardSegmentHref("warm"))}" aria-current="${activeSegment === "warm" ? "true" : "false"}">
               <span>Warm Business</span>
               <strong class="mono">${formatNumber(warmBusinessCalls)}</strong>
-              <small>${formatPercent(warmBusinessRate)} of unique calls | click to filter dashboard</small>
+              <small>${formatPercent(warmBusinessRate)} of unique calls | Previous Sales History</small>
             </a>
             <div class="segment-track" aria-label="New Business and Warm Business call split">
               <span class="segment-fill new" style="width: ${Math.max(0, Math.min(100, newBusinessRate)).toFixed(1)}%;"></span>
@@ -1859,27 +2887,359 @@ function renderDashboard(analysis, options = {}) {
 
         <section class="metrics" aria-label="Executive overview">
           ${metricCard("Unique calls", formatNumber(data.totals.uniqueCalls), `${formatNumber(data.totals.rawRows)} ${activeSegment ? "segment rows" : "raw rows"}, ${formatNumber(data.totals.duplicateCallIds)} duplicate IDs`, "info", drilldownUrl("calls.unique", withSegment()))}
-          ${metricCard("Probable live-human rate", formatPercent(data.rates.probableLiveHuman), `${formatNumber(data.totals.probableLiveHuman)} calls with transcript evidence`, "good", drilldownUrl("calls.probableLiveHuman", withSegment()))}
-          ${metricCard("Meaningful conversations", formatPercent(data.rates.meaningfulConversation), `${formatNumber(data.totals.meaningfulConversation)} calls qualify`, "good", drilldownUrl("calls.meaningfulConversation", withSegment()))}
-          ${metricCard("Follow-up signals", formatNumber(data.totals.followUpRequired), `${formatNumber(data.totals.followUpIndeterminate)} need more future data`, "warn", drilldownUrl("calls.followUpRequired", withSegment()))}
-          ${metricCard("Transcript coverage", formatPercent(data.rates.transcriptCoverage), `${formatNumber(data.totals.transcriptAvailable)} transcripts available`, "info", drilldownUrl("calls.transcriptAvailable", withSegment()))}
-          ${metricCard("Outcome mismatches", formatNumber(data.totals.outcomeMismatches), `${formatPercent(data.rates.outcomeMismatch)} of unique calls`, "warn", drilldownUrl("calls.outcomeMismatches", withSegment()))}
-          ${metricCard("Risk reviews", formatNumber(data.totals.riskReviews), "Complaint or opt-out style signals", "risk", drilldownUrl("calls.riskReviews", withSegment()))}
+          ${metricCard("Probable live-human rate", formatPercent(data.rates.probableLiveHuman), `${formatNumber(data.totals.probableLiveHuman)} deterministic signals; proof required`, "good", drilldownUrl("calls.probableLiveHuman", withSegment()))}
+          ${metricCard("Meaningful conversations", formatPercent(data.rates.meaningfulConversation), `${formatNumber(data.totals.meaningfulConversation)} deterministic calls qualify; high ${formatNumber(data.intelligenceGovernance?.confidence?.high || 0)}, medium ${formatNumber(data.intelligenceGovernance?.confidence?.medium || 0)}, low ${formatNumber(data.intelligenceGovernance?.confidence?.low || 0)}`, "good", drilldownUrl("calls.meaningfulConversation", withSegment()))}
+          ${metricCard("Follow-up signals", formatNumber(data.totals.followUpRequired), `Deterministic; ${formatNumber(data.totals.followUpIndeterminate)} need more future data`, "warn", drilldownUrl("calls.followUpRequired", withSegment()))}
+          ${metricCard("AI assistants", formatNumber(aiAssistantTotals.encounters || 0), `${formatPercent(aiAssistantEncounterRate)} encounter rate`, "warn", drilldownUrl("calls.aiVoiceAssistant", withSegment()))}
+          ${metricCard("Transcript coverage", formatPercent(data.rates.transcriptCoverage), `${formatNumber(data.totals.transcriptAvailable)} transcripts available; blanks mean no pickup`, "info", drilldownUrl("calls.transcriptAvailable", withSegment()))}
+          ${metricCard("Outcome mismatches", formatNumber(data.totals.outcomeMismatches), `Raw NoSaleType vs deterministic outcome; ${formatPercent(data.rates.outcomeMismatch)} of calls`, "warn", drilldownUrl("calls.outcomeMismatches", withSegment()))}
+          ${metricCard("Risk reviews", formatNumber(data.totals.riskReviews), "Deterministic complaint or opt-out style signals", "risk", drilldownUrl("calls.riskReviews", withSegment()))}
           ${metricCard("Reports stored", formatNumber(persistence.counts.reports), `${formatNumber(persistence.counts.imports)} saved import snapshots`, "info")}
+        </section>
+
+        <section class="panel" id="ai-assistants">
+          <div class="panel-header">
+            <div>
+              <h2>AI Call Assistant Encounters</h2>
+              <p class="muted small">Tracks AI voicemail and screened-call services separately from normal voicemail, with proof, confidence, and future-contact recovery.</p>
+            </div>
+            ${badge(`${formatPercent(aiAssistantTotals.highConfidenceRate || 0)} high-confidence`, (aiAssistantTotals.highConfidenceEncounters || 0) ? "success" : "neutral")}
+          </div>
+          <div class="panel-body metrics">
+            ${metricCard("Encounters", formatNumber(aiAssistantTotals.encounters || 0), `${formatPercent(aiAssistantEncounterRate)} of scoped calls`, "warn", drilldownUrl("calls.aiVoiceAssistant", withSegment()))}
+            ${metricCard("Bail rate", formatPercent(aiAssistantBailRate), `${formatNumber(aiAssistantTotals.bailed || 0)} bail events`, "risk", drilldownUrl("calls.aiVoiceAssistantBailed", withSegment()))}
+            ${metricCard("Handled well", formatPercent(aiAssistantHandledRate), `${formatNumber(aiAssistantTotals.handledSuccessfully || 0)} structured responses`, "good", drilldownUrl("calls.aiVoiceAssistantHandled", withSegment()))}
+            ${metricCard("Recovered later", formatPercent(aiAssistantFutureHumanRate), `${formatNumber(aiAssistantTotals.futureHumanContact || 0)} later human contacts`, "info", drilldownUrl("calls.aiVoiceAssistantFutureHuman", withSegment()))}
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>AI Assistant Trend</h2>
+                <p class="muted small">Daily trend uses call date. Future recovery updates automatically when later matching customer or lead calls are imported.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(row.label || row.date)}</span>` },
+              { label: "Calls", render: (row) => formatNumber(row.calls) },
+              { label: "Encounters", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment()) },
+              { label: "Rate", render: (row) => formatPercent(row.encounterRate) },
+              { label: "Bails", render: (row) => dataLink("calls.aiVoiceAssistantBailed", formatNumber(row.bailed), withSegment()) },
+              { label: "Handled", render: (row) => dataLink("calls.aiVoiceAssistantHandled", formatNumber(row.handledSuccessfully), withSegment()) },
+              { label: "Recovered", render: (row) => dataLink("calls.aiVoiceAssistantFutureHuman", formatNumber(row.futureHumanContact), withSegment()) }
+            ], aiAssistantTrendRows, "No AI call assistant encounters are available in this scope.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Salesperson AI Assistant Handling</h2>
+                <p class="muted small">Bail means the transcript shows the assistant but no useful response from the salesperson.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.aiVoiceAssistant", withSegment({ salesperson: row.salesperson })))}">${escapeHtml(row.salesperson)}</a>` },
+              { label: "Calls", render: (row) => formatNumber(row.calls) },
+              { label: "Encounters", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment({ salesperson: row.salesperson })) },
+              { label: "Encounter rate", render: (row) => formatPercent(row.encounterRate) },
+              { label: "Bail rate", render: (row) => dataLink("calls.aiVoiceAssistantBailed", formatPercent(row.bailRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Handled", render: (row) => dataLink("calls.aiVoiceAssistantHandled", formatPercent(row.handledRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Recovered", render: (row) => dataLink("calls.aiVoiceAssistantFutureHuman", formatPercent(row.futureHumanContactRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Top tactic", render: (row) => escapeHtml(row.topTactic) }
+            ], aiAssistantSalespersonRows, "No salesperson has AI call assistant encounters in this scope.")}
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>What Works Against AI Assistants</h2>
+                <p class="muted small">Tactics are extracted from salesperson turns and compared against handled and recovered outcomes.</p>
+              </div>
+              ${aiAssistantTopTactic ? badge(`Best: ${aiAssistantTopTactic.label}`, "success") : badge("No tactic data", "neutral")}
+            </div>
+            ${table([
+              { label: "Tactic", render: (row) => escapeHtml(row.label) },
+              { label: "Used", render: (row) => formatNumber(row.encounters) },
+              { label: "Handled rate", render: (row) => formatPercent(row.handledRate) },
+              { label: "Bail rate", render: (row) => formatPercent(row.bailRate) },
+              { label: "Recovered later", render: (row) => formatPercent(row.futureHumanContactRate) }
+            ], aiAssistantTacticRows, "No tactics were detected for AI assistant encounters.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Latest AI Assistant Proof</h2>
+                <p class="muted small">Open any call to inspect the transcript phrase and salesperson response.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Call", render: (row) => callLink(row.callId) },
+              { label: "Customer ID", render: (row) => customerIdCell(row) },
+              { label: "Salesperson", key: "salesperson" },
+              { label: "Response", render: (row) => row.bailed ? badge("Bailed", "critical") : row.handledSuccessfully ? badge("Handled", "success") : badge("Partial", "warning") },
+              { label: "Tactics", render: (row) => tacticList(row.tacticLabels) },
+              { label: "Future", render: (row) => row.futureCallId ? callLink(row.futureCallId, "Future call") : `<span class="muted small">${escapeHtml(String(row.futureStatus || "").replace(/_/g, " "))}</span>` }
+            ], aiAssistantLatestRows, "No AI call assistant proof rows are available.")}
+          </div>
+        </section>
+
+        <section class="panel" id="system-audio">
+          <div class="panel-header">
+            <div>
+              <h2>System Audio Audit</h2>
+              <p class="muted small">Tracks automated phone barriers separately from customer conversations: call screening, carrier messages, and machine voicemail.</p>
+            </div>
+            ${badge(`${formatNumber(systemAudioTotals.encounters || 0)} barriers`, systemAudioTotals.encounters ? "warning" : "neutral")}
+          </div>
+          <div class="panel-body metrics">
+            ${metricCard("System barriers", formatNumber(systemAudioTotals.encounters || 0), `${formatPercent(systemAudioTotals.encounterRate || 0)} of scoped calls`, "warn", drilldownUrl("calls.systemAudio", withSegment()))}
+            ${metricCard("Call screening", formatNumber(systemAudioTotals.callScreening || 0), "AI assistants and screened-call prompts", "warn", drilldownUrl("calls.systemAudio.call_screening", withSegment()))}
+            ${metricCard("Carrier system", formatNumber(systemAudioTotals.carrierPhoneSystem || 0), "Busy, unavailable, disconnected messages", "info", drilldownUrl("calls.systemAudio.carrier_phone_system", withSegment()))}
+            ${metricCard("Machine voicemail", formatNumber(systemAudioTotals.machineVoicemail || 0), "Mailbox and leave-message greetings", "info", drilldownUrl("calls.systemAudio.machine_voicemail", withSegment()))}
+            ${metricCard("Recovered later", formatPercent(systemAudioTotals.futureHumanContactRate || 0), `${formatNumber(systemAudioTotals.futureHumanContact || 0)} later human contacts`, "good", drilldownUrl("calls.systemAudioRecovered", withSegment()))}
+            ${metricCard("Screening bails", formatPercent(systemAudioTotals.bailRate || 0), `${formatNumber(systemAudioTotals.bailed || 0)} call-screening bail events`, "risk", drilldownUrl("calls.systemAudioBailed", withSegment()))}
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>System Audio Subtypes</h2>
+                <p class="muted small">Subtype rules make the operational issue visible instead of hiding everything under system_audio.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Subtype", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl(`calls.systemAudio.${row.subtype}`, withSegment({ systemAudioSubtype: row.subtype })))}">${escapeHtml(row.subtypeLabel || row.name)}</a>` },
+              { label: "Calls", render: (row) => formatNumber(row.encounters) },
+              { label: "Share", render: (row) => formatPercent(percentOf(row.encounters, systemAudioTotals.encounters || 0)) },
+              { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment({ systemAudioSubtype: row.subtype })) }
+            ], systemAudioSubtypeRows, "No system audio barriers were detected.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>System Audio Trend</h2>
+                <p class="muted small">Shows whether automated barriers are increasing or decreasing over time.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(row.label || row.date)}</span>` },
+              { label: "Barriers", render: (row) => dataLink("calls.systemAudio", formatNumber(row.encounters), withSegment()) },
+              { label: "Screening", render: (row) => formatNumber(row.callScreening) },
+              { label: "Carrier", render: (row) => formatNumber(row.carrierPhoneSystem) },
+              { label: "Recovered", render: (row) => formatPercent(row.futureHumanContactRate) }
+            ], systemAudioTrendRows, "No system audio trend rows are available.")}
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>System Audio By Salesperson</h2>
+                <p class="muted small">For call-screening rows, handled/bail rates show whether a useful message was left.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.systemAudio", withSegment({ salesperson: row.salesperson })))}">${escapeHtml(row.salesperson)}</a>` },
+              { label: "Barriers", render: (row) => formatNumber(row.encounters) },
+              { label: "Screening", render: (row) => formatNumber(row.callScreening) },
+              { label: "Handled", render: (row) => dataLink("calls.systemAudioHandled", formatPercent(row.handledRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Bailed", render: (row) => dataLink("calls.systemAudioBailed", formatPercent(row.bailRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment({ salesperson: row.salesperson })) }
+            ], systemAudioSalespersonRows, "No salesperson system audio rows are available.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>System Audio By Source</h2>
+                <p class="muted small">Shows whether a source is generating more automated barriers and whether those barriers are later recovered.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.systemAudio", withSegment({ source: row.source })))}">${escapeHtml(row.source)}</a>` },
+              { label: "Barriers", render: (row) => formatNumber(row.encounters) },
+              { label: "Screening", render: (row) => formatNumber(row.callScreening) },
+              { label: "Carrier", render: (row) => formatNumber(row.carrierPhoneSystem) },
+              { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment({ source: row.source })) }
+            ], systemAudioSourceRows, "No source system audio rows are available.")}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Latest System Audio Proof</h2>
+              <p class="muted small">Open any call to inspect the transcript phrase behind the subtype.</p>
+            </div>
+          </div>
+          ${table([
+            { label: "Call", render: (row) => callLink(row.callId) },
+            { label: "Customer ID", render: (row) => customerIdCell(row) },
+            { label: "Salesperson", key: "salesperson" },
+            { label: "Source", key: "source" },
+            { label: "Subtype", key: "subtypeLabel" },
+            { label: "Response", render: (row) => row.handledSuccessfully ? badge("Handled", "success") : row.bailed ? badge("Bailed", "critical") : row.partial ? badge("Partial", "warning") : `<span class="muted small">n/a</span>` },
+            { label: "Future", render: (row) => row.futureCallId ? callLink(row.futureCallId, "Future call") : `<span class="muted small">${escapeHtml(String(row.futureStatus || "").replace(/_/g, " "))}</span>` }
+          ], systemAudioLatestRows, "No system audio proof rows are available.")}
+        </section>
+
+        <section class="panel" id="lead-reattempts">
+          <div class="panel-header">
+            <div>
+              <h2>Lead Reattempt Behaviour</h2>
+              <p class="muted small">Matched customer/contact retry behaviour by salesperson. The main utilisation risk is one-dial no-contact records with no later matching call observed.</p>
+            </div>
+            ${badge(`${formatNumber(leadReattemptTotals.leadsTouched || 0)} matched records`, leadReattemptTotals.leadsTouched ? "success" : "warning")}
+          </div>
+          <div class="panel-body metrics">
+            ${metricCard("Personal retry rate", formatPercent(leadReattemptTotals.personalRetryRate), `${formatNumber(leadReattemptTotals.personallyRetriedLeads || 0)} records retried by same salesperson`, "good", drilldownUrl("reattempt.personalRetried", withSegment()))}
+            ${metricCard("One-dial records", formatPercent(leadReattemptTotals.oneAndDoneRate), `${formatNumber(leadReattemptTotals.oneAndDoneLeads || 0)} records dialed once`, "warn", drilldownUrl("reattempt.oneAndDone", withSegment()))}
+            ${metricCard("Potential lead under-utilisation", formatPercent(leadReattemptTotals.oneDialNoContactNoLaterRate), `${formatNumber(leadReattemptTotals.oneDialNoContactNoLaterLeads || 0)} one-dial no-contact with no later match`, "risk", drilldownUrl("reattempt.oneDialNoContactNoLater", withSegment()))}
+            ${metricCard("One-dial no-contact records", formatPercent(leadReattemptTotals.riskyOneDialNoContactRate), `${formatNumber(leadReattemptTotals.riskyOneDialNoContactLeads || 0)} of one-dial records`, "warn", drilldownUrl("reattempt.oneDialRiskyNoContact", withSegment()))}
+            ${metricCard("Valid one-dial outcomes", formatPercent(leadReattemptTotals.validOneDialOutcomeRate), `${formatNumber(leadReattemptTotals.validOneDialOutcomeLeads || 0)} of one-dial records`, "good", drilldownUrl("reattempt.oneDialValidOutcome", withSegment()))}
+            ${metricCard("Ambiguous one-dial excluded", formatPercent(leadReattemptTotals.oneDialNeedsReviewRate), `${formatNumber(leadReattemptTotals.oneDialNeedsReviewLeads || 0)} records excluded`, "warn", drilldownUrl("reattempt.oneDialNeedsReview", withSegment()))}
+            ${metricCard("No later call by anyone", formatPercent(leadReattemptTotals.noLaterCallByAnyoneRate), `${formatNumber(leadReattemptTotals.noLaterCallByAnyoneLeads || 0)} records with no later call found`, "risk", drilldownUrl("reattempt.noLaterCallByAnyone", withSegment()))}
+            ${metricCard("Avg calls per record", formatDecimal(leadReattemptTotals.averageCallsPerLead), `${formatNumber(leadReattemptTotals.callsWithoutStableLead || 0)} calls lacked matching ID`, "info", drilldownUrl("reattempt.leadsTouched", withSegment()))}
+            ${metricCard("Max attempts on one record", formatNumber(leadReattemptTotals.maxAttemptsOnOneLead || 0), "Highest same-salesperson attempt count", "info", drilldownUrl("reattempt.maxAttemptsOnOneLead", withSegment()))}
+            ${metricCard("Records dialed", formatNumber(leadReattemptTotals.leadsTouched || 0), "Salesperson plus matched records dialed", "info", drilldownUrl("reattempt.leadsTouched", withSegment()))}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Reattempt Behaviour By Salesperson</h2>
+              <p class="muted small">Click any percentage to inspect the exact customer IDs and call IDs behind the rate.</p>
+            </div>
+          </div>
+          ${table([
+            { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ salesperson: row.salesperson })))}">${escapeHtml(row.salesperson)}</a>` },
+            { label: "Records dialed", render: (row) => dataLink("reattempt.leadsTouched", formatNumber(row.leadsTouched), withSegment({ salesperson: row.salesperson })) },
+            { label: "Personal retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ salesperson: row.salesperson })) },
+            { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ salesperson: row.salesperson })) },
+            { label: "Valid", render: (row) => dataLink("reattempt.oneDialValidOutcome", formatNumber(row.validOneDialOutcomeLeads), withSegment({ salesperson: row.salesperson })) },
+            { label: "No-contact", render: (row) => dataLink("reattempt.oneDialRiskyNoContact", formatNumber(row.riskyOneDialNoContactLeads), withSegment({ salesperson: row.salesperson })) },
+            { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatNumber(row.oneDialNoContactNoLaterLeads), withSegment({ salesperson: row.salesperson })) },
+            { label: "Ambiguous excluded", render: (row) => dataLink("reattempt.oneDialNeedsReview", formatNumber(row.oneDialNeedsReviewLeads), withSegment({ salesperson: row.salesperson })) },
+            { label: "No later by anyone", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ salesperson: row.salesperson })) },
+            { label: "Avg calls/lead", render: (row) => formatDecimal(row.averageCallsPerLead) },
+            { label: "Max attempts", render: (row) => dataLink("reattempt.maxAttemptsOnOneLead", formatNumber(row.maxAttemptsOnOneLead), withSegment({ salesperson: row.salesperson, maxAttempts: row.maxAttemptsOnOneLead })) }
+          ], leadReattemptSalespersonRows, "No matched reattempt rows are available.")}
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Highest Retry Discipline</h2>
+                <p class="muted small">Salespeople with at least 25 matched records, ranked by personal retry rate.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Salesperson", key: "salesperson" },
+              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Avg calls", render: (row) => formatDecimal(row.averageCallsPerLead) }
+            ], leadReattemptHighestRows, "No high-volume retry rows are available.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Highest Potential Lead Under-Utilisation</h2>
+                <p class="muted small">Salespeople with at least 25 matched records, ranked by one-dial no-contact rows with no later matching call observed.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Salesperson", key: "salesperson" },
+              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ salesperson: row.salesperson })) },
+              { label: "Ambiguous excluded", render: (row) => dataLink("reattempt.oneDialNeedsReview", formatNumber(row.oneDialNeedsReviewLeads), withSegment({ salesperson: row.salesperson })) },
+              { label: "No later", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ salesperson: row.salesperson })) }
+            ], leadReattemptRiskRows, "No one-dial no-contact/no-later rows are available.")}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Patterns In What Gets Retried</h2>
+              <p class="muted small">Compares retry behaviour by New/Warm status, source, and region/location signals from the upload.</p>
+            </div>
+          </div>
+          ${table([
+            { label: "Segment", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ businessSegment: row.businessSegment })))}">${escapeHtml(row.businessSegmentLabel || row.name)}</a>` },
+            { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+            { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), { businessSegment: row.businessSegment }) },
+            { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), { businessSegment: row.businessSegment }) },
+            { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), { businessSegment: row.businessSegment }) },
+            { label: "No later", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), { businessSegment: row.businessSegment }) },
+            { label: "Avg calls", render: (row) => formatDecimal(row.averageCallsPerLead) }
+          ], leadReattemptSegmentRows, "No business segment reattempt rows are available.")}
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Reattempt Patterns By Source</h2>
+                <p class="muted small">Uses CustomerImportSource where available; missing values are categorized as Facebook for LG records and Self Sourced otherwise.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ source: row.source })))}">${escapeHtml(row.source)}</a>` },
+              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ source: row.source })) },
+              { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ source: row.source })) },
+              { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ source: row.source })) },
+              { label: "No later", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ source: row.source })) }
+            ], leadReattemptSourceRows, "No source pattern rows are available.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Reattempt Patterns By Region</h2>
+                <p class="muted small">Uses CallRegion where present; blank CallRegion is categorized as Australia.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Region", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ region: row.region })))}">${escapeHtml(row.region)}</a>` },
+              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ region: row.region })) },
+              { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ region: row.region })) },
+              { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ region: row.region })) },
+              { label: "No later", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ region: row.region })) }
+            ], leadReattemptRegionRows, "No region pattern rows are available.")}
+          </div>
         </section>
 
         <section class="panel" id="source-quality">
           <div class="panel-header">
             <div>
               <h2>Customer Source Quality</h2>
-              <p class="muted small">Bulk source fields are CustomerImportDate and CustomerImportSource. Manual-entry fields are CustomerCreatedBy, CustomerCreatedByType, and CustomerCreateDate.</p>
+              <p class="muted small">Bulk/manual source fields are raw call CSV context. Human-answer and follow-up rates are deterministic transcript-derived signals with confidence context, not LLM-reviewed conclusions unless labelled elsewhere.</p>
             </div>
-            ${badge(`${formatNumber(sourceQualityTotals.callsWithImportDate || 0)} import dates`, sourceQualityTotals.callsWithImportDate ? "success" : "warning")}
+            ${badge(`${formatNumber(sourceQualityTotals.callsWithRecordAge || 0)} record ages`, sourceQualityTotals.callsWithRecordAge ? "success" : "warning")}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Bulk sourced calls", formatNumber(sourceQualityTotals.callsWithBulkSource), `${formatPercent(sourceQualityTotals.bulkSourceCoverageRate)} source coverage`, "info", drilldownUrl("source.bulkSourced", withSegment()))}
-            ${metricCard("New Business >90d import", formatNumber(sourceAge90.calls), `${formatPercent(sourceAge90.rate)} of New Business calls`, "risk", drilldownUrl("source.newBusinessImportedOlderThan", withSegment({ minImportAgeDays: 90 })))}
+            ${metricCard("New Business >90d record age", formatNumber(sourceAge90.calls), `${formatPercent(sourceAge90.rate)} of New Business calls`, "risk", drilldownUrl("source.newBusinessRecordOlderThan", withSegment({ minImportAgeDays: 90 })))}
             ${metricCard("Manual LG/SP calls", formatNumber(sourceQualityTotals.callsWithManualCreator), `${formatNumber(sourceQualityTotals.leadGeneratorCreatedCalls)} LG, ${formatNumber(sourceQualityTotals.salespersonCreatedCalls)} SP`, "good", drilldownUrl("source.manualCreated", withSegment()))}
+            ${metricCard("Self sourced no raw attribution", formatNumber(sourceQualityTotals.callsMissingSourceAttribution), `${formatPercent(sourceQualityTotals.missingSourceAttributionRate)} inferred Self Sourced records`, "info", drilldownUrl("source.missingAttribution", withSegment()))}
             ${metricCard("Worst human answer source", sourceQualityWorstSource ? sourceQualityWorstSource.name : "n/a", sourceQualityWorstSource ? `${formatPercent(sourceQualityWorstSource.probableLiveHumanRate)} from ${formatNumber(sourceQualityWorstSource.calls)} calls` : "Needs source data", "warn", sourceQualityWorstSource ? drilldownUrl("calls.unique", withSegment({ source: sourceQualityWorstSource.name })) : "")}
           </div>
         </section>
@@ -1888,15 +3248,15 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2>New Business Source Age</h2>
-                <p class="muted small">Click a threshold to inspect New Business calls imported more than that many days before the call.</p>
+                <h2>New Business Record Age</h2>
+                <p class="muted small">Click a threshold to inspect New Business calls where Record Age is more than that many days before the call. Record Age uses import date first, then manual creation date.</p>
               </div>
             </div>
             ${table([
-              { label: "Imported older than", render: (row) => dataLink("source.newBusinessImportedOlderThan", `>${formatNumber(row.thresholdDays)}d`, withSegment({ minImportAgeDays: row.thresholdDays })) },
+              { label: "Record age older than", render: (row) => dataLink("source.newBusinessRecordOlderThan", `>${formatNumber(row.thresholdDays)}d`, withSegment({ minImportAgeDays: row.thresholdDays })) },
               { label: "Calls", render: (row) => formatNumber(row.calls) },
               { label: "Share", render: (row) => formatPercent(row.rate) }
-            ], sourceQualityThresholdRows, "No valid CustomerImportDate values are available.")}
+            ], sourceQualityThresholdRows, "No valid CustomerImportDate or CustomerCreateDate values are available.")}
           </div>
 
           <div class="panel">
@@ -1931,8 +3291,8 @@ function renderDashboard(analysis, options = {}) {
             { label: "Warm", render: (row) => formatNumber(row.warmBusinessCalls) },
             { label: "Human answer", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ source: row.name })) },
             { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ source: row.name })) },
-            { label: "Avg import age", render: (row) => formatDays(row.averageImportAgeDays) },
-            { label: "New >90d", render: (row) => dataLink("source.newBusinessImportedOlderThan", formatNumber(row.newBusinessImportedOlderThan90), withSegment({ source: row.name, minImportAgeDays: 90 })) }
+            { label: "Avg record age", render: (row) => formatDays(row.averageRecordAgeDays) },
+            { label: "New >90d", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatNumber(row.newBusinessRecordOlderThan90 ?? row.newBusinessImportedOlderThan90), withSegment({ source: row.name, minImportAgeDays: 90 })) }
           ], sourceQualitySourceRows, "No bulk source rows are available.")}
         </section>
 
@@ -1940,18 +3300,18 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2>Import Age Cohorts</h2>
-                <p class="muted small">Cohorts use CustomerImportDate against the call date.</p>
+                <h2>Record Age Cohorts</h2>
+                <p class="muted small">Record Age uses CustomerImportDate where valid, otherwise CustomerCreateDate where valid.</p>
               </div>
             </div>
             ${table([
-              { label: "Age", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.unique", withSegment({ importAgeBucket: row.bucket })))}">${escapeHtml(row.bucket)}</a>` },
+              { label: "Record age", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.unique", withSegment({ recordAgeBucket: row.bucket })))}">${escapeHtml(row.bucket)}</a>` },
               { label: "Calls", render: (row) => formatNumber(row.calls) },
               { label: "New", render: (row) => formatNumber(row.newBusinessCalls) },
               { label: "Warm", render: (row) => formatNumber(row.warmBusinessCalls) },
               { label: "Human answer", render: (row) => formatPercent(row.probableLiveHumanRate) },
               { label: "Meaningful", render: (row) => formatPercent(row.meaningfulConversationRate) }
-            ], sourceQualityAgeRows, "No import age cohorts are available.")}
+            ], sourceQualityAgeRows, "No record age cohorts are available.")}
           </div>
 
           <div class="panel">
@@ -1976,16 +3336,16 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel-header">
             <div>
               <h2>Transcript Intelligence</h2>
-              <p class="muted small">Database-backed call deconstruction, lead-waste rollups, and local LLM extraction queue state.</p>
+              <p class="muted small">Database-backed deterministic call deconstruction, lead-utilisation rollups, and local LLM extraction queue state. Deterministic records are not LLM-reviewed unless labelled as such.</p>
             </div>
             ${badge(`${formatNumber(intelligenceTotals.callsIndexed)} calls indexed`, intelligenceTotals.callsIndexed ? "success" : "warning")}
           </div>
           <div class="panel-body metrics">
-            ${metricCard("Waste-risk leads", formatNumber(intelligenceTotals.wasteRiskLeads), `${formatNumber(intelligenceTotals.leadsIndexed)} leads indexed`, "risk", queueFilterUrl({ intelligenceQueue: "waste", wasteRisk: "1" }))}
+            ${metricCard("Utilisation review signals", formatNumber(intelligenceTotals.wasteRiskLeads), `${formatNumber(intelligenceTotals.leadsIndexed)} leads indexed`, "risk", queueFilterUrl({ intelligenceQueue: "waste", wasteRisk: "1" }))}
             ${metricCard("High-quality utilized", formatNumber(intelligenceTotals.highQualityLeads), `Avg lead score ${Number(intelligenceTotals.avgLeadUtilizationScore || 0).toFixed(1)} / 5`, "good", queueFilterUrl({ intelligenceQueue: "high_quality", highQuality: "1" }))}
             ${metricCard("Repeated short attempts", formatNumber(intelligenceTotals.repeatedShortAttemptLeads), "Lead-level short/no-result pattern", "warn")}
-            ${metricCard("Manager review calls", formatNumber(intelligenceTotals.managerReviewCalls), `${formatNumber(intelligenceTotals.riskFlagCalls)} calls have risk flags`, "risk", queueFilterUrl({ intelligenceQueue: "manager_review", managerReview: "1" }))}
-            ${metricCard("LLM queued", formatNumber(intelligenceTotals.llmQueued), `${formatNumber(intelligenceTotals.llmCompleted)} completed, ${formatNumber(intelligenceTotals.llmFailed || 0)} failed, ${formatNumber(intelligenceTotals.llmNotRequested)} not requested`, "info", queueFilterUrl({ intelligenceQueue: "llm_queued", llmStatus: "queued" }))}
+            ${metricCard("Manager review calls", formatNumber(intelligenceTotals.managerReviewCalls), `${formatNumber(intelligenceTotals.riskFlagCalls)} deterministic risk-flag calls`, "risk", queueFilterUrl({ intelligenceQueue: "manager_review", managerReview: "1" }))}
+            ${metricCard("LLM queue state", formatNumber(intelligenceTotals.llmQueued), `${formatNumber(intelligenceTotals.llmCompleted)} reviewed, ${formatNumber(intelligenceTotals.llmFailed || 0)} failed, ${formatNumber(intelligenceTotals.llmNotRequested)} not requested`, "info", queueFilterUrl({ intelligenceQueue: "llm_queued", llmStatus: "queued" }))}
             ${metricCard("Database", "SQLite", intelligence.dbPath ? "Call intelligence is persisted locally" : "No database summary available", "info")}
           </div>
         </section>
@@ -1994,14 +3354,14 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel-header">
             <div>
               <h2>Intelligence Review Queue</h2>
-              <p class="muted small">${escapeHtml(intelligenceQueueLabel(activeIntelligenceQueue))} queue. Filtered call rows below preserve the New/Warm Business scope.</p>
+              <p class="muted small">${escapeHtml(intelligenceQueueLabel(activeIntelligenceQueue))} queue. Filtered rows show deterministic, LLM, and manager-review provenance separately.</p>
             </div>
             ${badge(`${formatNumber(intelligenceQueueRows.length)} calls shown`, intelligenceQueueRows.length ? "notice" : "neutral")}
           </div>
           <div class="panel-body">
             <div class="stack" style="margin-bottom: 12px;">
-              <a class="filter-link ${activeSegment === "new" && activeIntelligenceQueue === "waste" ? "selected" : ""}" href="${escapeHtml(dashboardFilterUrl({ businessSegment: "new", intelligenceQueue: "waste", wasteRisk: "1" }, "intelligence-queue"))}">New Business waste</a>
-              <a class="filter-link ${activeSegment === "warm" && activeIntelligenceQueue === "waste" ? "selected" : ""}" href="${escapeHtml(dashboardFilterUrl({ businessSegment: "warm", intelligenceQueue: "waste", wasteRisk: "1" }, "intelligence-queue"))}">Warm Business waste</a>
+              <a class="filter-link ${activeSegment === "new" && activeIntelligenceQueue === "waste" ? "selected" : ""}" href="${escapeHtml(dashboardFilterUrl({ ...globalFilterQuery, businessSegment: "new", intelligenceQueue: "waste", wasteRisk: "1" }, "intelligence-queue"))}">New Business utilisation review</a>
+              <a class="filter-link ${activeSegment === "warm" && activeIntelligenceQueue === "waste" ? "selected" : ""}" href="${escapeHtml(dashboardFilterUrl({ ...globalFilterQuery, businessSegment: "warm", intelligenceQueue: "waste", wasteRisk: "1" }, "intelligence-queue"))}">Warm Business utilisation review</a>
               <a class="filter-link ${activeIntelligenceQueue === "manager_review" ? "selected" : ""}" href="${escapeHtml(queueFilterUrl({ intelligenceQueue: "manager_review", managerReview: "1" }))}">Manager review</a>
               <a class="filter-link ${activeIntelligenceQueue === "llm_completed" ? "selected" : ""}" href="${escapeHtml(queueFilterUrl({ intelligenceQueue: "llm_completed", llmStatus: "completed" }))}">LLM completed</a>
               <a class="filter-link ${activeIntelligenceQueue === "llm_queued" ? "selected" : ""}" href="${escapeHtml(queueFilterUrl({ intelligenceQueue: "llm_queued", llmStatus: "queued" }))}">LLM queued</a>
@@ -2013,11 +3373,13 @@ function renderDashboard(analysis, options = {}) {
               { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(queueFilterUrl({ salesperson: row.salesperson, wasteRisk: "1", intelligenceQueue: "waste" }))}">${escapeHtml(row.salesperson || "Unknown")}</a>` },
               { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(queueFilterUrl({ source: row.source, wasteRisk: "1", intelligenceQueue: "waste" }))}">${escapeHtml(row.source || "Unknown source")}</a>` },
               { label: "Score", render: (row) => `<span class="mono">${formatNumber(row.lead_utilization_score)} / 5</span>` },
-              { label: "Lead state", render: (row) => row.lead_waste_risk ? badge("Waste-risk", "critical") : row.lead_high_quality_utilized ? badge("High quality", "success") : badge("Monitor", "neutral") },
-              { label: "Review", render: (row) => row.manager_review_required ? badge("Manager", "critical") : badge("No", "neutral") },
-              { label: "LLM", render: (row) => badge(row.llm_status || "not_requested", row.llm_status === "completed" ? "success" : row.llm_status === "queued" ? "notice" : row.llm_status === "failed" ? "critical" : "neutral") },
+              { label: "Lead state", render: (row) => row.lead_waste_risk ? badge("Utilisation review", "critical") : row.lead_high_quality_utilized ? badge("High quality", "success") : badge("Monitor", "neutral") },
+              { label: "Provenance", render: (row) => `${provenanceBadge("Deterministic")} ${provenanceBadge(llmReviewState(row))}` },
+              { label: "Review", render: (row) => row.manager_review_required ? provenanceBadge("Manager review needed") : provenanceBadge("Manager unprocessed") },
+              { label: "LLM", render: (row) => provenanceBadge(llmReviewState(row)) },
               { label: "Audit", render: (row) => `${badge(row.llm_result_quality_label || row.llm_status || "Not requested", toneForResultQuality(row.llm_result_quality || row.llm_status))}${row.llm_result_needs_rerun ? ` ${badge("Rerun", "critical")}` : ""}` },
-              { label: "Reason", render: (row) => `<span class="evidence-summary">${escapeHtml(row.lead_reason || row.brief_reason || row.evidence_snippet || "")}<a class="proof-link" href="/calls/${encodeURIComponent(row.call_id)}">Open proof</a></span>` }
+              { label: "Confidence", render: (row) => row.llm_status === "completed" && row.llm_confidence ? badge(formatConfidence(row.llm_confidence), "success") : badge("Confidence unavailable", "neutral") },
+              { label: "Reason", render: (row) => `<span class="evidence-summary">${escapeHtml(row.lead_reason || row.brief_reason || row.evidence_snippet || "Evidence unavailable")}<a class="proof-link" href="/calls/${encodeURIComponent(row.call_id)}">Open proof</a></span>` }
             ], intelligenceQueueRows, "No calls match this intelligence queue yet.")}
           </div>
         </section>
@@ -2026,14 +3388,14 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2>Lead Waste By Salesperson</h2>
-                <p class="muted small">Lead-level rollup from transcript intelligence. This is the first-priority management view.</p>
+              <h2>Utilisation Review By Salesperson</h2>
+                <p class="muted small">Lead-level deterministic rollup. Low-confidence or unusable transcript rows are review-only and should not be treated as final coaching conclusions without proof.</p>
               </div>
             </div>
             ${table([
               { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(queueFilterUrl({ salesperson: row.salesperson, wasteRisk: "1", intelligenceQueue: "waste" }))}">${escapeHtml(row.salesperson)}</a>` },
               { label: "Leads", render: (row) => formatNumber(row.leads) },
-              { label: "Waste-risk", render: (row) => formatNumber(row.wasteRiskLeads) },
+              { label: "Review signals", render: (row) => formatNumber(row.wasteRiskLeads) },
               { label: "Risk rate", render: (row) => formatRatioPercent(row.wasteRiskRate) },
               { label: "High-quality", render: (row) => formatNumber(row.highQualityLeads) },
               { label: "Repeated short", render: (row) => formatNumber(row.repeatedShortAttemptLeads) },
@@ -2044,14 +3406,14 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2>Source Quality Signals</h2>
-                <p class="muted small">Secondary view: lead waste and utilization by import source.</p>
+              <h2>Source Quality Signals</h2>
+                <p class="muted small">Secondary deterministic view by call CSV source. Confidence and evidence should be checked before drawing coaching conclusions.</p>
               </div>
             </div>
             ${table([
               { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(queueFilterUrl({ source: row.source, wasteRisk: "1", intelligenceQueue: "waste" }))}">${escapeHtml(row.source)}</a>` },
               { label: "Leads", render: (row) => formatNumber(row.leads) },
-              { label: "Waste-risk", render: (row) => formatNumber(row.wasteRiskLeads) },
+              { label: "Review signals", render: (row) => formatNumber(row.wasteRiskLeads) },
               { label: "Risk rate", render: (row) => formatRatioPercent(row.wasteRiskRate) },
               { label: "High-quality", render: (row) => formatNumber(row.highQualityLeads) },
               { label: "Repeated short", render: (row) => formatNumber(row.repeatedShortAttemptLeads) },
@@ -2063,18 +3425,17 @@ function renderDashboard(analysis, options = {}) {
         <section class="panel" id="lead-utilization">
           <div class="panel-header">
             <div>
-              <h2>Lead Utilization Proof</h2>
-              <p class="muted small">Lead-day metrics use stable IDs only. Click any number to inspect the contributing lead-days and calls.</p>
+              <h2>No-Contact Utilisation Proof</h2>
+              <p class="muted small">Matched-record metrics use source IDs only. This section does not rank live conversations or ambiguous one-dial records.</p>
             </div>
-            ${badge(`${formatNumber(leadTotals.stableLeadDaysWorked)} lead-days`, "neutral")}
+            ${badge(`${formatNumber(leadTotals.stableLeadDaysWorked)} matched records`, "neutral")}
           </div>
           <div class="panel-body metrics">
-            ${metricCard("Potential wasted indicators", formatNumber(leadTotals.wastedLeadIndicators), `${formatRatioPercent(leadTotals.riskRate)} of stable lead-days`, "risk", drilldownUrl("lead.wastedLeadIndicators", withSegment()))}
-            ${metricCard("Missed explicit callbacks", formatNumber(leadTotals.callbackMissedSameDay), `${formatNumber(leadTotals.callbackCompletedSameDay)} completed same day`, "warn", drilldownUrl("lead.callbackMissedSameDay", withSegment()))}
-            ${metricCard("Single-attempt no-contact", formatNumber(leadTotals.singleAttemptNoContact), "No live-human contact and no same-day retry", "risk", drilldownUrl("lead.singleAttemptNoContact", withSegment()))}
+            ${metricCard("Potential lead under-utilisation", formatNumber(leadReattemptTotals.oneDialNoContactNoLaterLeads || leadTotals.singleAttemptNoContact || 0), "One-dial no-contact with no later matching call observed", "risk", drilldownUrl("reattempt.oneDialNoContactNoLater", withSegment()))}
+            ${metricCard("One-dial no-contact", formatNumber(leadReattemptTotals.riskyOneDialNoContactLeads || 0), "Explicit no-contact or no usable speech evidence", "warn", drilldownUrl("reattempt.oneDialRiskyNoContact", withSegment()))}
+            ${metricCard("One-dial records", formatNumber(leadReattemptTotals.oneAndDoneLeads || 0), "Dialed once by the salesperson", "info", drilldownUrl("reattempt.oneAndDone", withSegment()))}
             ${metricCard("No-contact retry coverage", formatRatioPercent(leadTotals.noContactRetryRate), `${formatNumber(leadTotals.noContactRetriedSameDay)} of ${formatNumber(leadTotals.noContactLeadDays)} retried`, "info", drilldownUrl("lead.noContactRetriedSameDay", withSegment()))}
-            ${metricCard("Future callbacks pending", formatNumber(leadTotals.callbackFutureNeedsUpload), "Needs later CSV uploads before judgement", "info", drilldownUrl("lead.callbackFutureNeedsUpload", withSegment()))}
-            ${metricCard("Stable lead-days worked", formatNumber(leadTotals.stableLeadDaysWorked), `${formatNumber(leadTotals.callsWithoutStableLead)} calls lacked stable ID`, "good", drilldownUrl("lead.stableLeadDaysWorked", withSegment()))}
+            ${metricCard("Matched records dialed", formatNumber(leadReattemptTotals.leadsTouched || leadTotals.stableLeadDaysWorked || 0), `${formatNumber(leadReattemptTotals.callsWithoutStableLead || leadTotals.callsWithoutStableLead || 0)} calls lacked matching ID`, "good", drilldownUrl("reattempt.leadsTouched", withSegment()))}
           </div>
         </section>
 
@@ -2123,6 +3484,7 @@ function renderDashboard(analysis, options = {}) {
               { label: "Source", key: "sourceName" },
               { label: "Loaded", render: (row) => formatDateTime(row.lastImportedAt) },
               { label: "Calls", render: (row) => formatNumber(row.totals?.uniqueCalls) },
+              { label: "AI assistants", render: (row) => formatNumber(row.totals?.aiVoiceAssistantEncounters || 0) },
               { label: "Follow-ups", render: (row) => formatNumber(row.totals?.followUpRequired) },
               { label: "Mismatches", render: (row) => formatNumber(row.totals?.outcomeMismatches) }
             ], importRows, "No imports have been saved yet.")}
@@ -2163,22 +3525,22 @@ function renderDashboard(analysis, options = {}) {
         <section class="grid-2">
           <div class="panel" id="alerts">
             <div class="panel-header">
-              <h2>Alert Centre</h2>
+              <div>
+                <h2>Alert Centre</h2>
+                <p class="muted small">Lifecycle workflow for call-data alerts in the current global filter scope.</p>
+              </div>
               <div class="stack">
+                ${badge(`${formatNumber(alertSummary.active || persistence.counts.currentAlertEvents || 0)} active`, (alertSummary.active || persistence.counts.currentAlertEvents) ? "critical" : "neutral")}
                 ${badge(`${criticalAlerts} critical`, criticalAlerts ? "critical" : "neutral")}
                 ${badge(`${warningAlerts} warning`, warningAlerts ? "warning" : "neutral")}
                 ${badge(`${noticeAlerts} notice`, noticeAlerts ? "notice" : "neutral")}
-                ${badge(`${formatNumber(persistence.counts.acknowledgedAlerts)} acknowledged`, persistence.counts.acknowledgedAlerts ? "success" : "neutral")}
               </div>
             </div>
-            ${table([
-              { label: "Severity", render: (row) => badge(row.severity, row.severity === "critical" ? "critical" : row.severity === "warning" ? "warning" : "notice") },
-              { label: "Customer ID", render: (row) => customerIdCell(row) },
-              { label: "Category", key: "category" },
-              { label: "Owner", key: "owner" },
-              { label: "Call", render: (row) => callLink(row.callId) },
-              { label: "Proof", render: (row) => renderEvidenceSummary(row, { fallback: row.message }) }
-            ], alertRows, "No alert events found.")}
+            ${renderAlertCentre(alertRows, alertSummary, {
+              returnTo: alertReturnTo,
+              importId: persistence.currentImportId || data.persistence?.currentImportId || "",
+              filterSummary: data.filterSummary
+            })}
           </div>
 
           <div class="panel">
@@ -2194,8 +3556,12 @@ function renderDashboard(analysis, options = {}) {
               { label: "Customer ID", render: (row) => customerIdCell(row) },
               { label: "Salesperson", key: "salesperson" },
               { label: "Local outcome", render: (row) => badge(row.localOutcome, row.reviewRequired ? "warning" : "neutral") },
+              { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}` },
+              { label: "Provenance", render: (row) => `${provenanceBadge(row.localOutcomeProvenance || "Deterministic")} ${provenanceBadge(managerReviewState(row, persistence))}` },
+              { label: "Confidence", render: (row) => confidenceBadgeForRow(row) },
               { label: "Follow-up", key: "followUpStatus" },
-              { label: "Proof", render: (row) => renderEvidenceSummary(row) }
+              { label: "Proof", render: (row) => renderEvidenceSummary(row) },
+              { label: "Actions", render: (row) => `<div class="alert-actions">${managerReviewActionForm(row, "confirm", "Confirm", { returnTo: "/#alerts", importId: persistence.currentImportId || "", reviewScope: "call", source: "manager_review_queue" })}${managerReviewActionForm(row, "dismiss", "Dismiss", { returnTo: "/#alerts", importId: persistence.currentImportId || "", reviewScope: "call", source: "manager_review_queue" })}</div>` }
             ], reviewRows, "No calls need manager review.")}
           </div>
         </section>
@@ -2211,6 +3577,8 @@ function renderDashboard(analysis, options = {}) {
             { label: "Salesperson", key: "name" },
             { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ salesperson: row.name })) },
             { label: "Transcript coverage", render: (row) => formatPercent(row.transcriptCoverageRate) },
+            { label: "Confidence mix", render: (row) => `<span class="muted small">${escapeHtml(confidenceMix(row))}</span>` },
+            { label: "Review-only", render: (row) => formatNumber(row.reviewOnlySignals || 0) },
             { label: "Live-human", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ salesperson: row.name })) },
             { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ salesperson: row.name })) },
             { label: "Follow-up signals", render: (row) => dataLink("calls.followUpRequired", formatNumber(row.followUpRequired), withSegment({ salesperson: row.name })) },
@@ -2230,6 +3598,7 @@ function renderDashboard(analysis, options = {}) {
             { label: "Source", key: "name" },
             { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ source: row.name })) },
             { label: "Transcript coverage", render: (row) => formatPercent(row.transcriptCoverageRate) },
+            { label: "Confidence mix", render: (row) => `<span class="muted small">${escapeHtml(confidenceMix(row))}</span>` },
             { label: "Live-human", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ source: row.name })) },
             { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ source: row.name })) },
             { label: "Follow-up rate", render: (row) => dataLink("calls.followUpRequired", formatPercent(row.followUpRequiredRate), withSegment({ source: row.name })) },
@@ -2254,8 +3623,11 @@ function renderDashboard(analysis, options = {}) {
             { label: "Business", key: "businessSegmentLabel" },
             { label: "Duration", render: (row) => `${formatNumber(row.durationSeconds)}s` },
             { label: "Contact", key: "contactClassification" },
-            { label: "Local outcome", key: "localOutcome" },
-            { label: "Imported", key: "importedNoSale" },
+            { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}` },
+            { label: "Provenance", render: (row) => `${provenanceBadge(row.contactClassificationProvenance || "Deterministic")} ${provenanceBadge(managerReviewState(row, persistence))}` },
+            { label: "Confidence", render: (row) => confidenceBadgeForRow(row) },
+            { label: "Derived outcome", render: (row) => `${escapeHtml(row.localOutcome)}<br />${provenanceBadge(row.localOutcomeProvenance || "Deterministic")}${row.managerCorrectedOutcome ? `<br />${provenanceBadge("Manager-reviewed")} <span class="muted small">${escapeHtml(row.managerCorrectedOutcome)}</span>` : ""}` },
+            { label: "Raw NoSaleType", render: (row) => `${escapeHtml(row.importedNoSale)}<br />${provenanceBadge(row.rawImportedProvenance || "Raw imported")}` },
             { label: "Proof", render: (row) => renderEvidenceSummary(row) }
           ], explorerRows, "No call rows loaded.")}
           <details>
@@ -2270,6 +3642,7 @@ function renderDashboard(analysis, options = {}) {
             }, null, 2))}</pre>
           </details>
         </section>
+        </div>
       </main>
     </div>
     <script>

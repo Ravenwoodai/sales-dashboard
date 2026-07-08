@@ -12,8 +12,11 @@ const {
   submitTranscriptIntelligenceExtraction,
   submitTranscriptEvaluation
 } = require("./aiExecutionLayer");
-const { analyzeCsvText } = require("./analysis");
+const { analyzeCsvText, attachInternalItems, buildFilteredAnalysis, internalItemsFor } = require("./analysis");
 const { buildDrilldownResult, findCallProof } = require("./drilldown");
+const { normalizeFilterState } = require("./globalFilters");
+const { summarizeLeadReattemptRecords } = require("./leadReattemptAnalytics");
+const { summarizeSystemAudioRecords } = require("./systemAudioAnalytics");
 const {
   getIntelligenceSummary,
   listCallIntelligence,
@@ -24,15 +27,24 @@ const {
   resolveIntelligenceDbPath,
   saveLlmIntelligenceResult
 } = require("./intelligenceDatabase");
+const { readAllocationFile } = require("./allocationCoverage");
+const { activeReportsOnly, buildParkedAllocationDiagnostic, classifyReportVisibility } = require("./allocationParking");
+const { normalizeAlertEvent, resolveAlertLifecycleActor } = require("./alertLifecycle");
+const { normalizeManagerReview, resolveManagerReviewActor } = require("./managerReview");
 const { renderCallPage, renderDashboard, renderDrilldownPage, renderEmptyState, renderReportPage } = require("./dashboardRenderer");
+const { readTabularFile } = require("./sourceFile");
 const {
+  bulkUpdateAlertLifecycle,
+  bulkUpdateManagerReviews,
   dashboardPersistence,
   persistAnalysis,
   readStore,
   resolveStorePath,
   saveAiJobReference,
   saveGeneratedReport,
-  saveManagerReview
+  saveManagerReview,
+  updateManagerReview,
+  updateAlertLifecycle
 } = require("./storage");
 const { buildCallIntelligence } = require("./transcriptIntelligence");
 
@@ -51,6 +63,17 @@ function resolveCsvPath(argv = process.argv.slice(2), env = process.env) {
   }
   if (env.SALES_DASHBOARD_CSV_PATH) {
     return path.resolve(env.SALES_DASHBOARD_CSV_PATH);
+  }
+  return null;
+}
+
+function resolveAllocationPath(argv = process.argv.slice(2), env = process.env) {
+  const allocationFlagIndex = argv.findIndex((arg) => arg === "--allocations" || arg === "--allocations-path");
+  if (allocationFlagIndex >= 0 && argv[allocationFlagIndex + 1]) {
+    return path.resolve(argv[allocationFlagIndex + 1]);
+  }
+  if (env.SALES_DASHBOARD_ALLOCATIONS_PATH) {
+    return path.resolve(env.SALES_DASHBOARD_ALLOCATIONS_PATH);
   }
   return null;
 }
@@ -106,18 +129,51 @@ function saveBrandLogo(dataUrl, storePath) {
 }
 
 function attachPersistence(analysis, store, currentImportId = null) {
-  return {
+  return attachInternalItems({
     ...analysis,
     persistence: dashboardPersistence(store, currentImportId)
-  };
+  }, internalItemsFor(analysis));
+}
+
+function parkedAllocationForPath(allocationPath) {
+  if (!allocationPath) {
+    return buildParkedAllocationDiagnostic({ configured: false, readStatus: "not_configured" });
+  }
+
+  try {
+    const allocation = readAllocationFile(allocationPath);
+    return buildParkedAllocationDiagnostic({
+      configured: true,
+      sourceName: allocation.sourceName,
+      sourceType: allocation.sourceType,
+      sheetName: allocation.sheetName,
+      readStatus: "readable_but_parked"
+    });
+  } catch (error) {
+    return buildParkedAllocationDiagnostic({
+      configured: true,
+      sourceName: path.basename(allocationPath),
+      readStatus: "parked_read_error",
+      error: "Allocation source could not be read while parked."
+    });
+  }
+}
+
+function allocationDiagnosticFromState(state, allocationPath) {
+  return state.analysis?.parkedAllocation || parkedAllocationForPath(allocationPath);
 }
 
 function loadAnalysis(csvPath, options = {}) {
   const storePath = resolveStorePath(options);
+  const allocationPath = options.allocationPath || null;
+  const parkedAllocation = parkedAllocationForPath(allocationPath);
   if (!csvPath) {
     return {
       analysis: attachPersistence(
-        renderEmptyState("Set SALES_DASHBOARD_CSV_PATH or start with --csv to load a scheduled CSV export."),
+        {
+          ...renderEmptyState("Set SALES_DASHBOARD_CSV_PATH or start with --csv to load a scheduled CSV export."),
+          parkedAllocation
+        },
         readStore({ storePath })
       ),
       csvPath: null,
@@ -126,8 +182,12 @@ function loadAnalysis(csvPath, options = {}) {
   }
 
   try {
-    const csvText = fs.readFileSync(csvPath, "utf8");
-    const analysis = analyzeCsvText(csvText, { sourceName: path.basename(csvPath) });
+    const source = readTabularFile(csvPath);
+    const analysis = analyzeCsvText(source.csvText, {
+      sourceName: source.sourceName,
+      sourceType: source.sourceType,
+      parkedAllocation
+    });
     const persistence = persistAnalysis(analysis, { csvPath, storePath });
     const intelligence = replaceImportIntelligence(analysis, {
       storePath,
@@ -140,10 +200,10 @@ function loadAnalysis(csvPath, options = {}) {
         warm: getIntelligenceSummary({ storePath, importId: persistence.importRecord.id, businessSegment: "warm" })
       }
     };
-    const enrichedAnalysis = {
+    const enrichedAnalysis = attachInternalItems({
       ...analysis,
       intelligence: intelligenceSummary
-    };
+    }, internalItemsFor(analysis));
     return {
       analysis: attachPersistence(enrichedAnalysis, persistence.store, persistence.importRecord.id),
       csvPath,
@@ -152,7 +212,10 @@ function loadAnalysis(csvPath, options = {}) {
     };
   } catch (error) {
     return {
-      analysis: attachPersistence(renderEmptyState(`Unable to load CSV: ${error.message}`), readStore({ storePath })),
+      analysis: attachPersistence({
+        ...renderEmptyState(`Unable to load CSV: ${error.message}`),
+        parkedAllocation
+      }, readStore({ storePath })),
       csvPath,
       error: error.message
     };
@@ -166,17 +229,178 @@ function sendJson(response, statusCode, payload) {
 
 function publicAnalysis(analysis) {
   if (!analysis) return analysis;
-  const { drilldownRows, businessSegmentViews, ...publicFields } = analysis;
+  const { drilldownRows, businessSegmentViews, allocationCoverage, parkedAllocation, ...publicFields } = analysis;
+  const publicSystemAudio = publicFields.systemAudio ? { ...publicFields.systemAudio, records: [] } : publicFields.systemAudio;
+  const publicLeadReattempt = publicFields.leadReattempt ? { ...publicFields.leadReattempt, records: [] } : publicFields.leadReattempt;
   const publicBusinessSegmentViews = Object.fromEntries(
     Object.entries(businessSegmentViews || {}).map(([segment, view]) => {
       const { drilldownRows: segmentDrilldownRows, ...publicView } = view;
-      return [segment, publicView];
+      return [segment, {
+        ...publicView,
+        leadReattempt: publicView.leadReattempt ? { ...publicView.leadReattempt, records: [] } : publicView.leadReattempt,
+        systemAudio: publicView.systemAudio ? { ...publicView.systemAudio, records: [] } : publicView.systemAudio
+      }];
     })
   );
   return {
     ...publicFields,
+    leadReattempt: publicLeadReattempt,
+    systemAudio: publicSystemAudio,
     businessSegmentViews: publicBusinessSegmentViews
   };
+}
+
+function llmReviewState(row = {}) {
+  const status = String(row.llm_status || "not_requested").trim() || "not_requested";
+  const quality = String(row.llm_result_quality || "").trim();
+  const hasResult = Boolean(String(row.llm_result_json || "").trim());
+  const validQuality = ["complete_json", "salvaged_raw", "salvage_available"].includes(quality);
+  if (status === "completed" && hasResult && validQuality) return "LLM-reviewed";
+  if (status === "failed" || (status === "completed" && (!hasResult || !validQuality))) return "Failed";
+  if (status === "queued") return "Unprocessed";
+  if (status === "not_requested") return "Not requested";
+  return status || "not_requested";
+}
+
+function filterContextForStore(store, importId, intelligenceRows = []) {
+  const currentAlerts = (store.alertEvents || []).map(normalizeAlertEvent).filter((event) => {
+    if (event.parkedDataRelated) return false;
+    return !importId || event.importId === importId;
+  });
+  const currentReviews = (store.managerReviews || []).map(normalizeManagerReview).filter((review) => !importId || review.importId === importId);
+  const alertSeverityByCallId = new Map();
+  const alertStatusByCallId = new Map();
+  const alertEventById = new Map();
+  currentAlerts.forEach((event) => {
+    if (event.id) alertEventById.set(event.id, event);
+    if (!event.callId) return;
+    if (!alertSeverityByCallId.has(event.callId)) alertSeverityByCallId.set(event.callId, []);
+    alertSeverityByCallId.get(event.callId).push(event.severity || "notice");
+    if (!alertStatusByCallId.has(event.callId)) alertStatusByCallId.set(event.callId, []);
+    alertStatusByCallId.get(event.callId).push(event.status || "new");
+  });
+  const managerReviewStatusByCallId = new Map();
+  const managerReviewByCallId = new Map();
+  currentReviews.forEach((review) => {
+    if (!review.callId) return;
+    const existing = managerReviewByCallId.get(review.callId);
+    if (!existing || String(review.updatedAt || review.createdAt).localeCompare(String(existing.updatedAt || existing.createdAt)) >= 0) {
+      managerReviewByCallId.set(review.callId, review);
+      managerReviewStatusByCallId.set(review.callId, review.reviewStatus || "reviewed_confirmed");
+    }
+  });
+  const llmStatusByCallId = new Map();
+  const llmReviewLabelByCallId = new Map();
+  intelligenceRows.forEach((row) => {
+    llmStatusByCallId.set(row.call_id, row.llm_status || "not_requested");
+    llmReviewLabelByCallId.set(row.call_id, llmReviewState(row));
+  });
+  return {
+    currentImportId: importId || "current",
+    alertEventById,
+    alertSeverityByCallId,
+    alertStatusByCallId,
+    managerReviewByCallId,
+    managerReviewStatusByCallId,
+    llmStatusByCallId,
+    llmReviewLabelByCallId
+  };
+}
+
+function uniqueCount(rows, key) {
+  return new Set((rows || []).map((row) => row[key]).filter(Boolean)).size;
+}
+
+function ratio(numerator, denominator) {
+  if (!denominator) return 0;
+  return Math.round((Number(numerator || 0) / Number(denominator || 0)) * 1000) / 1000;
+}
+
+function average(rows, key) {
+  if (!rows.length) return 0;
+  return rows.reduce((sum, row) => sum + Number(row[key] || 0), 0) / rows.length;
+}
+
+function summarizeIntelligenceGroup(rows, key, fallback) {
+  const groups = new Map();
+  rows.forEach((row) => {
+    const value = String(row[key] || fallback || "Unknown").trim() || fallback || "Unknown";
+    if (!groups.has(value)) groups.set(value, []);
+    groups.get(value).push(row);
+  });
+  return Array.from(groups.entries()).map(([name, groupRows]) => {
+    const leads = uniqueCount(groupRows, "lead_key") || groupRows.length;
+    const wasteRiskLeads = uniqueCount(groupRows.filter((row) => Number(row.lead_waste_risk || 0)), "lead_key");
+    const highQualityLeads = uniqueCount(groupRows.filter((row) => Number(row.lead_high_quality_utilized || 0)), "lead_key");
+    const repeatedShortAttemptLeads = uniqueCount(groupRows.filter((row) => Number(row.lead_repeated_short_attempt || 0)), "lead_key");
+    return {
+      [key === "salesperson" ? "salesperson" : "source"]: name,
+      leads,
+      wasteRiskLeads,
+      highQualityLeads,
+      repeatedShortAttemptLeads,
+      wasteRiskRate: ratio(wasteRiskLeads, leads),
+      avgScore: average(groupRows, "lead_utilization_score")
+    };
+  }).sort((a, b) => b.wasteRiskLeads - a.wasteRiskLeads || b.leads - a.leads || String(a.salesperson || a.source).localeCompare(String(b.salesperson || b.source)));
+}
+
+function summarizeFilteredIntelligence(rows = []) {
+  const leadsIndexed = uniqueCount(rows, "lead_key") || rows.length;
+  const wasteRiskLeads = uniqueCount(rows.filter((row) => Number(row.lead_waste_risk || 0)), "lead_key");
+  const highQualityLeads = uniqueCount(rows.filter((row) => Number(row.lead_high_quality_utilized || 0)), "lead_key");
+  const repeatedShortAttemptLeads = uniqueCount(rows.filter((row) => Number(row.lead_repeated_short_attempt || 0)), "lead_key");
+  return {
+    schemaVersion: "sales_dashboard_intelligence_summary.filtered.v1",
+    totals: {
+      callsIndexed: rows.length,
+      leadsIndexed,
+      wasteRiskLeads,
+      highQualityLeads,
+      repeatedShortAttemptLeads,
+      managerReviewCalls: rows.filter((row) => Number(row.manager_review_required || 0)).length,
+      riskFlagCalls: rows.filter((row) => Number(row.risk_flag_exists || 0)).length,
+      avgLeadUtilizationScore: average(rows, "lead_utilization_score"),
+      llmQueued: rows.filter((row) => row.llm_status === "queued").length,
+      llmCompleted: rows.filter((row) => row.llm_status === "completed").length,
+      llmFailed: rows.filter((row) => row.llm_status === "failed").length,
+      llmNotRequested: rows.filter((row) => !row.llm_status || row.llm_status === "not_requested").length
+    },
+    salespeople: summarizeIntelligenceGroup(rows, "salesperson", "Unknown"),
+    sources: summarizeIntelligenceGroup(rows, "source", "Unknown source")
+  };
+}
+
+function allIntelligenceRowsForState(state, storePath) {
+  if (!state.importRecord?.id) return [];
+  return listCallIntelligence({
+    storePath,
+    importId: state.importRecord.id,
+    limit: 5000
+  });
+}
+
+function analysisForRequest(state, url, storePath) {
+  const store = readStore({ storePath });
+  const intelligenceRows = allIntelligenceRowsForState(state, storePath);
+  const context = filterContextForStore(store, state.importRecord?.id || null, intelligenceRows);
+  const filterState = normalizeFilterState(url.searchParams);
+  const filtered = buildFilteredAnalysis(state.analysis, filterState, context);
+  const filteredCallIds = new Set((filtered.drilldownRows || []).map((row) => row.callId));
+  return attachInternalItems({
+    ...filtered,
+    persistence: dashboardPersistence(store, state.importRecord?.id || null),
+    intelligence: filterState.active
+      ? summarizeFilteredIntelligence(intelligenceRows.filter((row) => filteredCallIds.has(row.call_id)))
+      : filtered.intelligence
+  }, internalItemsFor(filtered));
+}
+
+function updateAnalysisPreservingItems(analysis, patch) {
+  return attachInternalItems({
+    ...analysis,
+    ...patch
+  }, internalItemsFor(analysis));
 }
 
 function readJsonBody(request, maxBytes = 1024 * 1024) {
@@ -285,10 +509,11 @@ function aiJobIsFailed(status) {
 function createServer(options = {}) {
   const env = options.env || process.env;
   const csvPath = options.csvPath || resolveCsvPath(options.argv || process.argv.slice(2), env);
+  const allocationPath = options.allocationPath || resolveAllocationPath(options.argv || process.argv.slice(2), env);
   const storePath = resolveStorePath(options);
   const aiConfig = resolveAiExecutionConfig(env);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
-  let state = loadAnalysis(csvPath, { storePath });
+  let state = loadAnalysis(csvPath, { storePath, allocationPath });
 
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
@@ -315,6 +540,11 @@ function createServer(options = {}) {
         service: "sales-dashboard",
         csv_loaded: Boolean(state.csvPath && !state.error),
         csv_path_configured: Boolean(state.csvPath),
+        allocations_loaded: false,
+        allocations_path_configured: Boolean(allocationPath),
+        allocation_data_status: allocationDiagnosticFromState(state, allocationPath).status,
+        allocation_data_excluded_from_active_analytics: true,
+        allocation_active_metrics_available: false,
         store_path_configured: Boolean(storePath),
         current_import_id: state.importRecord?.id || null,
         ai_execution: publicAiExecutionStatus(aiConfig)
@@ -347,24 +577,30 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/summary") {
-      sendJson(response, 200, publicAnalysis(state.analysis));
+      sendJson(response, 200, publicAnalysis(analysisForRequest(state, url, storePath)));
+      return;
+    }
+
+    if (url.pathname === "/api/allocations" && request.method === "GET") {
+      sendJson(response, 200, allocationDiagnosticFromState(state, allocationPath));
       return;
     }
 
     if (url.pathname === "/api/source-quality" && request.method === "GET") {
       const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
       const requestedSegment = String(query.businessSegment || query.segment || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
       const businessSegment = requestedSegment === "new" || requestedSegment === "new_business"
         ? "new"
         : ["warm", "warm_business", "existing", "existing_business", "previous", "previous_sales"].includes(requestedSegment)
           ? "warm"
           : "";
-      const sourceQuality = businessSegment && state.analysis?.businessSegmentViews?.[businessSegment]?.sourceQuality
-        ? state.analysis.businessSegmentViews[businessSegment].sourceQuality
-        : state.analysis?.sourceQuality || {};
+      const sourceQuality = businessSegment && requestAnalysis?.businessSegmentViews?.[businessSegment]?.sourceQuality
+        ? requestAnalysis.businessSegmentViews[businessSegment].sourceQuality
+        : requestAnalysis?.sourceQuality || {};
       const minImportAgeDays = query.minImportAgeDays || query.days || query.importAgeDays || "";
-      const matchingCalls = minImportAgeDays && state.analysis
-        ? buildDrilldownResult(state.analysis, {
+      const matchingCalls = minImportAgeDays && requestAnalysis
+        ? buildDrilldownResult(requestAnalysis, {
           metric: "source.newBusinessImportedOlderThan",
           businessSegment,
           source: query.source || "",
@@ -383,21 +619,213 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/api/ai-voice-assistants" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      const requestedSegment = String(query.businessSegment || query.segment || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+      const businessSegment = requestedSegment === "new" || requestedSegment === "new_business"
+        ? "new"
+        : ["warm", "warm_business", "existing", "existing_business", "previous", "previous_sales"].includes(requestedSegment)
+          ? "warm"
+          : "";
+      const aiVoiceAssistant = businessSegment && requestAnalysis?.businessSegmentViews?.[businessSegment]?.aiVoiceAssistant
+        ? requestAnalysis.businessSegmentViews[businessSegment].aiVoiceAssistant
+        : requestAnalysis?.aiVoiceAssistant || {};
+      sendJson(response, 200, {
+        ...aiVoiceAssistant,
+        query: {
+          businessSegment
+        }
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/system-audio" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      const requestedSegment = String(query.businessSegment || query.segment || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+      const businessSegment = requestedSegment === "new" || requestedSegment === "new_business"
+        ? "new"
+        : ["warm", "warm_business", "existing", "existing_business", "previous", "previous_sales"].includes(requestedSegment)
+          ? "warm"
+          : "";
+      const source = String(query.source || "").trim();
+      const salesperson = String(query.salesperson || "").trim();
+      const subtype = String(query.systemAudioSubtype || query.subtype || "").trim();
+      const systemAudio = businessSegment && requestAnalysis?.businessSegmentViews?.[businessSegment]?.systemAudio
+        ? requestAnalysis.businessSegmentViews[businessSegment].systemAudio
+        : requestAnalysis?.systemAudio || {};
+      const hasRecordFilters = Boolean(source || salesperson || subtype);
+      const filteredRecords = hasRecordFilters
+        ? (systemAudio.records || []).filter((record) => {
+          if (source && record.source !== source) return false;
+          if (salesperson && record.salesperson !== salesperson) return false;
+          if (subtype && record.subtype !== subtype) return false;
+          return true;
+        })
+        : systemAudio.records || [];
+      const filteredSystemAudio = hasRecordFilters
+        ? {
+          schemaVersion: systemAudio.schemaVersion,
+          definitions: systemAudio.definitions,
+          ...summarizeSystemAudioRecords(filteredRecords)
+        }
+        : systemAudio;
+      sendJson(response, 200, {
+        ...filteredSystemAudio,
+        query: {
+          businessSegment,
+          source,
+          salesperson,
+          subtype,
+          matchingRecords: hasRecordFilters ? filteredRecords.length : null
+        }
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/lead-reattempts" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      const requestedSegment = String(query.businessSegment || query.segment || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+      const businessSegment = requestedSegment === "new" || requestedSegment === "new_business"
+        ? "new"
+        : ["warm", "warm_business", "existing", "existing_business", "previous", "previous_sales"].includes(requestedSegment)
+          ? "warm"
+          : "";
+      const source = String(query.source || "").trim();
+      const salesperson = String(query.salesperson || "").trim();
+      const region = String(query.region || query.callRegion || "").trim();
+      const leadReattempt = businessSegment && requestAnalysis?.businessSegmentViews?.[businessSegment]?.leadReattempt
+        ? requestAnalysis.businessSegmentViews[businessSegment].leadReattempt
+        : requestAnalysis?.leadReattempt || {};
+      const hasRecordFilters = Boolean(source || salesperson || region);
+      const filteredRecords = hasRecordFilters
+        ? (leadReattempt.records || []).filter((record) => {
+          if (source && record.source !== source) return false;
+          if (salesperson && record.salesperson !== salesperson) return false;
+          if (region && record.region !== region) return false;
+          return true;
+        })
+        : leadReattempt.records || [];
+      const filteredLeadReattempt = hasRecordFilters
+        ? {
+          schemaVersion: leadReattempt.schemaVersion,
+          definitions: leadReattempt.definitions,
+          ...summarizeLeadReattemptRecords(filteredRecords)
+        }
+        : leadReattempt;
+      sendJson(response, 200, {
+        ...filteredLeadReattempt,
+        query: {
+          businessSegment,
+          source,
+          salesperson,
+          region,
+          matchingRecords: hasRecordFilters ? filteredRecords.length : null
+        }
+      });
+      return;
+    }
+
     if (url.pathname === "/api/drilldown" && request.method === "GET") {
-      sendJson(response, 200, buildDrilldownResult(state.analysis, Object.fromEntries(url.searchParams.entries())));
+      sendJson(response, 200, buildDrilldownResult(analysisForRequest(state, url, storePath), Object.fromEntries(url.searchParams.entries())));
+      return;
+    }
+
+    if (url.pathname === "/api/alerts" && request.method === "GET") {
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_alerts_api.v1",
+        importId: state.importRecord?.id || null,
+        alerts: requestAnalysis.alerts || [],
+        summary: requestAnalysis.alertLifecycleSummary || null,
+        filterState: requestAnalysis.filterState || null,
+        filterSummary: requestAnalysis.filterSummary || null
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/alerts/bulk" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request);
+        const alertIds = Array.isArray(body.alertIds) ? body.alertIds : String(body.alertIds || body.alertId || "").split(",");
+        const result = bulkUpdateAlertLifecycle(alertIds, {
+          action: body.action || body.status,
+          note: body.note || body.reason || body.managerNotes || "",
+          actor: resolveAlertLifecycleActor(body),
+          importId: body.importId || state.importRecord?.id || "current"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, {
+          ok: true,
+          alerts: result.alertEvents,
+          missingAlertIds: result.missingAlertIds,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/alerts/") && url.pathname.endsWith("/history") && request.method === "GET") {
+      const alertId = decodeURIComponent(url.pathname.slice("/api/alerts/".length, -"/history".length));
+      const store = readStore({ storePath });
+      const event = (store.alertEvents || [])
+        .map(normalizeAlertEvent)
+        .find((item) => (item.id === alertId || item.alertId === alertId) && !item.parkedDataRelated && (!state.importRecord?.id || item.importId === state.importRecord.id));
+      if (!event) {
+        sendJson(response, 404, { ok: false, error: "Alert not found" });
+        return;
+      }
+      sendJson(response, 200, {
+        ok: true,
+        alertId,
+        status: event.status,
+        managerNotes: event.managerNotes || "",
+        lifecycleHistory: event.lifecycleHistory || []
+      });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/alerts/") && request.method === "PATCH") {
+      try {
+        const alertId = decodeURIComponent(url.pathname.replace("/api/alerts/", ""));
+        const body = await readJsonBody(request);
+        const result = updateAlertLifecycle(alertId, {
+          action: body.action || body.status,
+          note: body.note || body.reason || body.managerNotes || "",
+          actor: resolveAlertLifecycleActor(body),
+          importId: body.importId || state.importRecord?.id || "current"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, {
+          ok: true,
+          alert: result.alertEvent,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
       return;
     }
 
     if (url.pathname === "/api/intelligence/summary" && request.method === "GET") {
-      sendJson(response, 200, getIntelligenceSummary({
-        storePath,
-        importId: state.importRecord?.id || null,
-        businessSegment: url.searchParams.get("businessSegment") || url.searchParams.get("segment") || ""
-      }));
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      sendJson(response, 200, requestAnalysis.filterState?.active
+        ? requestAnalysis.intelligence
+        : getIntelligenceSummary({
+          storePath,
+          importId: state.importRecord?.id || null,
+          businessSegment: url.searchParams.get("businessSegment") || url.searchParams.get("segment") || ""
+        }));
       return;
     }
 
     if (url.pathname === "/api/intelligence/calls" && request.method === "GET") {
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      const filteredCallIds = new Set((requestAnalysis.drilldownRows || []).map((row) => row.callId));
       sendJson(response, 200, {
         calls: listCallIntelligence({
           storePath,
@@ -415,7 +843,7 @@ function createServer(options = {}) {
           callIds: url.searchParams.get("callIds") || "",
           limit: url.searchParams.get("limit") || 250,
           offset: url.searchParams.get("offset") || 0
-        })
+        }).filter((call) => !requestAnalysis.filterState?.active || filteredCallIds.has(call.call_id))
       });
       return;
     }
@@ -431,10 +859,9 @@ function createServer(options = {}) {
           importId: state.importRecord.id
         });
         const intelligenceSummary = currentIntelligenceSummary(storePath, state.importRecord.id);
-        state.analysis = {
-          ...state.analysis,
+        state.analysis = updateAnalysisPreservingItems(state.analysis, {
           intelligence: intelligenceSummary
-        };
+        });
         sendJson(response, 200, { ok: true, ...result, summary: intelligenceSummary });
       } catch (error) {
         sendJson(response, 500, { ok: false, error: error.message });
@@ -530,11 +957,10 @@ function createServer(options = {}) {
         }
 
         const summary = currentIntelligenceSummary(storePath, state.importRecord.id);
-        state.analysis = {
-          ...state.analysis,
+        state.analysis = updateAnalysisPreservingItems(state.analysis, {
           intelligence: summary,
           persistence: dashboardPersistence(readStore({ storePath }), state.importRecord.id)
-        };
+        });
         sendJson(response, errors.length ? 207 : 202, {
           ok: errors.length === 0,
           requested: calls.length,
@@ -602,11 +1028,10 @@ function createServer(options = {}) {
 
         const summary = currentIntelligenceSummary(storePath, importId);
         if (state.importRecord.id === importId) {
-          state.analysis = {
-            ...state.analysis,
+          state.analysis = updateAnalysisPreservingItems(state.analysis, {
             intelligence: summary,
             persistence: dashboardPersistence(readStore({ storePath }), state.importRecord.id)
-          };
+          });
         }
 
         sendJson(response, errors.length ? 207 : 200, {
@@ -650,17 +1075,30 @@ function createServer(options = {}) {
         });
         const summary = currentIntelligenceSummary(storePath, importId);
         if (state.importRecord.id === importId) {
-          state.analysis = {
-            ...state.analysis,
+          state.analysis = updateAnalysisPreservingItems(state.analysis, {
             intelligence: summary,
             persistence: dashboardPersistence(readStore({ storePath }), state.importRecord.id)
-          };
+          });
         }
 
         sendJson(response, 200, { ok: true, saved: { importId: saved.importId, callId: saved.callId, jobId: saved.jobId }, summary });
       } catch (error) {
         sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
       }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/calls/") && url.pathname.endsWith("/reviews") && request.method === "GET") {
+      const callId = decodeURIComponent(url.pathname.slice("/api/calls/".length, -"/reviews".length));
+      const store = readStore({ storePath });
+      const reviews = (store.managerReviews || [])
+        .map(normalizeManagerReview)
+        .filter((review) => review.callId === callId && (!state.importRecord?.id || review.importId === state.importRecord.id));
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_call_reviews_api.v1",
+        callId,
+        reviews
+      });
       return;
     }
 
@@ -732,14 +1170,17 @@ function createServer(options = {}) {
 
     if (url.pathname === "/api/reports" && request.method === "GET") {
       const store = readStore({ storePath });
-      sendJson(response, 200, { reports: store.reports });
+      sendJson(response, 200, {
+        reports: activeReportsOnly(store.reports),
+        hiddenReports: store.reports.length - activeReportsOnly(store.reports).length
+      });
       return;
     }
 
     if (url.pathname.startsWith("/api/reports/") && request.method === "GET") {
       const id = decodeURIComponent(url.pathname.replace("/api/reports/", ""));
       const store = readStore({ storePath });
-      const report = store.reports.find((item) => item.id === id);
+      const report = activeReportsOnly(store.reports).find((item) => item.id === id);
       if (!report) {
         sendJson(response, 404, { error: "Report not found" });
         return;
@@ -752,10 +1193,128 @@ function createServer(options = {}) {
       try {
         const body = await readJsonBody(request);
         const result = saveGeneratedReport(body, { storePath });
+        const reportVisibility = classifyReportVisibility(result.report);
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
-        sendJson(response, 201, { ok: true, report: result.report });
+        sendJson(response, 201, {
+          ok: true,
+          report: reportVisibility.hiddenFromActiveReports ? null : result.report,
+          reportHidden: reportVisibility.hiddenFromActiveReports,
+          reportVisibility
+        });
       } catch (error) {
         sendJson(response, 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/manager-reviews" && request.method === "GET") {
+      const store = readStore({ storePath });
+      const importId = url.searchParams.get("importId") || state.importRecord?.id || "";
+      const callId = url.searchParams.get("callId") || url.searchParams.get("call_id") || "";
+      const alertId = url.searchParams.get("alertId") || url.searchParams.get("alert_id") || "";
+      const status = url.searchParams.get("reviewStatus") || url.searchParams.get("status") || "";
+      const scope = url.searchParams.get("reviewScope") || url.searchParams.get("scope") || "";
+      const reviews = (store.managerReviews || []).map(normalizeManagerReview).filter((review) => {
+        if (importId && review.importId !== importId) return false;
+        if (callId && review.callId !== callId) return false;
+        if (alertId && review.alertId !== alertId) return false;
+        if (status && review.reviewStatus !== status) return false;
+        if (scope && review.reviewScope !== scope) return false;
+        return true;
+      });
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_manager_reviews_api.v1",
+        reviews,
+        persistence: dashboardPersistence(store, state.importRecord?.id || null)
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/manager-reviews" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request);
+        const result = saveManagerReview({
+          ...body,
+          reviewedBy: resolveManagerReviewActor(body),
+          importId: body.importId || state.importRecord?.id || "current"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 201, { ok: true, review: result.review, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/manager-reviews/bulk" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request);
+        const reviewIds = Array.isArray(body.reviewIds) ? body.reviewIds : String(body.reviewIds || body.reviewId || "").split(",");
+        const result = bulkUpdateManagerReviews(reviewIds, {
+          ...body,
+          reviewedBy: resolveManagerReviewActor(body),
+          importId: body.importId || state.importRecord?.id || "current"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, {
+          ok: true,
+          reviews: result.reviews,
+          missingReviewIds: result.missingReviewIds,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/manager-reviews/") && url.pathname.endsWith("/history") && request.method === "GET") {
+      const reviewId = decodeURIComponent(url.pathname.slice("/api/manager-reviews/".length, -"/history".length));
+      const store = readStore({ storePath });
+      const review = (store.managerReviews || [])
+        .map(normalizeManagerReview)
+        .find((item) => item.reviewId === reviewId || item.id === reviewId);
+      if (!review || (state.importRecord?.id && review.importId !== state.importRecord.id)) {
+        sendJson(response, 404, { ok: false, error: "Manager review not found" });
+        return;
+      }
+      sendJson(response, 200, {
+        ok: true,
+        reviewId,
+        reviewStatus: review.reviewStatus,
+        reviewHistory: review.reviewHistory || [],
+        corrections: review.corrections || []
+      });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/manager-reviews/") && request.method === "GET") {
+      const reviewId = decodeURIComponent(url.pathname.replace("/api/manager-reviews/", ""));
+      const store = readStore({ storePath });
+      const review = (store.managerReviews || [])
+        .map(normalizeManagerReview)
+        .find((item) => item.reviewId === reviewId || item.id === reviewId);
+      if (!review || (state.importRecord?.id && review.importId !== state.importRecord.id)) {
+        sendJson(response, 404, { ok: false, error: "Manager review not found" });
+        return;
+      }
+      sendJson(response, 200, { ok: true, review });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/manager-reviews/") && request.method === "PATCH") {
+      try {
+        const reviewId = decodeURIComponent(url.pathname.replace("/api/manager-reviews/", ""));
+        const body = await readJsonBody(request);
+        const result = updateManagerReview(reviewId, {
+          ...body,
+          reviewedBy: resolveManagerReviewActor(body),
+          importId: body.importId || state.importRecord?.id || "current"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, { ok: true, review: result.review, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
       }
       return;
     }
@@ -765,6 +1324,7 @@ function createServer(options = {}) {
         const body = await readJsonBody(request);
         const result = saveManagerReview({
           ...body,
+          reviewedBy: resolveManagerReviewActor(body),
           importId: body.importId || state.importRecord?.id || "current"
         }, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
@@ -780,19 +1340,62 @@ function createServer(options = {}) {
         const form = await readFormBody(request);
         const callId = form.get("callId") || "";
         const returnTo = form.get("returnTo") || `/calls/${encodeURIComponent(callId)}`;
-        saveManagerReview({
+        const reviewId = form.get("reviewId") || "";
+        const payload = {
           importId: form.get("importId") || state.importRecord?.id || "current",
           callId,
-          status: form.get("status") || "reviewed",
+          alertId: form.get("alertId") || "",
+          reviewScope: form.get("reviewScope") || "call",
+          signalName: form.get("signalName") || "",
+          action: form.get("action") || form.get("reviewAction") || "",
+          reviewStatus: form.get("reviewStatus") || form.get("status") || "",
+          source: form.get("source") || "call_detail",
+          reviewReason: form.get("reviewReason") || "",
+          escalationReason: form.get("escalationReason") || "",
+          note: form.get("note") || form.get("notes") || "",
+          fieldName: form.get("fieldName") || form.get("correctionField") || "",
+          managerCorrectedValue: form.get("managerCorrectedValue") || form.get("correctedValue") || "",
+          previousDisplayValue: form.get("previousDisplayValue") || "",
+          rawValue: form.get("rawValue") || "",
+          deterministicValue: form.get("deterministicValue") || "",
+          llmValue: form.get("llmValue") || "",
+          correctionReason: form.get("correctionReason") || "",
+          evidenceAssessment: form.get("evidenceAssessment") || "",
           confirmedOutcome: form.get("confirmedOutcome") || "",
           confirmedFollowUpRequired: form.get("confirmedFollowUpRequired") === "on",
-          notes: form.get("notes") || "",
-          reviewedBy: form.get("reviewedBy") || "Manager"
-        }, { storePath });
+          reviewedBy: resolveManagerReviewActor(form)
+        };
+        if (reviewId) updateManagerReview(reviewId, payload, { storePath });
+        else saveManagerReview(payload, { storePath });
+        state.analysis = attachPersistence(state.analysis, readStore({ storePath }), state.importRecord?.id || null);
         response.writeHead(303, { Location: returnTo });
         response.end();
       } catch (error) {
         sendJson(response, 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/alerts" && request.method === "POST") {
+      try {
+        const form = await readFormBody(request);
+        const alertIds = [
+          ...form.getAll("alertIds"),
+          form.get("alertId") || ""
+        ].map((id) => String(id || "").trim()).filter(Boolean);
+        const returnTo = form.get("returnTo") || "/#alerts";
+        const action = form.get("action") || "";
+        const note = form.get("note") || form.get("reason") || "";
+        const actor = resolveAlertLifecycleActor(form);
+        const importId = form.get("importId") || state.importRecord?.id || "current";
+        const result = alertIds.length > 1
+          ? bulkUpdateAlertLifecycle(alertIds, { action, note, actor, importId }, { storePath })
+          : updateAlertLifecycle(alertIds[0], { action, note, actor, importId }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: returnTo });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
       }
       return;
     }
@@ -834,7 +1437,7 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/reload" && request.method === "POST") {
-      state = loadAnalysis(csvPath, { storePath });
+      state = loadAnalysis(csvPath, { storePath, allocationPath });
       sendJson(response, state.error ? 500 : 200, {
         ok: !state.error,
         error: state.error,
@@ -847,7 +1450,7 @@ function createServer(options = {}) {
     if (url.pathname.startsWith("/reports/") && request.method === "GET") {
       const id = decodeURIComponent(url.pathname.replace("/reports/", ""));
       const store = readStore({ storePath });
-      const report = store.reports.find((item) => item.id === id);
+      const report = activeReportsOnly(store.reports).find((item) => item.id === id);
       response.writeHead(report ? 200 : 404, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
@@ -857,7 +1460,7 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/drilldown" && request.method === "GET") {
-      const result = buildDrilldownResult(state.analysis, Object.fromEntries(url.searchParams.entries()));
+      const result = buildDrilldownResult(analysisForRequest(state, url, storePath), Object.fromEntries(url.searchParams.entries()));
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
@@ -870,7 +1473,9 @@ function createServer(options = {}) {
       const callId = decodeURIComponent(url.pathname.replace("/calls/", ""));
       const call = findCallProof(state.analysis, callId);
       const store = readStore({ storePath });
-      const reviews = store.managerReviews.filter((review) => review.callId === callId);
+      const reviews = store.managerReviews
+        .map(normalizeManagerReview)
+        .filter((review) => review.callId === callId && (!state.importRecord?.id || review.importId === state.importRecord.id));
       const intelligenceAudit = state.importRecord?.id
         ? listCallIntelligence({
           storePath,
@@ -910,6 +1515,8 @@ function createServer(options = {}) {
     });
     const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
     const intelligenceQueue = url.searchParams.get("intelligenceQueue") || "waste";
+    const dashboardAnalysis = analysisForRequest(state, url, storePath);
+    const filteredCallIds = new Set((dashboardAnalysis.drilldownRows || []).map((row) => row.callId));
     const defaultQueueFilters = {
       waste: { wasteRisk: "1" },
       manager_review: { managerReview: "1" },
@@ -931,9 +1538,9 @@ function createServer(options = {}) {
         llmStatus: url.searchParams.get("llmStatus") || defaultQueueFilters.llmStatus || "",
         callIds: url.searchParams.get("callIds") || "",
         limit: url.searchParams.get("intelligenceLimit") || 80
-      })
+      }).filter((call) => !dashboardAnalysis.filterState?.active || filteredCallIds.has(call.call_id))
       : [];
-    response.end(renderDashboard(state.analysis, {
+    response.end(renderDashboard(dashboardAnalysis, {
       businessSegment: activeBusinessSegment,
       intelligenceQueue,
       intelligenceCalls
@@ -947,8 +1554,10 @@ function startServer(options = {}) {
   const server = createServer(options);
   server.listen(port, host, () => {
     const csvPath = resolveCsvPath(options.argv || process.argv.slice(2), options.env || process.env);
+    const allocationPath = resolveAllocationPath(options.argv || process.argv.slice(2), options.env || process.env);
     console.log(`Sales Dashboard listening on http://${host}:${port}`);
     console.log(csvPath ? `CSV source: ${csvPath}` : "CSV source: not configured");
+    console.log(allocationPath ? "Allocation source configured but parked from active analytics" : "Allocation source: not configured");
   });
   return server;
 }
@@ -959,6 +1568,7 @@ if (require.main === module) {
 
 module.exports = {
   resolveCsvPath,
+  resolveAllocationPath,
   loadAnalysis,
   attachPersistence,
   createServer,

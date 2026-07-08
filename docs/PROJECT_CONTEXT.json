@@ -1,16 +1,22 @@
 {
   "system_name": "Sales Dashboard",
-  "overview": "Sales Dashboard is a local Node.js web app for scheduled CSV sales-call transcript exports. It profiles import quality, deduplicates calls, runs deterministic local transcript evaluation, optionally submits local model jobs through the AI Execution Layer, persists derived local history, and renders a manager-facing dashboard without using unsupported phone/date, sales, or revenue assumptions.",
-  "objective": "Surface contact quality, meaningful conversations, follow-up signals, imported-outcome mismatches, source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries.",
+  "overview": "Sales Dashboard is a local Node.js web app for scheduled CSV/XLSX sales-call transcript exports. It profiles import quality, deduplicates calls, runs deterministic local transcript evaluation, parks optional campaign/allocation imports outside active analytics, optionally submits local model jobs through the AI Execution Layer, persists derived local history, and renders a manager-facing dashboard without using unsupported phone/date, sales, or revenue assumptions.",
+  "objective": "Surface contact quality, meaningful conversations, follow-up signals, lead reattempt behaviour, imported-outcome mismatches, call-CSV source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries. Preserve separate campaign/allocation data only as parked diagnostics.",
   "entities": [
-    "CSV import",
+    "CSV/XLSX import",
     "Canonical call",
     "Local call evaluation",
     "Evidence snippet",
+    "Lead reattempt bucket",
     "Alert event",
+    "Alert lifecycle action",
     "Manager review queue item",
     "Manager review record",
+    "Manager review correction",
+    "Manager review history event",
     "Generated report",
+    "Global filter state",
+    "Parked allocation import diagnostic",
     "Local AI job reference",
     "Salesperson scorecard",
     "Source/list quality row",
@@ -19,28 +25,41 @@
   "flow": {
     "steps": [
       "Start with node src/main.js --csv \"C:\\Users\\User\\Downloads\\July 1 Data.csv\" or set SALES_DASHBOARD_CSV_PATH.",
-      "Parse the CSV with src/csvParser.js.",
-      "Deduplicate by call_id and ignore privacy-reduced or invalid fields for analytics.",
+      "Optionally provide --allocations <path> or SALES_DASHBOARD_ALLOCATIONS_PATH for a parked allocation CSV/XLSX diagnostic.",
+      "Parse CSV/XLSX first-sheet tabular inputs with src/sourceFile.js, src/csvParser.js, and src/xlsxReader.js.",
+      "Deduplicate calls by call_id, ignore privacy-reduced fields for analytics, and parse valid customer import/create dates only for source-quality Record Age.",
       "Evaluate each transcript locally with deterministic rules in src/transcriptEvaluator.js.",
       "Link follow-up signals through stable source IDs only.",
-      "Build metrics, alerts, sanitized evaluation rows, and explorer rows in src/analysis.js.",
-      "Persist derived import history, evaluation artifacts, alert/review state, and reports through src/storage.js.",
+      "Build active call/transcript metrics, deterministic one-dial lead reattempt buckets, parked allocation status, alerts, sanitized evaluation rows, and explorer rows in src/analysis.js.",
+      "Apply shared global call/transcript filters with src/globalFilters.js for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.",
+      "Merge alert lifecycle state with generated call-data alerts using src/alertLifecycle.js.",
+      "Apply governed manager review overlays from src/managerReview.js and src/storage.js so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.",
+      "Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, and reports through src/storage.js.",
+      "Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.",
       "Submit optional local model transcript jobs through src/aiExecutionLayer.js and C:\\Users\\User\\Desktop\\ai-execution-layer.",
       "Render the dashboard through src/dashboardRenderer.js."
     ],
     "run_command": "node src/main.js",
     "sample_data_run_command": "node src/main.js --csv \"C:\\Users\\User\\Downloads\\July 1 Data.csv\"",
+    "allocation_run_command": "node src/main.js --csv \"C:\\Users\\User\\Downloads\\CallData 07.07.2026.xlsx\" --allocations \"C:\\Users\\User\\Downloads\\allocations 07.07.2026.xlsx\"",
     "test_command": "node --test tests/*.test.js"
   },
   "architecture": [
-    "src/main.js: local HTTP server, health route, summary API, and reload route",
+    "src/main.js: local HTTP server, health route, summary API, allocation API, and reload route",
     "src/csvParser.js: CSV parsing boundary",
+    "src/sourceFile.js: CSV/XLSX source-file adapter",
+    "src/xlsxReader.js: minimal XLSX first-sheet reader using built-in Node modules",
+    "src/allocationCoverage.js: preserved allocation workbook parser, parked from active analytics",
+    "src/allocationParking.js: parked allocation diagnostic, stale report classification, and historical parked-data filtering helpers",
+    "src/globalFilters.js: shared active call/transcript filter state, option generation, missing-value buckets, and denominator summaries",
+    "src/alertLifecycle.js: alert status, active/closed count, server-resolved local actor, manager note, and lifecycle-history helpers",
+    "src/managerReview.js: manager review status/scope/correction allowlist, local actor resolution, correction overlay, and review-history helpers",
     "src/transcriptEvaluator.js: local deterministic call evaluator",
-    "src/analysis.js: data profiling, metrics, alert construction, and sanitized rows",
-    "src/storage.js: ignored local JSON store, import artifact writer, generated report saver, and manager review persistence",
+    "src/analysis.js: data profiling, active/filtered call-transcript metrics, deterministic lead reattempt buckets, parked allocation status, alert construction, manager-review governance overlays, and sanitized rows",
+    "src/storage.js: ignored local JSON store, import artifact writer, generated report saver, active report visibility view, alert lifecycle persistence, and manager review correction/history persistence",
     "src/aiExecutionLayer.js: optional local AI Execution Layer client for transcript jobs",
     "src/dashboardRenderer.js: HTML rendering and escaping layer",
-    "tests/analysis.test.js: parser and evaluator verification",
+    "tests/analysis.test.js: parser, evaluator, parked allocation regression, and date-handling verification",
     "tests/storage.test.js: persistence and report-library verification"
   ],
   "agents": {
@@ -59,17 +78,18 @@
     "run_command": "node src/main.js",
     "open_url": "http://127.0.0.1:3000",
     "healthcheck_url": "http://127.0.0.1:3000/health",
+    "alerts_api": "http://127.0.0.1:3000/api/alerts",
     "imports_api": "http://127.0.0.1:3000/api/imports",
     "reports_api": "http://127.0.0.1:3000/api/reports",
+    "allocations_api": "http://127.0.0.1:3000/api/allocations",
+    "manager_reviews_api": "http://127.0.0.1:3000/api/manager-reviews",
     "ai_status_api": "http://127.0.0.1:3000/api/ai/status",
     "local_store": "data/store/state.json",
     "verification": "node --test tests/*.test.js"
   },
   "guardrails": {
     "ignored_fields": [
-      "dialled_phone_number",
-      "CustomerCreateDate",
-      "CustomerImportDate"
+      "dialled_phone_number"
     ],
     "unsupported_metrics": [
       "confirmed sales conversion",
@@ -78,7 +98,13 @@
       "revenue attribution",
       "order value generated by a call"
     ],
-    "phone_matching": "Use stable source IDs only. Do not use partial phone values for matching or display."
+    "phone_matching": "Use stable source IDs only. Do not use partial phone values for matching or display.",
+    "record_age": "Source-quality Record Age uses valid CustomerImportDate first and valid CustomerCreateDate second. Malformed date fragments are treated as missing and raw date fields stay out of proof tables.",
+    "allocation_campaign_attribution": "Campaign/allocation imports are parked and excluded from active metrics, reports, alerts, filters, source/list quality, scorecards, and AI transcript context.",
+    "alert_lifecycle": "Active alert counts include only new, acknowledged, and in_progress call-data alerts. Resolved, dismissed, false_positive, and parked alerts are excluded from active totals. Lifecycle actors are server-resolved as local_manager until authentication exists.",
+    "manager_review": "Manager review statuses and corrections are separate from alert lifecycle. Corrections are local_manager-attributed overlays and do not overwrite raw imported, deterministic, LLM, or generated alert evidence.",
+    "lead_reattempt": "One-dial records are neutral until deterministic evidence separates valid one-dial outcomes, risky one-dial no-contact rows, and rows needing manager or later local-LLM review.",
+    "report_visibility": "Normal report APIs and dashboard report lists expose active non-parked reports only. Parked allocation, stale stable-target, and superseded lead-day report records remain preserved internally."
   },
   "sources": [
     "/docs/PROJECT.md",
@@ -89,6 +115,6 @@
     "/docs/AGENT_CONTEXT.md",
     "/runtime/AUTONOMOUS_BACKLOG.md"
   ],
-  "generated_at": "2026-07-05T09:15:00.000Z",
+  "generated_at": "2026-07-08T05:20:00.000Z",
   "confidence": "high"
 }

@@ -1,38 +1,56 @@
 # Architecture
 
 ## System Overview
-Sales Dashboard is a local Node.js web application that turns scheduled CSV call exports into an in-memory operational dashboard.
+Sales Dashboard is a local Node.js web application that turns scheduled CSV/XLSX call exports into an in-memory operational dashboard. Optional campaign/allocation workbooks are parked and retained only as inactive diagnostics.
 The MVP avoids a database and external AI calls so the first version is private, testable, and easy to reason about.
 
 ## Runtime Flow
-1. `src/main.js` resolves the CSV path from `--csv`, `--csv-path`, or `SALES_DASHBOARD_CSV_PATH`.
-2. The CSV file is read from its original location and is not copied into the repository.
-3. `src/csvParser.js` parses the CSV with quoted-field support.
-4. `src/analysis.js` deduplicates by `call_id`, profiles coverage, applies privacy guardrails, links follow-ups through stable IDs only, and computes metrics.
-5. `src/transcriptEvaluator.js` performs deterministic local transcript classification.
-6. `src/storage.js` persists derived import history, sanitized evaluation artifacts, alert events, manager reviews, and report records under `data/`.
-7. `src/aiExecutionLayer.js` optionally submits selected transcript jobs to the local AI Execution Layer at `C:\Users\User\Desktop\ai-execution-layer` through `POST /run-task`.
-8. `src/dashboardRenderer.js` renders the dashboard and sanitized tables.
-9. `/api/summary`, `/api/imports`, `/api/reports`, `/api/reviews`, and `/api/ai/*` expose local JSON workflows.
+1. `src/main.js` resolves the call export path from `--csv`, `--csv-path`, or `SALES_DASHBOARD_CSV_PATH`, and the optional allocation path from `--allocations`, `--allocations-path`, or `SALES_DASHBOARD_ALLOCATIONS_PATH`.
+2. Source files are read from their original locations and are not copied into the repository.
+3. `src/sourceFile.js`, `src/csvParser.js`, and `src/xlsxReader.js` normalize CSV/XLSX first-sheet tabular inputs into the same CSV-shaped analysis flow.
+4. `src/analysis.js` deduplicates by `call_id`, profiles coverage, applies privacy guardrails, links follow-ups through stable IDs only, computes active call/transcript metrics, splits one-dial reattempt records into valid/risky/review buckets, and marks allocation imports as parked when configured.
+5. `src/allocationCoverage.js` remains the preserved parser for separate allocation workbooks, but its totals/reconciliation model is not used by active dashboard analytics.
+6. `src/globalFilters.js` normalizes one active filter state and applies it to call/transcript metrics, alert rows, drill-downs, and rendered explorer rows.
+7. `src/alertLifecycle.js` defines alert workflow statuses, active/closed counts, non-destructive lifecycle actions, and audit-history normalization.
+8. `src/managerReview.js` defines governed review statuses, scopes, correction allowlists, local actor resolution, correction records, and review history.
+9. `src/transcriptEvaluator.js` performs deterministic local transcript classification.
+10. `src/storage.js` persists derived import history, sanitized evaluation artifacts, parked allocation metadata, alert lifecycle events/history, manager reviews, and report records under `data/`.
+11. Normal report APIs and dashboard report lists classify stored reports and expose only active reports; parked allocation, stale stable-target, and superseded report content remains preserved in storage but hidden from normal views.
+12. `src/aiExecutionLayer.js` optionally submits selected transcript jobs to the local AI Execution Layer at `C:\Users\User\Desktop\ai-execution-layer` through `POST /run-task`.
+13. `src/dashboardRenderer.js` renders the dashboard and sanitized tables.
+14. `/api/summary`, `/api/alerts`, `/api/manager-reviews`, `/api/calls/<call-id>/reviews`, `/api/allocations`, `/api/imports`, `/api/reports`, `/api/reviews`, and `/api/ai/*` expose local JSON workflows.
 
 ## Module Responsibilities
-- `src/main.js`: HTTP server, CSV path resolution, health and summary routes.
+- `src/main.js`: HTTP server, call/allocation path resolution, health and summary routes.
 - `src/csvParser.js`: CSV parsing only.
+- `src/sourceFile.js`: CSV/XLSX source-file adapter.
+- `src/xlsxReader.js`: minimal XLSX first-sheet reader using built-in Node modules.
+- `src/allocationCoverage.js`: preserved aggregate allocation parser; parked from active analytics.
+- `src/allocationParking.js`: shared parked-allocation diagnostic, stale report classification, and historical report filtering helpers.
+- `src/globalFilters.js`: shared active call/transcript filter state, option generation, missing-value buckets, and denominator summaries.
+- `src/alertLifecycle.js`: alert lifecycle status definitions, active/closed counting rules, note/history helpers, and alert-event normalization.
+- `src/managerReview.js`: manager review status/scope/correction validation, local actor resolution, non-destructive correction overlays, and review-history normalization.
 - `src/transcriptEvaluator.js`: local call-level transcript and outcome evaluation.
-- `src/analysis.js`: import profiling, deduplication, metrics, follow-up linking, alert construction, and sanitized explorer rows.
-- `src/storage.js`: local JSON store, import artifact writer, generated report saver, and manager review persistence.
+- `src/analysis.js`: import profiling, deduplication, active/filtered call-transcript metrics, deterministic lead reattempt buckets, parked allocation status, follow-up linking, alert construction, manager-review governance overlays, and sanitized explorer rows.
+- `src/storage.js`: local JSON store, import artifact writer, generated report saver, alert lifecycle persistence, manager review correction/history persistence, and active report visibility.
 - `src/aiExecutionLayer.js`: optional client for local Execution Layer status, job submission, and job polling.
 - `src/dashboardRenderer.js`: HTML rendering and escaping.
 - `tests/analysis.test.js`: parser, privacy, mismatch, and follow-up-linking coverage.
 - `tests/storage.test.js`: import persistence, report library, manager review, and store-path coverage.
 
 ## Data Boundaries
-- Raw CSV values stay in process memory only.
+- Raw CSV/XLSX values stay in process memory only.
 - Derived local artifacts are stored under `data/`, which is ignored by Git.
 - Redacted phone values are never used for matching or displayed in dashboard rows.
 - Invalid customer date/import date values are listed as ignored fields.
 - Transcript text is treated as untrusted display content and escaped before rendering.
 - Local evaluator outputs are derived data and are persisted as versioned local import artifacts.
+- Campaign/allocation imports are parked. They are retained as inactive metadata and excluded from active metrics, reports, alerts, filters, source/list quality, scorecards, and AI transcript context.
+- One-dial reattempt records are neutral until deterministic evidence separates valid terminal outcomes, risky no-contact/no-pitch rows, and ambiguous rows needing manager or later local-LLM review.
+- Alert lifecycle actions are non-destructive overlays on generated call-data alerts. Active alerts are `new`, `acknowledged`, and `in_progress`; `resolved`, `dismissed`, `false_positive`, and parked alerts do not inflate active alert counts.
+- Alert lifecycle actor attribution uses the server-side local placeholder `local_manager` until authentication exists; client-supplied actor fields are not authoritative.
+- Manager review actions are separate non-destructive overlays on calls/signals/alerts. Review corrections store previous/displayed/manager-corrected values, correction reasons, evidence assessment, notes, actor, timestamp, and history without overwriting raw imported fields, deterministic outputs, LLM outputs, or generated alert evidence.
+- Stored reports can remain in local history, but normal report APIs and UI expose only active reports and hide parked/stale allocation-like report content.
 - Local model jobs are submitted only through the Execution Layer API; Sales Dashboard stores job references, not raw model outputs.
 
 ## Future Architecture

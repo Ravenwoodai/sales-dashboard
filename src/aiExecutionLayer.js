@@ -70,6 +70,58 @@ function hash(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
 
+function normalizedFieldName(value) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isParkedAllocationField(field) {
+  const normalized = normalizedFieldName(field);
+  if (!normalized) return false;
+  const blocked = new Set([
+    "allocationcoverage",
+    "allocationrows",
+    "allocationtotals",
+    "allocationonlyrows",
+    "callsonlyrows",
+    "campaignrows",
+    "reconciliationrows",
+    "reconciliationstatus",
+    "allocation_coverage",
+    "allocation_rows",
+    "allocation_totals",
+    "allocation_only_rows",
+    "calls_only_rows",
+    "campaign_rows",
+    "reconciliation_rows",
+    "reconciliation_status",
+    "lead_campaign",
+    "qty_allocated",
+    "qty_actioned",
+    "qty_remaining",
+    "sales_manager",
+    "allocated",
+    "actioned",
+    "remaining"
+  ]);
+  if (blocked.has(normalized)) return true;
+  if (/^allocation(_|$)/.test(normalized)) return true;
+  if (/^campaign(_|$)/.test(normalized)) return true;
+  return normalized.includes("reconciliation");
+}
+
+function safeRawFieldsForAi(rawFields = {}, omittedFields = []) {
+  const omitted = new Set(omittedFields.map(normalizedFieldName));
+  return Object.fromEntries(
+    Object.entries(rawFields || {}).filter(([key]) => {
+      const normalized = normalizedFieldName(key);
+      return !omitted.has(normalized) && !isParkedAllocationField(key);
+    })
+  );
+}
+
 function buildTranscriptEvaluationInput(call, options = {}) {
   if (!call) throw new Error("call is required");
   return {
@@ -77,6 +129,7 @@ function buildTranscriptEvaluationInput(call, options = {}) {
     instructions: [
       "Evaluate only the supplied transcript and deterministic baseline.",
       "Do not invent contact details, sales outcomes, or follow-up actions.",
+      "Do not use parked campaign/allocation import data for classification, scoring, source inference, alerts, or coaching.",
       "Return compact JSON with classification, follow_up_assessment, risks, evidence_used, limitations, and confidence."
     ],
     source: {
@@ -97,6 +150,16 @@ function buildTranscriptEvaluationInput(call, options = {}) {
       follow_up_channel: call.followUpChannel,
       transcript_quality: call.transcriptQuality,
       duration_seconds: call.durationSeconds,
+      ai_voice_assistant: {
+        detected: Boolean(call.aiVoiceAssistantDetected),
+        confidence: call.aiVoiceAssistantConfidence || 0,
+        response_classification: call.aiVoiceAssistantResponse || "not_encountered",
+        handled_successfully: Boolean(call.aiVoiceAssistantHandledSuccessfully),
+        bailed: Boolean(call.aiVoiceAssistantBailed),
+        tactics: call.aiVoiceAssistantTactics || [],
+        future_status: call.aiVoiceAssistantFutureStatus || "not_applicable",
+        future_call_id: call.aiVoiceAssistantFutureCallId || ""
+      },
       stable_ids: call.stableIds || [],
       evidence: call.evidence || []
     },
@@ -110,9 +173,10 @@ function buildTranscriptEvaluationInput(call, options = {}) {
       days_since_created: call.daysSinceCreated
     },
     transcript: call.transcript || "",
-    sanitized_raw_fields: call.rawFields || {},
+    sanitized_raw_fields: safeRawFieldsForAi(call.rawFields || {}),
     guardrails: [
       "Redacted phone numbers are not available and must not be reconstructed.",
+      "Campaign/allocation imports are parked; ignore allocation totals, campaign rows, actioned/remaining counts, and reconciliation status if present.",
       "Use normalized source_attribution dates when present; treat blank or malformed raw date fragments as missing.",
       "Treat deterministic scores as baseline evidence, not final truth.",
       "If evidence is insufficient, say so."
@@ -128,10 +192,7 @@ function truncatedText(value, maxChars = 8000) {
 }
 
 function intelligenceRawFields(rawFields = {}) {
-  const omitted = new Set(["transcription_text", "Baz_DetailedNotes", "transcript"]);
-  return Object.fromEntries(
-    Object.entries(rawFields || {}).filter(([key]) => !omitted.has(key))
-  );
+  return safeRawFieldsForAi(rawFields || {}, ["transcription_text", "Baz_DetailedNotes", "transcript"]);
 }
 
 function buildTranscriptIntelligenceInput(call, deterministicIntelligence, options = {}) {
@@ -151,8 +212,10 @@ function buildTranscriptIntelligenceInput(call, deterministicIntelligence, optio
       "Return at most 2 entities, 2 events, and 2 risk_flags; choose only the strongest evidence.",
       "Keep each evidence string under 140 characters.",
       "Evidence must be a real transcript phrase that supports the exact label; never use a single keyword or category name as evidence.",
+      "Preserve AI call assistant encounters as ai_call_assistant_encountered events when the deterministic input or transcript supports them.",
       "Only emit payment_or_order_intent when the customer clearly agrees to pay/order/book/proceed with this offer, asks for an invoice, or gives/requests payment details.",
       "Do not infer payment_or_order_intent from unrelated finance wording such as paying a mortgage, bills, wages, rent, fines, debts, tax, or general affordability complaints.",
+      "Do not use parked campaign/allocation import data for classification, scoring, source inference, alerts, or coaching.",
       "Do not flag ordinary campaign references to Police, SES, ambulance, schools, charities, or Blue Light as legal/compliance risk unless the transcript includes actual threat, deception, fraud concern, complaint, privacy issue, or coercive pressure."
     ],
     output_contract: {
@@ -191,6 +254,7 @@ function buildTranscriptIntelligenceInput(call, deterministicIntelligence, optio
     sanitized_raw_fields: intelligenceRawFields(call.rawFields || {}),
     guardrails: [
       "Redacted phone values are intentionally unavailable and must not be reconstructed.",
+      "Campaign/allocation imports are parked; ignore allocation totals, campaign rows, actioned/remaining counts, and reconciliation status if present.",
       "OrderCount can indicate historical warmth but is not proof this call converted.",
       "NoSaleType is a weak imported label and may be wrong.",
       "Use transcript evidence first; use structured fields only as context.",
@@ -314,6 +378,7 @@ module.exports = {
   getAiJob,
   publicAiExecutionStatus,
   resolveAiExecutionConfig,
+  safeRawFieldsForAi,
   submitAiTask,
   submitTranscriptIntelligenceExtraction,
   submitTranscriptEvaluation

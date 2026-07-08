@@ -2,7 +2,7 @@
 
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { clean, isMissing, parseTranscriptTurns, toInt } = require("./transcriptEvaluator");
-const { SOURCE_AGE_THRESHOLDS, sourceAttributionFor } = require("./sourceQuality");
+const { SOURCE_AGE_THRESHOLDS, regionNameFor, sourceAttributionFor } = require("./sourceQuality");
 
 const EXCLUDED_RAW_FIELDS = new Set([
   "__rowNumber",
@@ -10,6 +10,43 @@ const EXCLUDED_RAW_FIELDS = new Set([
   "CustomerCreateDate",
   "CustomerImportDate"
 ]);
+
+function confidenceBandForItem(item) {
+  const quality = item?.evaluation?.transcript?.qualityBand || "";
+  if (["high", "medium", "low", "unusable"].includes(quality)) return quality;
+  const confidence = Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence);
+  if (!Number.isFinite(confidence) || confidence <= 0) return "unknown";
+  if (confidence >= 0.75) return "high";
+  if (confidence >= 0.55) return "medium";
+  return "low";
+}
+
+function confidenceLabelForBand(band) {
+  if (band === "high") return "High confidence";
+  if (band === "medium") return "Medium confidence";
+  if (band === "low") return "Low confidence";
+  if (band === "unusable") return "Unusable transcript";
+  return "Confidence unavailable";
+}
+
+function rowGovernance(item) {
+  const band = confidenceBandForItem(item);
+  return {
+    intelligenceProvenance: "Deterministic",
+    llmStatus: "not_requested",
+    llmProvenance: "Unprocessed",
+    managerReviewProvenance: "Unprocessed",
+    rawImportedProvenance: "Raw imported",
+    contactClassificationProvenance: "Deterministic",
+    localOutcomeProvenance: "Deterministic",
+    followUpProvenance: "Deterministic",
+    alertProvenance: "Deterministic",
+    deterministicConfidence: Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence ?? 0),
+    confidenceBand: band,
+    confidenceLabel: confidenceLabelForBand(band),
+    evidenceAvailable: Boolean(item?.evaluation?.evidence?.length)
+  };
+}
 
 const METRICS = {
   "calls.unique": {
@@ -19,7 +56,7 @@ const METRICS = {
   },
   "calls.newBusiness": {
     title: "New Business Calls",
-    description: "Calls where OrderCount is blank, NULL, or zero.",
+    description: "Calls where OrderCount is blank, NULL, or zero, meaning No Sales History.",
     kind: "call"
   },
   "calls.warmBusiness": {
@@ -29,7 +66,7 @@ const METRICS = {
   },
   "calls.transcriptAvailable": {
     title: "Transcript Available",
-    description: "Calls where the transcription field contains usable text or a transcript placeholder.",
+    description: "Calls where the transcription field contains text. Blank transcripts are treated as no pickup/no answer in this dataset.",
     kind: "call"
   },
   "calls.probableLiveHuman": {
@@ -52,6 +89,66 @@ const METRICS = {
     description: "Follow-up signals where the current upload does not contain enough later data to prove completion.",
     kind: "call"
   },
+  "calls.aiVoiceAssistant": {
+    title: "AI Call Assistant Encounters",
+    description: "Calls where explicit AI assistant, call assistant, or screened-call language was detected.",
+    kind: "call"
+  },
+  "calls.aiVoiceAssistantHandled": {
+    title: "AI Call Assistant Handled Well",
+    description: "AI call assistant encounters where the salesperson left a structured response.",
+    kind: "call"
+  },
+  "calls.aiVoiceAssistantBailed": {
+    title: "AI Call Assistant Bail Events",
+    description: "AI call assistant encounters where the salesperson did not leave a useful response.",
+    kind: "call"
+  },
+  "calls.aiVoiceAssistantFutureHuman": {
+    title: "AI Call Assistant Future Human Contact",
+    description: "AI call assistant encounters followed by a later probable live-human call to the same stable customer or lead.",
+    kind: "call"
+  },
+  "calls.systemAudio": {
+    title: "System Audio Barriers",
+    description: "Calls where automated/system audio was detected, including call screening, carrier phone-system audio, and machine voicemail.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudio.call_screening": {
+    title: "Call Screening / AI Assistant",
+    description: "System-audio barriers where the transcript asks the caller to identify themselves, give a reason, or pass through a call assistant.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudio.carrier_phone_system": {
+    title: "Carrier / Phone System",
+    description: "System-audio barriers such as busy, unavailable, disconnected, or could-not-connect messages.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudio.machine_voicemail": {
+    title: "Machine Voicemail",
+    description: "Machine voicemail greetings and mailbox messages.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudio.ambiguous_system_audio": {
+    title: "Ambiguous System Audio",
+    description: "Automated/system audio that needs a more specific subtype rule.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudioHandled": {
+    title: "System Audio Handled Well",
+    description: "Call-screening encounters where the salesperson left a useful response.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudioBailed": {
+    title: "System Audio Bail Events",
+    description: "Call-screening encounters where the salesperson did not leave a useful response.",
+    kind: "systemAudio"
+  },
+  "calls.systemAudioRecovered": {
+    title: "System Audio Recovered Later",
+    description: "System-audio encounters followed by a later probable live-human call to the same stable customer or lead.",
+    kind: "systemAudio"
+  },
   "calls.outcomeMismatches": {
     title: "Outcome Mismatches",
     description: "Calls where imported disposition and local transcript evidence do not align.",
@@ -72,9 +169,19 @@ const METRICS = {
     description: "Calls with CustomerCreatedBy, CustomerCreatedByType, or valid CustomerCreateDate from manual entry.",
     kind: "call"
   },
+  "source.missingAttribution": {
+    title: "Self Sourced Without Raw Attribution",
+    description: "Calls categorized as Self Sourced because both bulk import evidence and manual creator evidence are blank.",
+    kind: "call"
+  },
   "source.newBusinessImportedOlderThan": {
-    title: "New Business Imported Older Than Threshold",
-    description: "New Business calls where CustomerImportDate is more than the selected number of days before the call date.",
+    title: "New Business Record Age Older Than Threshold",
+    description: "New Business calls where Record Age is more than the selected number of days before the call date. Record Age uses CustomerImportDate first, then CustomerCreateDate.",
+    kind: "call"
+  },
+  "source.newBusinessRecordOlderThan": {
+    title: "New Business Record Age Older Than Threshold",
+    description: "New Business calls where Record Age is more than the selected number of days before the call date. Record Age uses CustomerImportDate first, then CustomerCreateDate.",
     kind: "call"
   },
   "alerts.critical": {
@@ -93,8 +200,8 @@ const METRICS = {
     kind: "call"
   },
   "lead.stableLeadDaysWorked": {
-    title: "Stable Lead-Days Worked",
-    description: "Lead-day groups built from stable lead, contact, or customer IDs. Redacted phone values are not used.",
+    title: "Matched Records Worked",
+    description: "Matched customer/contact records built from source IDs. Redacted phone values are not used.",
     kind: "lead"
   },
   "lead.callbackSameDayRequired": {
@@ -103,13 +210,13 @@ const METRICS = {
     kind: "lead"
   },
   "lead.callbackCompletedSameDay": {
-    title: "Callbacks Completed Same Day",
-    description: "Explicit callback duties with a later same-day call to the same stable lead target.",
+    title: "Callbacks With Later Same-Day Call",
+    description: "Explicit callback duties with a later same-day call to the same matched target.",
     kind: "lead"
   },
   "lead.callbackMissedSameDay": {
     title: "Callbacks Missed Same Day",
-    description: "Explicit callback duties with no later same-day call to the same stable lead target.",
+    description: "Explicit callback duties with no later same-day call to the same matched target.",
     kind: "lead"
   },
   "lead.callbackFutureNeedsUpload": {
@@ -118,24 +225,69 @@ const METRICS = {
     kind: "lead"
   },
   "lead.noContactLeadDays": {
-    title: "No-Contact Lead-Days",
-    description: "Lead-days where every call attempt was no-answer, voicemail, system audio, unknown, or otherwise not live-human.",
+    title: "No-Contact Matched Records",
+    description: "Matched records where every call attempt was no-answer, voicemail, system audio, unknown, or otherwise not live-human.",
     kind: "lead"
   },
   "lead.noContactRetriedSameDay": {
-    title: "No-Contact Lead-Days Retried Same Day",
-    description: "No-contact lead-days with more than one same-day attempt.",
+    title: "No-Contact Records Retried Same Day",
+    description: "No-contact matched records with more than one same-day attempt.",
     kind: "lead"
   },
   "lead.singleAttemptNoContact": {
-    title: "Single-Attempt No-Contact Lead-Days",
-    description: "No-contact lead-days with only one attempt and no same-day retry.",
+    title: "Single-Attempt No-Contact Records",
+    description: "No-contact matched records with only one attempt and no same-day retry.",
     kind: "lead"
   },
   "lead.wastedLeadIndicators": {
-    title: "Potential Wasted Lead-Day Indicators",
-    description: "Lead-day groups counted because they had either a missed explicit callback or a single-attempt no-contact outcome.",
+    title: "Legacy Utilisation Review Indicators",
+    description: "Legacy matched-record proof rows retained for older reports. Use the one-dial no-contact/no-later drill-down for conservative manager reporting.",
     kind: "lead"
+  },
+  "reattempt.leadsTouched": {
+    title: "Reattempt Records",
+    description: "Matched customer/contact records dialed by each salesperson.",
+    kind: "reattempt"
+  },
+  "reattempt.personalRetried": {
+    title: "Personally Retried Records",
+    description: "Matched records where the same salesperson made more than one call in the current upload.",
+    kind: "reattempt"
+  },
+  "reattempt.oneAndDone": {
+    title: "One-Dial Records",
+    description: "Matched records where the salesperson made exactly one call in the current upload. This is neutral until split into valid, risky, and review buckets.",
+    kind: "reattempt"
+  },
+  "reattempt.oneDialValidOutcome": {
+    title: "Valid One-Dial Outcomes",
+    description: "One-dial records with deterministic evidence of a clear terminal outcome such as wrong number, not interested, complaint, or opt-out.",
+    kind: "reattempt"
+  },
+  "reattempt.oneDialRiskyNoContact": {
+    title: "One-Dial No-Contact",
+    description: "One-dial records with clear no-contact evidence: no answer, voicemail, system audio, or no usable speech evidence.",
+    kind: "reattempt"
+  },
+  "reattempt.oneDialNoContactNoLater": {
+    title: "Potential Lead Under-Utilisation",
+    description: "One-dial no-contact records with no later matching call observed for the same stable customer/contact/lead ID.",
+    kind: "reattempt"
+  },
+  "reattempt.oneDialNeedsReview": {
+    title: "Ambiguous One-Dial Records Excluded",
+    description: "One-dial records that are ambiguous or contain follow-up/interest signals. These are excluded from the no-contact utilisation-risk score.",
+    kind: "reattempt"
+  },
+  "reattempt.noLaterCallByAnyone": {
+    title: "No Later Call By Anyone",
+    description: "Matched records where no later call by any salesperson appears after this salesperson's first dial in the current upload.",
+    kind: "reattempt"
+  },
+  "reattempt.maxAttemptsOnOneLead": {
+    title: "Max Attempts On One Record",
+    description: "Matched records matching the highest same-salesperson attempt count in this scope.",
+    kind: "reattempt"
   }
 };
 
@@ -153,6 +305,11 @@ function customerIdFor(row) {
   return isMissing(value) ? "" : value;
 }
 
+function contactIdFor(row) {
+  const value = clean(row.ContactId);
+  return isMissing(value) ? "" : value;
+}
+
 function rawFieldsFor(row) {
   return Object.keys(row)
     .filter((field) => !EXCLUDED_RAW_FIELDS.has(field) && field !== "transcription_text")
@@ -165,6 +322,10 @@ function rawFieldsFor(row) {
 function orderCountFor(row) {
   const value = toInt(row.OrderCount);
   return value === null ? 0 : value;
+}
+
+function orderHistoryLabel(row) {
+  return orderCountFor(row) > 0 ? "Previous Sales History" : "No Sales History";
 }
 
 function businessSegmentForRow(row) {
@@ -201,13 +362,26 @@ function metricKeysForItem(item) {
   if (item.evaluation.contact.meaningfulConversation) keys.push("calls.meaningfulConversation");
   if (item.evaluation.opportunity.followUpRequired) keys.push("calls.followUpRequired");
   if (item.followUpStatus === "indeterminate_insufficient_future_data") keys.push("calls.followUpIndeterminate");
+  if (item.evaluation.aiVoiceAssistant?.detected) keys.push("calls.aiVoiceAssistant");
+  if (item.evaluation.aiVoiceAssistant?.handledSuccessfully) keys.push("calls.aiVoiceAssistantHandled");
+  if (item.evaluation.aiVoiceAssistant?.bailed) keys.push("calls.aiVoiceAssistantBailed");
+  if (item.evaluation.aiVoiceAssistant?.followThrough?.futureHumanContact) keys.push("calls.aiVoiceAssistantFutureHuman");
+  if (item.evaluation.systemAudio?.detected) {
+    keys.push("calls.systemAudio", `calls.systemAudio.${item.evaluation.systemAudio.subtype}`);
+  }
   if (item.evaluation.outcome.mismatch) keys.push("calls.outcomeMismatches");
   if (item.evaluation.risk.reviewRequired) keys.push("calls.riskReviews");
   if (sourceAttribution.hasBulkSource) keys.push("source.bulkSourced");
   if (sourceAttribution.hasManualCreator) keys.push("source.manualCreated");
+  if (!sourceAttribution.hasBulkSource && !sourceAttribution.hasManualCreator) keys.push("source.missingAttribution");
   if (businessSegment === "new" && sourceAttribution.daysSinceImport !== null) {
     SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
       if (sourceAttribution.daysSinceImport > threshold) keys.push(`source.newBusinessImportedOlderThan${threshold}`);
+    });
+  }
+  if (businessSegment === "new" && sourceAttribution.daysSinceRecord !== null) {
+    SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
+      if (sourceAttribution.daysSinceRecord > threshold) keys.push(`source.newBusinessRecordOlderThan${threshold}`);
     });
   }
   return keys;
@@ -217,16 +391,22 @@ function buildCallProofRow(item) {
   const row = item.row;
   const businessSegment = businessSegmentForRow(row);
   const sourceAttribution = item.sourceAttribution || sourceAttributionFor(row, item.dateTime);
+  const governance = rowGovernance(item);
   return {
     type: "call",
     callId: clean(row.call_id),
     customerId: customerIdFor(row),
+    contactId: contactIdFor(row),
     date: clean(row.call_date),
     time: clean(row.call_time),
     dateTime: item.dateTime ? item.dateTime.toISOString() : null,
     salesperson: clean(row.Salesperson) || "Unknown",
-    source: isMissing(row.CustomerImportSource) ? "Unknown source" : clean(row.CustomerImportSource),
+    source: sourceAttribution.customerImportSource,
+    region: regionNameFor(row),
     customerImportSource: sourceAttribution.customerImportSource,
+    customerImportSourceRaw: sourceAttribution.customerImportSourceRaw,
+    customerImportSourceInferred: sourceAttribution.customerImportSourceInferred,
+    customerImportSourceInferenceReason: sourceAttribution.customerImportSourceInferenceReason,
     customerImportDate: sourceAttribution.customerImportDate,
     customerImportDateIso: sourceAttribution.customerImportDateIso,
     customerCreatedBy: sourceAttribution.customerCreatedBy,
@@ -236,24 +416,45 @@ function buildCallProofRow(item) {
     customerCreateDateIso: sourceAttribution.customerCreateDateIso,
     daysSinceImport: sourceAttribution.daysSinceImport,
     daysSinceCreated: sourceAttribution.daysSinceCreated,
+    daysSinceRecord: sourceAttribution.daysSinceRecord,
+    recordAgeBasis: sourceAttribution.recordAgeBasis,
+    recordAgeBasisLabel: sourceAttribution.recordAgeBasisLabel,
     importAgeBucket: sourceAttribution.importAgeBucket,
     createAgeBucket: sourceAttribution.createAgeBucket,
+    recordAgeBucket: sourceAttribution.recordAgeBucket,
     hasBulkSource: sourceAttribution.hasBulkSource,
     hasManualCreator: sourceAttribution.hasManualCreator,
     callType: clean(row.CallType) || "Unknown",
     direction: clean(row.call_direction) || "Unknown",
     orderCount: orderCountFor(row),
+    orderHistoryLabel: orderHistoryLabel(row),
     businessSegment,
     businessSegmentLabel: businessSegmentLabel(businessSegment),
     durationSeconds: item.evaluation.durationSeconds,
     totalSeconds: item.evaluation.totalSeconds,
     contactClassification: item.evaluation.contact.classification,
     localOutcome: item.evaluation.outcome.localCategory,
-    importedNoSale: item.evaluation.outcome.importedNoSale || "Blank",
+    importedNoSale: item.evaluation.outcome.importedNoSaleLabel,
+    importedNoSaleRaw: item.evaluation.outcome.importedNoSale,
+    importedNoSaleReliability: item.evaluation.outcome.importedNoSaleReliability,
+    importedNoSalePriority: item.evaluation.outcome.importedNoSalePriority,
     followUpStatus: item.followUpStatus,
     followUpMatchedCallId: item.followUpMatchedCallId || "",
     followUpChannel: item.evaluation.opportunity.followUpChannel,
+    aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
+    aiVoiceAssistantConfidence: item.evaluation.aiVoiceAssistant?.confidence || 0,
+    aiVoiceAssistantResponse: item.evaluation.aiVoiceAssistant?.responseClassification || "not_encountered",
+    aiVoiceAssistantHandledSuccessfully: Boolean(item.evaluation.aiVoiceAssistant?.handledSuccessfully),
+    aiVoiceAssistantBailed: Boolean(item.evaluation.aiVoiceAssistant?.bailed),
+    aiVoiceAssistantResponseWordCount: item.evaluation.aiVoiceAssistant?.responseWordCount || 0,
+    aiVoiceAssistantTactics: item.evaluation.aiVoiceAssistant?.tacticLabels || [],
+    aiVoiceAssistantFutureStatus: item.evaluation.aiVoiceAssistant?.followThrough?.status || "not_applicable",
+    aiVoiceAssistantFutureCallId: item.evaluation.aiVoiceAssistant?.followThrough?.futureCallId || "",
+    systemAudioDetected: Boolean(item.evaluation.systemAudio?.detected),
+    systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
+    systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
     transcriptQuality: item.evaluation.transcript.qualityBand,
+    ...governance,
     stableIds: stableIdsFor(row),
     metricKeys: metricKeysForItem(item),
     evidence: item.evaluation.evidence.map((evidence) => ({
@@ -283,9 +484,13 @@ function metricFor(key) {
 }
 
 function metricMatches(row, metricKey, query = {}) {
-  if (metricKey === "source.newBusinessImportedOlderThan") {
+  if (metricKey === "source.newBusinessImportedOlderThan" || metricKey === "source.newBusinessRecordOlderThan") {
     const threshold = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, 90);
-    return row.businessSegment === "new" && row.daysSinceImport !== null && Number(row.daysSinceImport) > threshold;
+    return row.businessSegment === "new" && row.daysSinceRecord !== null && Number(row.daysSinceRecord) > threshold;
+  }
+  if (metricKey === "reattempt.maxAttemptsOnOneLead") {
+    const attempts = normalizeMinImportAgeDays(query.maxAttempts || query.attempts || query.personalCallCount, null);
+    if (attempts !== null) return Number(row.personalCallCount || 0) === attempts;
   }
   return !metricKey || row.metricKeys?.includes(metricKey);
 }
@@ -298,21 +503,32 @@ function filterRows(rows, query = {}) {
   const businessSegment = normalizeBusinessSegment(query.businessSegment || query.segment);
   const createdBy = clean(query.createdBy || query.customerCreatedBy);
   const createdByType = clean(query.createdByType || query.customerCreatedByType).toUpperCase();
+  const recordAgeBucket = clean(query.recordAgeBucket || query.customerAgeBucket || query.leadAgeBucket);
   const importAgeBucket = clean(query.importAgeBucket);
   const createAgeBucket = clean(query.createAgeBucket || query.creatorAgeBucket);
+  const region = clean(query.region || query.callRegion);
+  const aiAssistantResponse = clean(query.aiAssistantResponse || query.aiVoiceAssistantResponse);
+  const aiAssistantTactic = clean(query.aiAssistantTactic || query.aiVoiceAssistantTactic);
+  const systemAudioSubtype = clean(query.systemAudioSubtype || query.systemAudioType);
   const minImportAgeDays = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, null);
+  const maxAttempts = normalizeMinImportAgeDays(query.maxAttempts || query.attempts || query.personalCallCount, null);
 
   return rows.filter((row) => {
-    if (metric && !metricMatches(row, metric, { minImportAgeDays })) return false;
+    if (metric && !metricMatches(row, metric, { minImportAgeDays, maxAttempts })) return false;
     if (salesperson && row.salesperson !== salesperson) return false;
     if (source && row.source !== source) return false;
     if (customerId && row.customerId !== customerId) return false;
     if (businessSegment && row.businessSegment !== businessSegment) return false;
     if (createdBy && row.customerCreatedBy !== createdBy) return false;
     if (createdByType && row.customerCreatedByType !== createdByType) return false;
+    if (recordAgeBucket && row.recordAgeBucket !== recordAgeBucket) return false;
     if (importAgeBucket && row.importAgeBucket !== importAgeBucket) return false;
     if (createAgeBucket && row.createAgeBucket !== createAgeBucket) return false;
-    if (minImportAgeDays !== null && !(row.daysSinceImport !== null && Number(row.daysSinceImport) > minImportAgeDays)) return false;
+    if (region && row.region !== region) return false;
+    if (aiAssistantResponse && row.aiVoiceAssistantResponse !== aiAssistantResponse) return false;
+    if (aiAssistantTactic && !(row.aiVoiceAssistantTactics || []).includes(aiAssistantTactic)) return false;
+    if (systemAudioSubtype && row.systemAudioSubtype !== systemAudioSubtype && row.subtype !== systemAudioSubtype) return false;
+    if (minImportAgeDays !== null && !(row.daysSinceRecord !== null && Number(row.daysSinceRecord) > minImportAgeDays)) return false;
     return true;
   });
 }
@@ -340,14 +556,25 @@ function buildDrilldownResult(analysis, query = {}) {
   const metric = clean(query.metric) || "calls.unique";
   const definition = metricFor(metric);
   const businessSegment = normalizeBusinessSegment(query.businessSegment || query.segment);
-  const minImportAgeDays = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, metric === "source.newBusinessImportedOlderThan" ? 90 : null);
+  const minImportAgeDays = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, (metric === "source.newBusinessImportedOlderThan" || metric === "source.newBusinessRecordOlderThan") ? 90 : null);
+  const maxAttempts = normalizeMinImportAgeDays(query.maxAttempts || query.attempts || query.personalCallCount, null);
   const leadUtilization = definition.kind === "lead" && businessSegment && analysis.businessSegmentViews?.[businessSegment]?.leadUtilization
     ? analysis.businessSegmentViews[businessSegment].leadUtilization
     : analysis.leadUtilization;
+  const leadReattempt = definition.kind === "reattempt" && businessSegment && analysis.businessSegmentViews?.[businessSegment]?.leadReattempt
+    ? analysis.businessSegmentViews[businessSegment].leadReattempt
+    : analysis.leadReattempt;
+  const systemAudio = definition.kind === "systemAudio" && businessSegment && analysis.businessSegmentViews?.[businessSegment]?.systemAudio
+    ? analysis.businessSegmentViews[businessSegment].systemAudio
+    : analysis.systemAudio;
   const sourceRows = metric.startsWith("alerts.")
     ? alertRowsForMetric(analysis, metric)
     : definition.kind === "lead"
       ? leadUtilization?.records || []
+      : definition.kind === "reattempt"
+        ? leadReattempt?.records || []
+        : definition.kind === "systemAudio"
+          ? systemAudio?.records || []
       : analysis.drilldownRows || [];
   const rows = filterRows(sourceRows, {
     ...query,
@@ -362,9 +589,9 @@ function buildDrilldownResult(analysis, query = {}) {
   return {
     schemaVersion: "sales_dashboard_drilldown.v1",
     metric,
-    title: metric === "source.newBusinessImportedOlderThan" ? `New Business Imported Older Than ${minImportAgeDays} Days` : definition.title,
-    description: metric === "source.newBusinessImportedOlderThan"
-      ? `New Business calls where CustomerImportDate is more than ${minImportAgeDays} days before the call date.`
+    title: (metric === "source.newBusinessImportedOlderThan" || metric === "source.newBusinessRecordOlderThan") ? `New Business Record Age Older Than ${minImportAgeDays} Days` : definition.title,
+    description: (metric === "source.newBusinessImportedOlderThan" || metric === "source.newBusinessRecordOlderThan")
+      ? `New Business calls where Record Age is more than ${minImportAgeDays} days before the call date. Record Age uses CustomerImportDate first, then CustomerCreateDate.`
       : definition.description,
     kind: definition.kind,
     filters: {
@@ -373,9 +600,15 @@ function buildDrilldownResult(analysis, query = {}) {
       customerId: clean(query.customerId || query.customer_id),
       createdBy: clean(query.createdBy || query.customerCreatedBy),
       createdByType: clean(query.createdByType || query.customerCreatedByType).toUpperCase(),
+      recordAgeBucket: clean(query.recordAgeBucket || query.customerAgeBucket || query.leadAgeBucket),
       importAgeBucket: clean(query.importAgeBucket),
       createAgeBucket: clean(query.createAgeBucket || query.creatorAgeBucket),
+      region: clean(query.region || query.callRegion),
+      aiAssistantResponse: clean(query.aiAssistantResponse || query.aiVoiceAssistantResponse),
+      aiAssistantTactic: clean(query.aiAssistantTactic || query.aiVoiceAssistantTactic),
+      systemAudioSubtype: clean(query.systemAudioSubtype || query.systemAudioType),
       minImportAgeDays,
+      maxAttempts,
       businessSegment,
       businessSegmentLabel: businessSegmentLabel(businessSegment)
     },
@@ -386,7 +619,9 @@ function buildDrilldownResult(analysis, query = {}) {
     nextOffset: offset + limit < rows.length ? offset + limit : null,
     previousOffset: offset > 0 ? Math.max(0, offset - limit) : null,
     rows: displayedRows,
-    excludedRawFields: Array.from(EXCLUDED_RAW_FIELDS)
+    excludedRawFields: Array.from(EXCLUDED_RAW_FIELDS),
+    filterState: analysis.filterState || null,
+    filterSummary: analysis.filterSummary || null
   };
 }
 

@@ -2,14 +2,77 @@
 This file tracks execution plans for Sales Dashboard.
 
 ## Active Plans
-- Review workflow controls
-  - Goal: make stored alert and manager-review state editable from the dashboard instead of API-only.
-  - Scope: acknowledge/dismiss alerts, save manager confirmations, filter review state, and show resolved history.
-  - Risks: avoid treating manager corrections as model truth without versioning.
-  - Verification: add API and browser tests around review actions.
+- Strict-schema LLM evaluator option
+  - Goal: add a versioned local/approved model evaluation layer only after deterministic and manager-reviewed workflows remain stable.
+  - Scope: schema validation, retry/quarantine states, evidence snippets, confidence scores, and failure handling.
+  - Risks: avoid replacing deterministic or manager-reviewed outputs silently.
+  - Verification: add strict schema and failure-mode tests before enabling in the dashboard.
   - Status: future work.
 
 ## Completed Plans
+### One-Dial Reattempt Evidence Buckets
+- Goal: stop treating every single-dial matched record as a waste/risk signal.
+- Scope shipped: deterministic `valid_one_dial_outcome`, `risky_one_dial_no_contact`, `needs_review`, and strict `oneDialNoContactNoLater` proof metrics in lead reattempt analytics; dashboard cards/tables/drilldowns/report wording changed from one-and-done risk to one-dial evidence buckets; records touched wording changed to records dialed.
+- Risks handled: valid terminal outcomes such as wrong number, not interested, complaint, or opt-out are separated from no-answer/voicemail/system-audio rows; the reportable utilisation-risk score uses only one-dial no-contact records with no later matching call observed; ambiguous rows stay out of the score unless later confirmed through manager-approved review.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Manager Review Governance And Correction Workflow
+- Goal: make transcript-derived dashboard intelligence reviewable and correctable without overwriting raw imported, deterministic, LLM, or alert evidence.
+- Scope shipped: `src/managerReview.js` status/scope/correction allowlist helpers, manager review records with corrections/history, local `local_manager` actor resolution, `/api/manager-reviews` list/create/detail/update/history/bulk endpoints, `/api/calls/<call-id>/reviews`, upgraded `/reviews` form handling, manager-review global filter status support, review governance counts, call-page correction form/history, alert-centre linked review state, review queue actions, and raw explorer review/correction display.
+- Risks handled: manager review is separate from alert lifecycle, corrections are overlays only, raw `NoSaleType` and deterministic/LLM outputs remain preserved, protected/raw/allocation/campaign fields cannot be corrected, notes are escaped on render, and active alert counts do not change from manager review alone.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Batch 5.1 Report And Local Actor Cleanup
+- Goal: close Batch 5 verification follow-ups before manager review governance work.
+- Scope shipped: normal `/api/reports`, `/api/reports/:id`, and `/reports/<id>` filter out parked allocation, stale stable-target, stable lead-day, lead-day, and allocation-like report content; hidden reports remain preserved in the local store; alert lifecycle actions resolve authoritative actor as `local_manager` until authentication exists; manager notes remain escaped in dashboard rendering.
+- Risks handled: raw report APIs no longer leak parked/stale report bodies by default, old stable-target reports do not appear in normal report lists, client-supplied actor names cannot spoof lifecycle history, parked alerts still reject lifecycle mutation, and `AllocatedLeadID` remains allowed as raw call CSV matching context.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Alert Lifecycle Controls
+- Goal: turn the Alert Centre from a passive generated-alert list into a practical triage workflow.
+- Scope shipped: `src/alertLifecycle.js` lifecycle status helpers, non-destructive alert actions, manager notes, lifecycle history, `/api/alerts` list/update/bulk/history endpoints, dashboard status/severity summaries, row controls, bulk controls, and active-count rules.
+- Risks handled: active alert counts include only `new`, `acknowledged`, and `in_progress`; `resolved`, `dismissed`, `false_positive`, and parked allocation-related alerts do not inflate active totals; generated alert evidence remains intact.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Global Filter Consistency
+- Goal: make active dashboard cards, tables, alerts, scorecards, drill-downs, raw explorer rows, and JSON summary responses share one call/transcript filter state.
+- Scope shipped: `src/globalFilters.js` canonical filter state, source-call-date filtering without timezone shifting, URL-persisted active filter query, filter chips/reset path, filtered/total/excluded record summary, low/very-low/empty-sample warnings, denominator notes, missing-value buckets, alert severity/status filtering against active call-linked alerts, and filtered drill-down consistency.
+- Risks handled: parked campaign/allocation data is not a filter dimension, call CSV `AllocatedLeadID` remains only raw/entity context, source/list quality stays call-CSV-only, and default unfiltered metrics remain unchanged.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Intelligence Provenance And Evidence Labelling
+- Goal: make raw imported fields, deterministic transcript signals, LLM-reviewed outputs, manager review state, confidence, and evidence gaps explicit in the dashboard.
+- Scope shipped: deterministic provenance labels, LLM-reviewed labelling only for completed usable LLM output, manager review state labels, confidence bands and rollup counts, review-only guardrails for low/unusable transcript rows, and explicit "Evidence unavailable" gaps where proof is missing.
+- Risks handled: deterministic-only insights are not presented as LLM-reviewed, LLM confidence is not shown without a valid LLM result, low-confidence/unusable transcript rows are labelled as review-only context, and parked allocation data remains excluded.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Reporting Period And Active Dataset Clarity
+- Goal: make the active dashboard unmistakable about which call dataset, import, date range, source timezone, and data window it is showing.
+- Scope shipped: source-call-time date range labels, UTC processing timestamps, active dataset/import banner with filename/hash/row counts/dedup counts, call-data-only single-day/partial-day/trend/follow-up warnings, and explicit unsupported sales/revenue/conversion warning.
+- Risks handled: displayed call dates avoid local timezone shifting, parked campaign/allocation imports are not used in any new banner/warning/metric, and active dashboard scope remains call CSV plus transcript intelligence only.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Park Campaign/Allocation Data From Active Dashboard
+- Goal: preserve separate campaign/allocation imports while removing them from active dashboard use.
+- Scope shipped: parked allocation diagnostic, `/api/allocations` diagnostic-only response, removal of allocation dashboard navigation/section, active analysis no longer builds allocation coverage, automatic reports/artifacts exclude allocation totals and reconciliation rows, parked alert/report filtering, AI prompt raw-field filtering, and regression tests proving allocation rows do not change active metrics.
+- Risks handled: `AllocatedLeadID` remains available as a call CSV matching field, but separate allocation imports no longer influence metrics, reports, alerts, source/list quality, scorecards, or AI transcript context.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Aggregate Lead Allocation Coverage
+- Goal: incorporate lead campaign allocation workbooks as their own dashboard section while safely leveraging call-record evidence.
+- Scope shipped: optional `--allocations` / `SALES_DASHBOARD_ALLOCATIONS_PATH` input, CSV/XLSX source adapter, built-in XLSX first-sheet reader, allocation workbook schema validation, allocation totals by type/date/salesperson/campaign, aggregate call-observed reconciliation by date + salesperson + type, `/api/allocations`, dashboard Lead Allocation Coverage section, persistence of derived allocation summaries, and tests for aggregate join behavior.
+- Risks handled: campaign rows are allocation-side totals only, `QTY ACTIONED` is not treated as raw call count, redacted phone values remain unused, and future campaign/list attribution requires a shared campaign/list ID or stable lead ID.
+- Verification: `node --test tests/*.test.js`; real July 7 workbook load with `CallData 07.07.2026.xlsx` and `allocations 07.07.2026.xlsx`; browser desktop/mobile checks of the allocation section at `http://127.0.0.1:3103`.
+- Status: superseded by parked allocation decision.
+
 ### MVP Call Intelligence Dashboard
 - Goal: build a local first version that loads the July 1 CSV, respects privacy-reduced phone data, evaluates transcripts locally, and renders usable sales operations views.
 - Scope shipped: CSV parsing, call deduplication, data-confidence panel, ignored field guardrails, deterministic transcript evaluation, follow-up linking through stable IDs, alert centre, manager review queue, salesperson/source scorecards, sanitized call explorer, and automated tests.
@@ -34,7 +97,7 @@ This file tracks execution plans for Sales Dashboard.
 ### Drill-Down Proof Layer
 - Goal: make dashboard/report numbers auditable by opening the exact call rows or lead-day records behind them.
 - Scope shipped: `/drilldown` HTML page, `/api/drilldown` JSON endpoint, `/calls/<call-id>` proof page, `/api/calls/<call-id>` JSON endpoint, dashboard metric links, salesperson/source metric links, lead-utilization metric links, report drill-down links, sanitized raw source fields, full local transcript proof, and manager review form submissions.
-- Risks handled: `dialled_phone_number`, `CustomerCreateDate`, and `CustomerImportDate` are excluded from raw proof fields; full drill-down rows are kept out of `/api/summary`.
+- Risks handled: `dialled_phone_number`, `CustomerCreateDate`, and `CustomerImportDate` are excluded from raw proof fields; valid customer dates can support Record Age displays while malformed fragments remain missing; full drill-down rows are kept out of `/api/summary`.
 - Verification: `node --test tests/*.test.js`; browser verification of dashboard links, lead drill-down page, call proof page, raw-field exclusions, and report drill-down links.
 - Status: complete.
 

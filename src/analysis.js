@@ -4,9 +4,31 @@ const crypto = require("crypto");
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { parseCsv } = require("./csvParser");
 const { clean, isMissing, toInt, evaluateCall } = require("./transcriptEvaluator");
+const { buildParkedAllocationDiagnostic } = require("./allocationParking");
 const { buildLeadUtilizationModel } = require("./leadUtilizationReport");
 const { buildCallProofRow } = require("./drilldown");
 const { SOURCE_AGE_THRESHOLDS, ageBucketSort, sourceAttributionFor } = require("./sourceQuality");
+const { buildAiVoiceAssistantModel, linkAiVoiceAssistantOutcomes } = require("./aiVoiceAssistantAnalytics");
+const { buildLeadReattemptModel } = require("./leadReattemptAnalytics");
+const { buildSystemAudioModel } = require("./systemAudioAnalytics");
+const {
+  applyCallFilters,
+  buildFilterOptions,
+  buildFilterSummary,
+  normalizeFilterState
+} = require("./globalFilters");
+const {
+  alertIdFor,
+  isActiveAlertStatus,
+  mergeAlertWithEvent,
+  normalizeAlertEvent,
+  normalizeAlertStatus,
+  summarizeAlerts
+} = require("./alertLifecycle");
+const {
+  MANAGER_REVIEW_STATUSES,
+  normalizeManagerReview
+} = require("./managerReview");
 
 const IGNORED_FIELDS = [
   {
@@ -31,16 +53,234 @@ const REQUIRED_COLUMNS = [
   "CustomerImportSource"
 ];
 
-function parseDateTime(row) {
-  const date = clean(row.call_date);
-  const time = clean(row.call_time);
-  const dateMatch = date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+const SOURCE_TIMEZONE_LABEL = "Source call time (timezone not supplied)";
+
+function parseSourceDateParts(value) {
+  const date = clean(value);
+  let dateMatch = date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (dateMatch) {
+    const [, day, month, year] = dateMatch;
+    return { year: Number(year), month: Number(month), day: Number(day) };
+  }
+  dateMatch = date.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$/);
+  if (dateMatch) {
+    const [, year, month, day] = dateMatch;
+    return { year: Number(year), month: Number(month), day: Number(day) };
+  }
+  return null;
+}
+
+function parseSourceTimeParts(value) {
+  const time = clean(value);
   const timeMatch = time.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
-  if (!dateMatch || !timeMatch) return null;
-  const [, day, month, year] = dateMatch;
+  if (!timeMatch) return null;
   const [, hour, minute, second] = timeMatch;
-  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)));
+  return { hour: Number(hour), minute: Number(minute), second: Number(second) };
+}
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
+function sourceDateTimeParts(row) {
+  const dateParts = parseSourceDateParts(row.call_date);
+  const timeParts = parseSourceTimeParts(row.call_time);
+  if (!dateParts || !timeParts) return null;
+  const date = `${dateParts.year}-${pad2(dateParts.month)}-${pad2(dateParts.day)}`;
+  const time = `${pad2(timeParts.hour)}:${pad2(timeParts.minute)}:${pad2(timeParts.second)}`;
+  return {
+    ...dateParts,
+    ...timeParts,
+    date,
+    time,
+    label: `${date} ${time}`,
+    secondsOfDay: (timeParts.hour * 60 * 60) + (timeParts.minute * 60) + timeParts.second
+  };
+}
+
+function parseDateTime(row) {
+  const parts = sourceDateTimeParts(row);
+  if (!parts) return null;
+  const parsed = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second));
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function buildDateRange(items, minDateTime, maxDateTime) {
+  const datedItems = items.filter((item) => item.dateTime);
+  const startParts = datedItems.length ? sourceDateTimeParts(datedItems[0].row) : null;
+  const endParts = datedItems.length ? sourceDateTimeParts(datedItems[datedItems.length - 1].row) : null;
+  const display = startParts && endParts
+    ? `${startParts.label} to ${endParts.label} (${SOURCE_TIMEZONE_LABEL})`
+    : "";
+  return {
+    start: minDateTime ? minDateTime.toISOString() : null,
+    end: maxDateTime ? maxDateTime.toISOString() : null,
+    sourceStart: startParts?.label || null,
+    sourceEnd: endParts?.label || null,
+    sourceTimezoneLabel: SOURCE_TIMEZONE_LABEL,
+    display
+  };
+}
+
+function buildDataWindow(items, totals = {}) {
+  const datedItems = items
+    .filter((item) => item.dateTime)
+    .map((item) => ({ item, parts: sourceDateTimeParts(item.row) }))
+    .filter((item) => item.parts);
+  const start = datedItems[0]?.parts || null;
+  const end = datedItems[datedItems.length - 1]?.parts || null;
+  const sourceDates = new Set(datedItems.map((item) => item.parts.date));
+  const dayCount = sourceDates.size;
+  const durationHours = datedItems.length >= 2
+    ? (datedItems[datedItems.length - 1].item.dateTime.getTime() - datedItems[0].item.dateTime.getTime()) / (60 * 60 * 1000)
+    : 0;
+  const singleDay = dayCount === 1;
+  const partialDay = Boolean(singleDay && datedItems.length > 0 && (
+    durationHours < 20 ||
+    (start && start.secondsOfDay > 2 * 60 * 60) ||
+    (end && end.secondsOfDay < 22 * 60 * 60)
+  ));
+  const insufficientTrendHistory = Boolean(dayCount > 0 && dayCount < 7);
+  const followUpFutureDataUnavailable = Number(totals.followUpIndeterminate || 0) > 0;
+  const warnings = [];
+
+  if (singleDay) {
+    warnings.push({
+      code: "single_day_dataset",
+      severity: "warning",
+      message: `This dataset covers a single source call date (${start?.date || "unknown"}). Treat trend and comparison views as a same-day snapshot.`
+    });
+  }
+  if (partialDay) {
+    warnings.push({
+      code: "partial_day_dataset",
+      severity: "warning",
+      message: `This dataset appears to cover only part of a source day (${start?.label || "unknown"} to ${end?.label || "unknown"}). Daily totals and comparisons may be incomplete.`
+    });
+  }
+  if (insufficientTrendHistory) {
+    warnings.push({
+      code: "insufficient_trend_history",
+      severity: "notice",
+      message: `Trend alerts and comparisons need more history. The active call data contains ${dayCount} source call ${dayCount === 1 ? "date" : "dates"}.`
+    });
+  }
+  if (followUpFutureDataUnavailable) {
+    warnings.push({
+      code: "follow_up_future_data_unavailable",
+      severity: "notice",
+      message: `Follow-up overdue status may be indeterminate because the active data ends at ${end?.label || "the latest loaded call"} and later calls are not available in this dataset.`
+    });
+  }
+
+  return {
+    sourceTimezoneLabel: SOURCE_TIMEZONE_LABEL,
+    sourceStart: start?.label || null,
+    sourceEnd: end?.label || null,
+    sourceDates: Array.from(sourceDates).sort(),
+    dayCount,
+    durationHours: Math.round(durationHours * 10) / 10,
+    singleDay,
+    partialDay,
+    insufficientTrendHistory,
+    followUpFutureDataUnavailable,
+    callDataOnly: true,
+    warnings
+  };
+}
+
+function attachInternalItems(analysis, items) {
+  Object.defineProperty(analysis, "_items", {
+    value: items,
+    enumerable: false,
+    configurable: true
+  });
+  return analysis;
+}
+
+function internalItemsFor(analysis) {
+  return Array.isArray(analysis?._items) ? analysis._items : [];
+}
+
+function confidenceBandForItem(item) {
+  const quality = item?.evaluation?.transcript?.qualityBand || "";
+  if (["high", "medium", "low", "unusable"].includes(quality)) return quality;
+  const confidence = Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence);
+  if (!Number.isFinite(confidence) || confidence <= 0) return "unknown";
+  if (confidence >= 0.75) return "high";
+  if (confidence >= 0.55) return "medium";
+  return "low";
+}
+
+function confidenceLabelForBand(band) {
+  if (band === "high") return "High confidence";
+  if (band === "medium") return "Medium confidence";
+  if (band === "low") return "Low confidence";
+  if (band === "unusable") return "Unusable transcript";
+  return "Confidence unavailable";
+}
+
+function buildIntelligenceGovernance(items, totals = {}) {
+  const counts = { high: 0, medium: 0, low: 0, unusable: 0, unknown: 0 };
+  items.forEach((item) => {
+    const band = confidenceBandForItem(item);
+    counts[band] = (counts[band] || 0) + 1;
+  });
+  const total = Number(totals.uniqueCalls || items.length || 0);
+  const rate = (value) => percent(value, total);
+  return {
+    schemaVersion: "sales_dashboard_intelligence_governance.v1",
+    processing: {
+      totalCalls: total,
+      transcriptsAvailable: Number(totals.transcriptAvailable || 0),
+      deterministicEvaluationsCompleted: items.length,
+      llmEvaluationsCompleted: 0,
+      llmNotRequested: items.length,
+      llmFailed: 0,
+      managerReviewedCalls: 0,
+      unprocessedCalls: Math.max(0, total - items.length),
+      transcriptDerivedMetricsCoverageRate: percent(totals.transcriptUsableForCoaching || 0, total),
+      lowOrUnusableTranscriptCount: counts.low + counts.unusable
+    },
+    confidence: {
+      high: counts.high,
+      medium: counts.medium,
+      low: counts.low,
+      unusable: counts.unusable,
+      unknown: counts.unknown,
+      highRate: rate(counts.high),
+      mediumRate: rate(counts.medium),
+      lowRate: rate(counts.low),
+      unusableRate: rate(counts.unusable),
+      unknownRate: rate(counts.unknown)
+    },
+    provenance: {
+      rawImportedFields: ["NoSaleType", "Baz_DetailedNotes", "transcription_text"],
+      deterministicFields: ["contactClassification", "localOutcome", "followUpRequired", "alerts", "scorecards"],
+      llmReviewedOnlyWhen: "llm_status is completed and a usable LLM result is stored.",
+      managerReviewedOnlyWhen: "a saved manager review exists for the call."
+    }
+  };
+}
+
+function rowGovernance(item) {
+  const band = confidenceBandForItem(item);
+  const deterministicConfidence = Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence ?? 0);
+  return {
+    intelligenceProvenance: "Deterministic",
+    llmStatus: "not_requested",
+    llmProvenance: "Unprocessed",
+    managerReviewProvenance: "Unprocessed",
+    rawImportedProvenance: "Raw imported",
+    contactClassificationProvenance: "Deterministic",
+    localOutcomeProvenance: "Deterministic",
+    followUpProvenance: "Deterministic",
+    alertProvenance: "Deterministic",
+    deterministicConfidence,
+    confidenceBand: band,
+    confidenceLabel: confidenceLabelForBand(band),
+    evidenceAvailable: Boolean(item?.evaluation?.evidence?.length)
+  };
 }
 
 function percent(numerator, denominator) {
@@ -66,6 +306,10 @@ function businessSegmentLabel(segment) {
   if (segment === "warm") return "Warm Business";
   if (segment === "new") return "New Business";
   return "";
+}
+
+function orderHistoryLabel(row) {
+  return orderCount(row) > 0 ? "Previous Sales History" : "No Sales History";
 }
 
 function entityKeys(row) {
@@ -110,6 +354,18 @@ function summarizeBy(items, keyFn, seedFn) {
     if (item.evaluation.opportunity.followUpRequired) group.followUpRequired += 1;
     if (item.evaluation.outcome.mismatch) group.outcomeMismatches += 1;
     if (item.evaluation.risk.reviewRequired) group.riskReviews += 1;
+    const confidenceBand = confidenceBandForItem(item);
+    if (confidenceBand === "high") group.highConfidence = (group.highConfidence || 0) + 1;
+    else if (confidenceBand === "medium") group.mediumConfidence = (group.mediumConfidence || 0) + 1;
+    else if (confidenceBand === "low") group.lowConfidence = (group.lowConfidence || 0) + 1;
+    else if (confidenceBand === "unusable") group.unusableTranscript = (group.unusableTranscript || 0) + 1;
+    else group.unknownConfidence = (group.unknownConfidence || 0) + 1;
+    if (item.evaluation.aiVoiceAssistant?.detected) {
+      group.aiVoiceAssistantEncounters = (group.aiVoiceAssistantEncounters || 0) + 1;
+      if (item.evaluation.aiVoiceAssistant.handledSuccessfully) group.aiVoiceAssistantHandled = (group.aiVoiceAssistantHandled || 0) + 1;
+      if (item.evaluation.aiVoiceAssistant.bailed) group.aiVoiceAssistantBailed = (group.aiVoiceAssistantBailed || 0) + 1;
+      if (item.evaluation.aiVoiceAssistant.followThrough?.futureHumanContact) group.aiVoiceAssistantFutureHuman = (group.aiVoiceAssistantFutureHuman || 0) + 1;
+    }
     group.totalDuration += item.evaluation.durationSeconds;
   });
 
@@ -123,6 +379,16 @@ function summarizeBy(items, keyFn, seedFn) {
       actionableConversationRate: percent(group.actionableConversation, group.calls),
       followUpRequiredRate: percent(group.followUpRequired, group.calls),
       outcomeMismatchRate: percent(group.outcomeMismatches, group.calls),
+      highConfidence: group.highConfidence || 0,
+      mediumConfidence: group.mediumConfidence || 0,
+      lowConfidence: group.lowConfidence || 0,
+      unusableTranscript: group.unusableTranscript || 0,
+      unknownConfidence: group.unknownConfidence || 0,
+      reviewOnlySignals: (group.lowConfidence || 0) + (group.unusableTranscript || 0),
+      aiVoiceAssistantEncounterRate: percent(group.aiVoiceAssistantEncounters || 0, group.calls),
+      aiVoiceAssistantBailRate: percent(group.aiVoiceAssistantBailed || 0, group.aiVoiceAssistantEncounters || 0),
+      aiVoiceAssistantHandledRate: percent(group.aiVoiceAssistantHandled || 0, group.aiVoiceAssistantEncounters || 0),
+      aiVoiceAssistantFutureHumanRate: percent(group.aiVoiceAssistantFutureHuman || 0, group.aiVoiceAssistantEncounters || 0),
       averageDurationSeconds: group.calls ? Math.round(group.totalDuration / group.calls) : 0
     }))
     .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
@@ -137,7 +403,10 @@ function seedSourceQualityGroup(name, extras = {}) {
     callsWithBulkSource: 0,
     callsWithImportDate: 0,
     totalImportAgeDays: 0,
+    callsWithRecordAge: 0,
+    totalRecordAgeDays: 0,
     callsWithManualCreator: 0,
+    callsMissingSourceAttribution: 0,
     callsWithCreateDate: 0,
     totalCreateAgeDays: 0,
     leadGeneratorCreatedCalls: 0,
@@ -155,6 +424,7 @@ function seedSourceQualityGroup(name, extras = {}) {
   };
   SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
     group[`newBusinessImportedOlderThan${threshold}`] = 0;
+    group[`newBusinessRecordOlderThan${threshold}`] = 0;
   });
   return group;
 }
@@ -170,7 +440,12 @@ function addSourceQualityCounts(group, item) {
     group.callsWithImportDate += 1;
     group.totalImportAgeDays += attribution.daysSinceImport;
   }
+  if (attribution.daysSinceRecord !== null) {
+    group.callsWithRecordAge += 1;
+    group.totalRecordAgeDays += attribution.daysSinceRecord;
+  }
   if (attribution.hasManualCreator) group.callsWithManualCreator += 1;
+  if (!attribution.hasBulkSource && !attribution.hasManualCreator) group.callsMissingSourceAttribution += 1;
   if (attribution.daysSinceCreated !== null) {
     group.callsWithCreateDate += 1;
     group.totalCreateAgeDays += attribution.daysSinceCreated;
@@ -193,6 +468,13 @@ function addSourceQualityCounts(group, item) {
       }
     });
   }
+  if (segment === "new" && attribution.daysSinceRecord !== null) {
+    SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
+      if (attribution.daysSinceRecord > threshold) {
+        group[`newBusinessRecordOlderThan${threshold}`] += 1;
+      }
+    });
+  }
 }
 
 function finalizeSourceQualityGroup(group) {
@@ -209,10 +491,13 @@ function finalizeSourceQualityGroup(group) {
     riskReviewRate: percent(group.riskReviews, group.calls),
     bulkSourceCoverageRate: percent(group.callsWithBulkSource, group.calls),
     importDateCoverageRate: percent(group.callsWithImportDate, group.calls),
+    recordAgeCoverageRate: percent(group.callsWithRecordAge, group.calls),
     manualCreatorCoverageRate: percent(group.callsWithManualCreator, group.calls),
+    missingSourceAttributionRate: percent(group.callsMissingSourceAttribution, group.calls),
     createDateCoverageRate: percent(group.callsWithCreateDate, group.calls),
     averageImportAgeDays: group.callsWithImportDate ? Math.round(group.totalImportAgeDays / group.callsWithImportDate) : null,
-    averageCreateAgeDays: group.callsWithCreateDate ? Math.round(group.totalCreateAgeDays / group.callsWithCreateDate) : null
+    averageCreateAgeDays: group.callsWithCreateDate ? Math.round(group.totalCreateAgeDays / group.callsWithCreateDate) : null,
+    averageRecordAgeDays: group.callsWithRecordAge ? Math.round(group.totalRecordAgeDays / group.callsWithRecordAge) : null
   };
 }
 
@@ -272,6 +557,12 @@ function buildSourceQualityModel(items) {
     }
   ).sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 
+  const recordAgeBuckets = groupBy(
+    items,
+    (item) => (item.sourceAttribution || sourceAttributionFor(item.row, item.dateTime)).recordAgeBucket,
+    (bucket) => seedSourceQualityGroup(bucket, { bucket, sortOrder: ageBucketSort(bucket) })
+  ).sort((a, b) => a.sortOrder - b.sortOrder);
+
   const importAgeBuckets = groupBy(
     items,
     (item) => (item.sourceAttribution || sourceAttributionFor(item.row, item.dateTime)).importAgeBucket,
@@ -291,6 +582,13 @@ function buildSourceQualityModel(items) {
     metric: "source.newBusinessImportedOlderThan"
   }));
 
+  const newBusinessRecordAgeThresholds = SOURCE_AGE_THRESHOLDS.map((thresholdDays) => ({
+    thresholdDays,
+    calls: finalizedTotals[`newBusinessRecordOlderThan${thresholdDays}`],
+    rate: percent(finalizedTotals[`newBusinessRecordOlderThan${thresholdDays}`], finalizedTotals.newBusinessCalls),
+    metric: "source.newBusinessRecordOlderThan"
+  }));
+
   const rankedSources = sourceRows
     .filter((row) => row.calls >= 25 && row.name !== "Unknown source")
     .sort((a, b) => a.probableLiveHumanRate - b.probableLiveHumanRate || b.calls - a.calls || a.name.localeCompare(b.name));
@@ -301,15 +599,19 @@ function buildSourceQualityModel(items) {
     definitions: {
       bulkSource: "CustomerImportDate and CustomerImportSource from bulk lead sourcing operations.",
       manualCreator: "CustomerCreatedBy, CustomerCreatedByType, and CustomerCreateDate from manual LG/SP entry.",
+      missingSourceAttribution: "Records missing both bulk import evidence and manual creator evidence.",
       humanAnswerRate: "Probable live-human calls divided by total calls for that source or creator.",
-      newBusinessImportAge: "New Business calls where CustomerImportDate is more than X days before the call date."
+      recordAge: "Record Age uses CustomerImportDate where valid, otherwise CustomerCreateDate where valid.",
+      newBusinessRecordAge: "New Business calls where Record Age is more than X days before the call date."
     },
     totals: finalizedTotals,
     sourceRows,
     creatorRows,
     createdByTypeRows,
+    recordAgeBuckets,
     importAgeBuckets,
     creatorAgeBuckets,
+    newBusinessRecordAgeThresholds,
     newBusinessImportAgeThresholds,
     lowestHumanAnswerSource: rankedSources[0] || null,
     lowestHumanAnswerSources: rankedSources.slice(0, 5)
@@ -418,6 +720,39 @@ function durationRelationMatchesFor(rows) {
   }).length;
 }
 
+function buildFieldCoverage(columns = [], rows = []) {
+  return columns.reduce((coverage, column) => {
+    const present = rows.filter((row) => !isMissing(row[column])).length;
+    coverage[column] = {
+      present,
+      missing: rows.length - present,
+      coverageRate: percent(present, rows.length)
+    };
+    return coverage;
+  }, {});
+}
+
+function buildBusinessSegmentMetrics(items) {
+  return summarizeBy(
+    items,
+    (item) => businessSegmentLabel(businessSegmentFor(item.row)),
+    (name) => ({
+      name,
+      segment: name === "Warm Business" ? "warm" : "new",
+      calls: 0,
+      transcriptAvailable: 0,
+      telephonyConnected: 0,
+      probableLiveHuman: 0,
+      meaningfulConversation: 0,
+      actionableConversation: 0,
+      followUpRequired: 0,
+      outcomeMismatches: 0,
+      riskReviews: 0,
+      totalDuration: 0
+    })
+  );
+}
+
 function buildDashboardView(items, options = {}) {
   const canonicalRows = items.map((item) => item.row);
   const durationRelationMatches = durationRelationMatchesFor(canonicalRows);
@@ -435,6 +770,11 @@ function buildDashboardView(items, options = {}) {
     followUpRequired: items.filter((item) => item.evaluation.opportunity.followUpRequired).length,
     followUpCompleted: items.filter((item) => item.followUpStatus === "completed").length,
     followUpIndeterminate: items.filter((item) => item.followUpStatus === "indeterminate_insufficient_future_data").length,
+    aiVoiceAssistantEncounters: items.filter((item) => item.evaluation.aiVoiceAssistant?.detected).length,
+    aiVoiceAssistantHandled: items.filter((item) => item.evaluation.aiVoiceAssistant?.handledSuccessfully).length,
+    aiVoiceAssistantBailed: items.filter((item) => item.evaluation.aiVoiceAssistant?.bailed).length,
+    aiVoiceAssistantFutureHuman: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureHumanContact).length,
+    aiVoiceAssistantFutureMeaningful: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureMeaningfulConversation).length,
     newBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "new").length,
     warmBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "warm").length,
     outcomeMismatches: items.filter((item) => item.evaluation.outcome.mismatch).length,
@@ -453,6 +793,11 @@ function buildDashboardView(items, options = {}) {
     actionableConversation: percent(totals.actionableConversation, totals.uniqueCalls),
     followUpRequired: percent(totals.followUpRequired, totals.uniqueCalls),
     followUpCompleted: percent(totals.followUpCompleted, totals.followUpRequired),
+    aiVoiceAssistantEncounter: percent(totals.aiVoiceAssistantEncounters, totals.uniqueCalls),
+    aiVoiceAssistantHandled: percent(totals.aiVoiceAssistantHandled, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantBail: percent(totals.aiVoiceAssistantBailed, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantFutureHuman: percent(totals.aiVoiceAssistantFutureHuman, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantFutureMeaningful: percent(totals.aiVoiceAssistantFutureMeaningful, totals.aiVoiceAssistantEncounters),
     newBusiness: percent(totals.newBusinessCalls, totals.uniqueCalls),
     warmBusiness: percent(totals.warmBusinessCalls, totals.uniqueCalls),
     outcomeMismatch: percent(totals.outcomeMismatches, totals.uniqueCalls),
@@ -482,7 +827,7 @@ function buildDashboardView(items, options = {}) {
 
   const sourceMetrics = summarizeBy(
     items,
-    (item) => (isMissing(item.row.CustomerImportSource) ? "Unknown source" : clean(item.row.CustomerImportSource)),
+    (item) => (item.sourceAttribution || sourceAttributionFor(item.row, item.dateTime)).customerImportSource,
     (name) => ({
       name,
       calls: 0,
@@ -499,15 +844,27 @@ function buildDashboardView(items, options = {}) {
   );
 
   const sourceQuality = buildSourceQualityModel(items);
+  const aiVoiceAssistant = buildAiVoiceAssistantModel(items);
+  const leadReattempt = buildLeadReattemptModel(items);
+  const systemAudio = buildSystemAudioModel(items);
   const alerts = buildAlerts(items);
   const reviewQueue = items
     .filter((item) => item.evaluation.outcome.reviewRequired || item.evaluation.opportunity.followUpRequired)
     .map((item) => buildExplorerRow(item))
     .slice(0, 250);
+  const dateTimes = items.map((item) => item.dateTime).filter(Boolean);
+  const minDateTime = dateTimes.length ? new Date(Math.min(...dateTimes.map((date) => date.getTime()))) : null;
+  const maxDateTime = dateTimes.length ? new Date(Math.max(...dateTimes.map((date) => date.getTime()))) : null;
+  const dateRange = buildDateRange(items, minDateTime, maxDateTime);
+  const dataWindow = buildDataWindow(items, totals);
+  const intelligenceGovernance = buildIntelligenceGovernance(items, totals);
 
   return {
     segment: options.segment || "",
     segmentLabel: businessSegmentLabel(options.segment),
+    dateRange,
+    dataWindow,
+    intelligenceGovernance,
     totals,
     rates,
     durationStats: {
@@ -518,6 +875,9 @@ function buildDashboardView(items, options = {}) {
     salespersonScorecards,
     sourceMetrics,
     sourceQuality,
+    aiVoiceAssistant,
+    leadReattempt,
+    systemAudio,
     leadUtilization: buildLeadUtilizationModel(items),
     alerts,
     reviewQueue,
@@ -525,6 +885,345 @@ function buildDashboardView(items, options = {}) {
     evaluationRows: items.map((item) => buildEvaluationRow(item)),
     explorerRows: items.slice(-250).reverse().map((item) => buildExplorerRow(item))
   };
+}
+
+function analysisWithFilterContext(analysis, filterState, context = {}) {
+  const items = internalItemsFor(analysis);
+  const filterContext = contextWithAnalysisAlerts(analysis, context);
+  const importId = importIdForAlertContext(analysis, filterContext);
+  const lifecycleAlerts = enrichAlertsWithLifecycle(analysis.alerts || [], filterContext, importId);
+  const filteredAlerts = visibleAlertsForFilters(lifecycleAlerts, filterState);
+  const segmentItems = {
+    new: items.filter((item) => businessSegmentFor(item.row) === "new"),
+    warm: items.filter((item) => businessSegmentFor(item.row) === "warm")
+  };
+  const businessSegmentViews = Object.fromEntries(
+    Object.entries(analysis.businessSegmentViews || {}).map(([segment, view]) => [
+      segment,
+      applyManagerReviewGovernance(
+        lifecycleAlertView(view, filterContext, filterState, importId),
+        segmentItems[segment] || [],
+        filterContext
+      )
+    ])
+  );
+  const filterOptions = buildFilterOptions(items, filterContext);
+  const filterSummary = buildFilterSummary(items.length, items.length, filterState);
+  return attachInternalItems(applyManagerReviewGovernance({
+    ...analysis,
+    alerts: filteredAlerts,
+    alertLifecycleSummary: alertSummaryForFilters(lifecycleAlerts, filterState),
+    businessSegmentViews,
+    filterState,
+    filterOptions,
+    filterSummary,
+    datasetTotals: analysis.totals
+  }, items, filterContext), items);
+}
+
+function mergeContextMap(context = {}, key, callId, values) {
+  if (!callId) return;
+  const valueList = Array.from(new Set((values || []).filter(Boolean)));
+  if (!valueList.length) return;
+  if (!(context[key] instanceof Map)) context[key] = new Map();
+  const existing = context[key].get(callId) || [];
+  context[key].set(callId, Array.from(new Set([...existing, ...valueList])));
+}
+
+function cloneContextMap(source) {
+  if (source instanceof Map) {
+    return new Map(Array.from(source.entries()).map(([key, values]) => [key, Array.isArray(values) ? values.slice() : [values]]));
+  }
+  const map = new Map();
+  Object.entries(source || {}).forEach(([key, value]) => {
+    map.set(key, Array.isArray(value) ? value.slice() : value ? [value] : []);
+  });
+  return map;
+}
+
+function cloneAlertEventMap(source) {
+  if (source instanceof Map) {
+    return new Map(Array.from(source.entries()).map(([key, value]) => [key, normalizeAlertEvent(value)]));
+  }
+  const map = new Map();
+  Object.entries(source || {}).forEach(([key, value]) => {
+    if (value) map.set(key, normalizeAlertEvent(value));
+  });
+  return map;
+}
+
+function importIdForAlertContext(analysis, context = {}) {
+  return context.currentImportId || context.importId || analysis.persistence?.currentImportId || "current";
+}
+
+function alertEventFor(alert, context = {}, importId = "current") {
+  const id = alert.id || alert.alertId || alertIdFor(importId, alert);
+  const byId = context.alertEventById instanceof Map ? context.alertEventById : cloneAlertEventMap(context.alertEventById);
+  return byId.get(id) || null;
+}
+
+function enrichAlertsWithLifecycle(alerts = [], context = {}, importId = "current") {
+  return (alerts || [])
+    .map((alert) => {
+      const event = alertEventFor(alert, context, importId);
+      return mergeAlertWithEvent(alert, event, importId);
+    })
+    .filter((alert) => !alert.parkedDataRelated && normalizeAlertStatus(alert.status) !== "parked");
+}
+
+function visibleAlertsForFilters(alerts = [], filterState = {}) {
+  const severities = new Set(filterState.values?.alertSeverity || []);
+  const statuses = new Set(filterState.values?.alertStatus || []);
+  return alerts.filter((alert) => {
+    if (severities.size && !severities.has(alert.severity || "notice")) return false;
+    if (statuses.size) return statuses.has(normalizeAlertStatus(alert.status));
+    return isActiveAlertStatus(alert.status);
+  });
+}
+
+function alertSummaryForFilters(alerts = [], filterState = {}) {
+  const severities = new Set(filterState.values?.alertSeverity || []);
+  const scopedAlerts = alerts.filter((alert) => !severities.size || severities.has(alert.severity || "notice"));
+  return summarizeAlerts(scopedAlerts);
+}
+
+function lifecycleAlertView(view = {}, context = {}, filterState = {}, importId = "current") {
+  const lifecycleAlerts = enrichAlertsWithLifecycle(view.alerts || [], context, importId);
+  return {
+    ...view,
+    alerts: visibleAlertsForFilters(lifecycleAlerts, filterState),
+    alertLifecycleSummary: alertSummaryForFilters(lifecycleAlerts, filterState)
+  };
+}
+
+function lifecycleBusinessSegmentViews(views = {}, context = {}, filterState = {}, importId = "current") {
+  return Object.fromEntries(
+    Object.entries(views || {}).map(([segment, view]) => [segment, lifecycleAlertView(view, context, filterState, importId)])
+  );
+}
+
+function contextMapValue(context = {}, key, callId) {
+  const source = context[key];
+  if (!source || !callId) return null;
+  if (source instanceof Map) return source.get(callId) || null;
+  return source[callId] || null;
+}
+
+function reviewNeededByEvaluation(item = {}) {
+  return Boolean(
+    item?.evaluation?.outcome?.reviewRequired ||
+    item?.evaluation?.risk?.reviewRequired ||
+    item?.evaluation?.opportunity?.followUpRequired
+  );
+}
+
+function managerReviewStatusForItem(item = {}, context = {}) {
+  const callId = clean(item?.row?.call_id || item.callId || item.call_id);
+  const stored = contextMapValue(context, "managerReviewStatusByCallId", callId);
+  if (stored) return stored;
+  return reviewNeededByEvaluation(item) || item.reviewRequired || item.riskReviewRequired ? "review_needed" : "unreviewed";
+}
+
+function managerReviewForCallId(context = {}, callId = "") {
+  const review = contextMapValue(context, "managerReviewByCallId", callId);
+  return review ? normalizeManagerReview(review) : null;
+}
+
+function correctionValue(review, fieldName) {
+  const correction = (review?.corrections || []).slice().reverse().find((item) => item.fieldName === fieldName);
+  return correction ? correction.managerCorrectedValue : "";
+}
+
+function managerReviewOverlayForCallId(context = {}, callId = "", item = null) {
+  const review = managerReviewForCallId(context, callId);
+  const status = review?.reviewStatus || managerReviewStatusForItem(item || { callId }, context);
+  return {
+    managerReviewStatus: status,
+    managerReviewId: review?.reviewId || "",
+    managerReviewScope: review?.reviewScope || "",
+    managerReviewNotes: review?.managerNotes || "",
+    managerReviewedBy: review?.reviewedBy || "",
+    managerReviewedAt: review?.reviewedAt || "",
+    managerCorrectionCount: (review?.corrections || []).length,
+    managerCorrectedFields: (review?.corrections || []).map((correction) => correction.fieldName),
+    managerCorrectedOutcome: correctionValue(review, "local_outcome_category"),
+    managerCorrectedOutcomeDetail: correctionValue(review, "local_outcome_detail"),
+    managerCorrectedContactClassification: correctionValue(review, "contact_classification"),
+    managerCorrectedFollowUpStatus: correctionValue(review, "follow_up_status"),
+    managerCorrectedFollowUpChannel: correctionValue(review, "follow_up_channel"),
+    managerFollowUpManuallyCompleted: correctionValue(review, "follow_up_manually_completed"),
+    managerFollowUpDismissed: correctionValue(review, "follow_up_dismissed"),
+    managerCoachingNote: correctionValue(review, "coaching_note")
+  };
+}
+
+function applyManagerReviewOverlayToRow(row = {}, context = {}, item = null) {
+  return {
+    ...row,
+    ...managerReviewOverlayForCallId(context, row.callId || row.call_id || item?.row?.call_id || "", item)
+  };
+}
+
+function applyManagerReviewOverlays(rows = [], context = {}, itemByCallId = new Map()) {
+  return (rows || []).map((row) => applyManagerReviewOverlayToRow(row, context, itemByCallId.get(row.callId || row.call_id) || null));
+}
+
+function applyManagerReviewOverlayToAlert(alert = {}, context = {}) {
+  return {
+    ...alert,
+    ...managerReviewOverlayForCallId(context, alert.callId || alert.call_id || "", null)
+  };
+}
+
+function buildManagerReviewGovernance(items = [], context = {}) {
+  const byStatus = Object.fromEntries(MANAGER_REVIEW_STATUSES.map((status) => [status, 0]));
+  const topCorrectedFields = new Map();
+  const reviewedCallIds = new Set();
+  const correctedCallIds = new Set();
+  const reviewNeededCallIds = new Set();
+  const escalatedCallIds = new Set();
+  const dismissedCallIds = new Set();
+  items.forEach((item) => {
+    const callId = clean(item?.row?.call_id || item.callId || item.call_id);
+    const review = managerReviewForCallId(context, callId);
+    const status = review?.reviewStatus || managerReviewStatusForItem(item, context);
+    byStatus[status] = (byStatus[status] || 0) + 1;
+    if (review) reviewedCallIds.add(callId);
+    if (status === "review_needed") reviewNeededCallIds.add(callId);
+    if (status === "reviewed_corrected" || (review?.corrections || []).length) correctedCallIds.add(callId);
+    if (status === "escalated") escalatedCallIds.add(callId);
+    if (status === "dismissed") dismissedCallIds.add(callId);
+    (review?.corrections || []).forEach((correction) => {
+      topCorrectedFields.set(correction.fieldName, (topCorrectedFields.get(correction.fieldName) || 0) + 1);
+    });
+  });
+  return {
+    schemaVersion: "sales_dashboard_manager_review_governance.v1",
+    totalCalls: items.length,
+    callsWithAnyManagerReview: reviewedCallIds.size,
+    reviewedCalls: reviewedCallIds.size,
+    reviewedConfirmedCalls: byStatus.reviewed_confirmed || 0,
+    reviewedCorrectedCalls: byStatus.reviewed_corrected || 0,
+    correctedCalls: correctedCallIds.size,
+    dismissedCalls: dismissedCallIds.size,
+    escalatedCalls: escalatedCallIds.size,
+    reviewNeededCalls: reviewNeededCallIds.size,
+    inReviewCalls: byStatus.in_review || 0,
+    correctionRate: items.length ? Math.round((correctedCallIds.size / items.length) * 1000) / 10 : 0,
+    coverageRate: items.length ? Math.round((reviewedCallIds.size / items.length) * 1000) / 10 : 0,
+    byStatus,
+    topCorrectedFields: Array.from(topCorrectedFields.entries())
+      .map(([fieldName, count]) => ({ fieldName, count }))
+      .sort((a, b) => b.count - a.count || a.fieldName.localeCompare(b.fieldName))
+      .slice(0, 10)
+  };
+}
+
+function applyManagerReviewGovernance(analysis, items = [], context = {}) {
+  const itemByCallId = new Map(items.map((item) => [clean(item.row?.call_id), item]));
+  return {
+    ...analysis,
+    managerReviewGovernance: buildManagerReviewGovernance(items, context),
+    alerts: (analysis.alerts || []).map((alert) => applyManagerReviewOverlayToAlert(alert, context)),
+    reviewQueue: applyManagerReviewOverlays(analysis.reviewQueue || [], context, itemByCallId),
+    explorerRows: applyManagerReviewOverlays(analysis.explorerRows || [], context, itemByCallId),
+    drilldownRows: applyManagerReviewOverlays(analysis.drilldownRows || [], context, itemByCallId),
+    evaluationRows: applyManagerReviewOverlays(analysis.evaluationRows || [], context, itemByCallId)
+  };
+}
+
+function contextWithAnalysisAlerts(analysis, context = {}) {
+  const importId = importIdForAlertContext(analysis, context);
+  const alertEventById = cloneAlertEventMap(context.alertEventById);
+  const merged = {
+    ...context,
+    currentImportId: importId,
+    alertEventById,
+    alertSeverityByCallId: cloneContextMap(context.alertSeverityByCallId),
+    alertStatusByCallId: cloneContextMap(context.alertStatusByCallId)
+  };
+  (analysis.alerts || []).forEach((alert) => {
+    const event = alertEventFor(alert, merged, importId);
+    const status = event ? normalizeAlertStatus(event.status) : normalizeAlertStatus(alert.status || "new");
+    mergeContextMap(merged, "alertSeverityByCallId", alert.callId, [alert.severity || "notice"]);
+    mergeContextMap(merged, "alertStatusByCallId", alert.callId, [status]);
+  });
+  return merged;
+}
+
+function buildFilteredAnalysis(analysis, filterInput = {}, context = {}) {
+  const filterState = filterInput?.schemaVersion ? filterInput : normalizeFilterState(filterInput);
+  const items = internalItemsFor(analysis);
+  const filterContext = contextWithAnalysisAlerts(analysis, context);
+  if (!items.length) {
+    const emptyAlerts = [];
+    return {
+      ...analysis,
+      alerts: emptyAlerts,
+      alertLifecycleSummary: summarizeAlerts(emptyAlerts),
+      filterState,
+      filterOptions: {},
+      filterSummary: buildFilterSummary(0, 0, filterState),
+      datasetTotals: analysis?.totals || {}
+    };
+  }
+  if (!filterState.active) {
+    return analysisWithFilterContext(analysis, filterState, filterContext);
+  }
+
+  const filteredItems = applyCallFilters(items, filterState, filterContext);
+  const view = buildDashboardView(filteredItems);
+  const importId = importIdForAlertContext(analysis, filterContext);
+  const lifecycleAlerts = enrichAlertsWithLifecycle(view.alerts, filterContext, importId);
+  const filteredAlerts = visibleAlertsForFilters(lifecycleAlerts, filterState);
+  const canonicalRows = filteredItems.map((item) => item.row);
+  const filterOptions = buildFilterOptions(filteredItems, filterContext);
+  const filterSummary = buildFilterSummary(items.length, filteredItems.length, filterState);
+  const businessSegmentMetrics = buildBusinessSegmentMetrics(filteredItems);
+  const businessSegmentViews = {
+    new: buildDashboardView(filteredItems.filter((item) => businessSegmentFor(item.row) === "new"), { segment: "new" }),
+    warm: buildDashboardView(filteredItems.filter((item) => businessSegmentFor(item.row) === "warm"), { segment: "warm" })
+  };
+  const segmentItems = {
+    new: filteredItems.filter((item) => businessSegmentFor(item.row) === "new"),
+    warm: filteredItems.filter((item) => businessSegmentFor(item.row) === "warm")
+  };
+  const lifecycleSegmentViews = Object.fromEntries(
+    Object.entries(businessSegmentViews).map(([segment, view]) => [
+      segment,
+      applyManagerReviewGovernance(
+        lifecycleAlertView(view, filterContext, filterState, importId),
+        segmentItems[segment] || [],
+        filterContext
+      )
+    ])
+  );
+
+  return attachInternalItems(applyManagerReviewGovernance({
+    ...analysis,
+    ...view,
+    alerts: filteredAlerts,
+    alertLifecycleSummary: alertSummaryForFilters(lifecycleAlerts, filterState),
+    schemaVersion: analysis.schemaVersion,
+    sourceName: analysis.sourceName,
+    inputHash: analysis.inputHash,
+    generatedAt: analysis.generatedAt,
+    columns: analysis.columns,
+    missingColumns: analysis.missingColumns,
+    ignoredFields: analysis.ignoredFields,
+    unsupportedMetrics: analysis.unsupportedMetrics,
+    activeDataSources: analysis.activeDataSources,
+    parkedAllocation: analysis.parkedAllocation,
+    persistence: analysis.persistence,
+    intelligence: analysis.intelligence,
+    fieldCoverage: buildFieldCoverage(analysis.columns || [], canonicalRows),
+    businessSegmentMetrics,
+    businessSegmentViews: lifecycleSegmentViews,
+    filterState,
+    filterOptions,
+    filterSummary,
+    datasetTotals: analysis.totals
+  }, filteredItems, filterContext), filteredItems);
 }
 
 function analyzeCsvText(csvText, options = {}) {
@@ -566,17 +1265,10 @@ function analyzeCsvText(csvText, options = {}) {
   const minDateTime = dateTimes.length ? new Date(Math.min(...dateTimes.map((date) => date.getTime()))) : null;
   const maxDateTime = dateTimes.length ? new Date(Math.max(...dateTimes.map((date) => date.getTime()))) : null;
   linkFollowUps(items, maxDateTime);
+  linkAiVoiceAssistantOutcomes(items, maxDateTime);
   const leadUtilization = buildLeadUtilizationModel(items);
 
-  const fieldCoverage = {};
-  parsed.columns.forEach((column) => {
-    const present = rawRows.filter((row) => !isMissing(row[column])).length;
-    fieldCoverage[column] = {
-      present,
-      missing: rawRows.length - present,
-      coverageRate: percent(present, rawRows.length)
-    };
-  });
+  const fieldCoverage = buildFieldCoverage(parsed.columns, rawRows);
 
   const durationRelationMatches = durationRelationMatchesFor(rawRows);
 
@@ -594,6 +1286,11 @@ function analyzeCsvText(csvText, options = {}) {
     followUpRequired: items.filter((item) => item.evaluation.opportunity.followUpRequired).length,
     followUpCompleted: items.filter((item) => item.followUpStatus === "completed").length,
     followUpIndeterminate: items.filter((item) => item.followUpStatus === "indeterminate_insufficient_future_data").length,
+    aiVoiceAssistantEncounters: items.filter((item) => item.evaluation.aiVoiceAssistant?.detected).length,
+    aiVoiceAssistantHandled: items.filter((item) => item.evaluation.aiVoiceAssistant?.handledSuccessfully).length,
+    aiVoiceAssistantBailed: items.filter((item) => item.evaluation.aiVoiceAssistant?.bailed).length,
+    aiVoiceAssistantFutureHuman: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureHumanContact).length,
+    aiVoiceAssistantFutureMeaningful: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureMeaningfulConversation).length,
     newBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "new").length,
     warmBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "warm").length,
     outcomeMismatches: items.filter((item) => item.evaluation.outcome.mismatch).length,
@@ -612,6 +1309,11 @@ function analyzeCsvText(csvText, options = {}) {
     actionableConversation: percent(totals.actionableConversation, totals.uniqueCalls),
     followUpRequired: percent(totals.followUpRequired, totals.uniqueCalls),
     followUpCompleted: percent(totals.followUpCompleted, totals.followUpRequired),
+    aiVoiceAssistantEncounter: percent(totals.aiVoiceAssistantEncounters, totals.uniqueCalls),
+    aiVoiceAssistantHandled: percent(totals.aiVoiceAssistantHandled, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantBail: percent(totals.aiVoiceAssistantBailed, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantFutureHuman: percent(totals.aiVoiceAssistantFutureHuman, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantFutureMeaningful: percent(totals.aiVoiceAssistantFutureMeaningful, totals.aiVoiceAssistantEncounters),
     newBusiness: percent(totals.newBusinessCalls, totals.uniqueCalls),
     warmBusiness: percent(totals.warmBusinessCalls, totals.uniqueCalls),
     outcomeMismatch: percent(totals.outcomeMismatches, totals.uniqueCalls),
@@ -641,7 +1343,7 @@ function analyzeCsvText(csvText, options = {}) {
 
   const sourceMetrics = summarizeBy(
     items,
-    (item) => (isMissing(item.row.CustomerImportSource) ? "Unknown source" : clean(item.row.CustomerImportSource)),
+    (item) => (item.sourceAttribution || sourceAttributionFor(item.row, item.dateTime)).customerImportSource,
     (name) => ({
       name,
       calls: 0,
@@ -657,38 +1359,43 @@ function analyzeCsvText(csvText, options = {}) {
     })
   );
 
-  const businessSegmentMetrics = summarizeBy(
-    items,
-    (item) => businessSegmentLabel(businessSegmentFor(item.row)),
-    (name) => ({
-      name,
-      segment: name === "Warm Business" ? "warm" : "new",
-      calls: 0,
-      transcriptAvailable: 0,
-      telephonyConnected: 0,
-      probableLiveHuman: 0,
-      meaningfulConversation: 0,
-      actionableConversation: 0,
-      followUpRequired: 0,
-      outcomeMismatches: 0,
-      riskReviews: 0,
-      totalDuration: 0
-    })
-  );
+  const businessSegmentMetrics = buildBusinessSegmentMetrics(items);
 
   const businessSegmentViews = {
     new: buildDashboardView(items.filter((item) => businessSegmentFor(item.row) === "new"), { segment: "new" }),
     warm: buildDashboardView(items.filter((item) => businessSegmentFor(item.row) === "warm"), { segment: "warm" })
   };
   const sourceQuality = buildSourceQualityModel(items);
+  const aiVoiceAssistant = buildAiVoiceAssistantModel(items);
+  const leadReattempt = buildLeadReattemptModel(items);
+  const systemAudio = buildSystemAudioModel(items);
+  const allocationRowsOption = options.allocationRows || options.allocations?.rows || [];
+  const allocationConfigured = Boolean(
+    options.parkedAllocation?.configured ||
+    options.allocationMetadata ||
+    options.allocations?.metadata ||
+    options.allocationError ||
+    options.allocations?.error ||
+    allocationRowsOption.length
+  );
+  const parkedAllocation = buildParkedAllocationDiagnostic({
+    ...(options.allocationMetadata || options.allocations?.metadata || {}),
+    ...(options.parkedAllocation || {}),
+    configured: allocationConfigured,
+    error: options.parkedAllocation?.error || options.allocationError || options.allocations?.error || "",
+    readStatus: options.parkedAllocation?.readStatus || (allocationConfigured ? "parked_not_used" : "")
+  });
 
   const alerts = buildAlerts(items);
   const reviewQueue = items
     .filter((item) => item.evaluation.outcome.reviewRequired || item.evaluation.opportunity.followUpRequired)
     .map((item) => buildExplorerRow(item))
     .slice(0, 250);
+  const dateRange = buildDateRange(items, minDateTime, maxDateTime);
+  const dataWindow = buildDataWindow(items, totals);
+  const intelligenceGovernance = buildIntelligenceGovernance(items, totals);
 
-  return {
+  const result = {
     schemaVersion: "sales_dashboard_analysis.v1",
     sourceName: options.sourceName || "CSV import",
     inputHash,
@@ -703,10 +1410,9 @@ function analyzeCsvText(csvText, options = {}) {
       "revenue attribution",
       "order value generated by a call"
     ],
-    dateRange: {
-      start: minDateTime ? minDateTime.toISOString() : null,
-      end: maxDateTime ? maxDateTime.toISOString() : null
-    },
+    dateRange,
+    dataWindow,
+    intelligenceGovernance,
     totals,
     rates,
     durationStats: {
@@ -718,6 +1424,16 @@ function analyzeCsvText(csvText, options = {}) {
     salespersonScorecards,
     sourceMetrics,
     sourceQuality,
+    activeDataSources: {
+      callCsv: true,
+      transcriptText: true,
+      canonicalCallFields: true,
+      allocationImports: false
+    },
+    parkedAllocation,
+    aiVoiceAssistant,
+    leadReattempt,
+    systemAudio,
     businessSegmentMetrics,
     businessSegmentViews,
     leadUtilization,
@@ -727,6 +1443,7 @@ function analyzeCsvText(csvText, options = {}) {
     evaluationRows: items.map((item) => buildEvaluationRow(item)),
     explorerRows: items.slice(-250).reverse().map((item) => buildExplorerRow(item))
   };
+  return attachInternalItems(applyManagerReviewGovernance(result, items, {}), items);
 }
 
 function buildEvaluationRow(item) {
@@ -734,17 +1451,23 @@ function buildEvaluationRow(item) {
   const segment = businessSegmentFor(row);
   const sourceAttribution = item.sourceAttribution || sourceAttributionFor(row, item.dateTime);
   const customerId = clean(row.customer_id);
+  const contactId = clean(row.ContactId);
+  const governance = rowGovernance(item);
   return {
     callId: clean(row.call_id),
     customerId: isMissing(customerId) ? "" : customerId,
+    contactId: isMissing(contactId) ? "" : contactId,
     date: clean(row.call_date),
     time: clean(row.call_time),
     salesperson: clean(row.Salesperson) || "Unknown",
     userId: clean(row.UserID) || "",
     callType: clean(row.CallType) || "Unknown",
     direction: clean(row.call_direction) || "Unknown",
-    source: isMissing(row.CustomerImportSource) ? "Unknown source" : clean(row.CustomerImportSource),
+    source: sourceAttribution.customerImportSource,
     customerImportSource: sourceAttribution.customerImportSource,
+    customerImportSourceRaw: sourceAttribution.customerImportSourceRaw,
+    customerImportSourceInferred: sourceAttribution.customerImportSourceInferred,
+    customerImportSourceInferenceReason: sourceAttribution.customerImportSourceInferenceReason,
     customerImportDate: sourceAttribution.customerImportDate,
     customerImportDateIso: sourceAttribution.customerImportDateIso,
     customerCreatedBy: sourceAttribution.customerCreatedBy,
@@ -754,16 +1477,24 @@ function buildEvaluationRow(item) {
     customerCreateDateIso: sourceAttribution.customerCreateDateIso,
     daysSinceImport: sourceAttribution.daysSinceImport,
     daysSinceCreated: sourceAttribution.daysSinceCreated,
+    daysSinceRecord: sourceAttribution.daysSinceRecord,
+    recordAgeBasis: sourceAttribution.recordAgeBasis,
+    recordAgeBasisLabel: sourceAttribution.recordAgeBasisLabel,
     importAgeBucket: sourceAttribution.importAgeBucket,
     createAgeBucket: sourceAttribution.createAgeBucket,
+    recordAgeBucket: sourceAttribution.recordAgeBucket,
     hasBulkSource: sourceAttribution.hasBulkSource,
     hasManualCreator: sourceAttribution.hasManualCreator,
     orderCount: orderCount(row),
+    orderHistoryLabel: orderHistoryLabel(row),
     businessSegment: segment,
     businessSegmentLabel: businessSegmentLabel(segment),
     durationSeconds: item.evaluation.durationSeconds,
     totalSeconds: item.evaluation.totalSeconds,
-    importedNoSale: item.evaluation.outcome.importedNoSale || "Blank",
+    importedNoSale: item.evaluation.outcome.importedNoSaleLabel,
+    importedNoSaleRaw: item.evaluation.outcome.importedNoSale,
+    importedNoSaleReliability: item.evaluation.outcome.importedNoSaleReliability,
+    importedNoSalePriority: item.evaluation.outcome.importedNoSalePriority,
     localOutcome: item.evaluation.outcome.localCategory,
     localOutcomeConfidence: item.evaluation.outcome.confidence,
     contactClassification: item.evaluation.contact.classification,
@@ -772,6 +1503,17 @@ function buildEvaluationRow(item) {
     actionableConversation: item.evaluation.contact.actionableConversation,
     transcriptQuality: item.evaluation.transcript.qualityBand,
     transcriptWordCount: item.evaluation.transcript.wordCount,
+    aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
+    aiVoiceAssistantConfidence: item.evaluation.aiVoiceAssistant?.confidence || 0,
+    aiVoiceAssistantResponse: item.evaluation.aiVoiceAssistant?.responseClassification || "not_encountered",
+    aiVoiceAssistantHandledSuccessfully: Boolean(item.evaluation.aiVoiceAssistant?.handledSuccessfully),
+    aiVoiceAssistantBailed: Boolean(item.evaluation.aiVoiceAssistant?.bailed),
+    aiVoiceAssistantTactics: item.evaluation.aiVoiceAssistant?.tacticLabels || [],
+    aiVoiceAssistantFutureStatus: item.evaluation.aiVoiceAssistant?.followThrough?.status || "not_applicable",
+    aiVoiceAssistantFutureCallId: item.evaluation.aiVoiceAssistant?.followThrough?.futureCallId || "",
+    systemAudioDetected: Boolean(item.evaluation.systemAudio?.detected),
+    systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
+    systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
     followUpRequired: item.evaluation.opportunity.followUpRequired,
     followUpStatus: item.followUpStatus,
     followUpMatchedCallId: item.followUpMatchedCallId || "",
@@ -779,6 +1521,7 @@ function buildEvaluationRow(item) {
     riskReviewRequired: item.evaluation.risk.reviewRequired,
     outcomeMismatch: item.evaluation.outcome.mismatch,
     reviewRequired: item.evaluation.outcome.reviewRequired,
+    ...governance,
     evidence: item.evaluation.evidence.map((evidence) => ({
       signal: evidence.signal,
       summary: evidence.summary,
@@ -795,16 +1538,22 @@ function buildExplorerRow(item) {
   const segment = businessSegmentFor(row);
   const sourceAttribution = item.sourceAttribution || sourceAttributionFor(row, item.dateTime);
   const customerId = clean(row.customer_id);
+  const contactId = clean(row.ContactId);
+  const governance = rowGovernance(item);
   return {
     callId: clean(row.call_id),
     customerId: isMissing(customerId) ? "" : customerId,
+    contactId: isMissing(contactId) ? "" : contactId,
     date: clean(row.call_date),
     time: clean(row.call_time),
     salesperson: clean(row.Salesperson) || "Unknown",
     callType: clean(row.CallType) || "Unknown",
     direction: clean(row.call_direction) || "Unknown",
-    source: isMissing(row.CustomerImportSource) ? "Unknown source" : clean(row.CustomerImportSource),
+    source: sourceAttribution.customerImportSource,
     customerImportSource: sourceAttribution.customerImportSource,
+    customerImportSourceRaw: sourceAttribution.customerImportSourceRaw,
+    customerImportSourceInferred: sourceAttribution.customerImportSourceInferred,
+    customerImportSourceInferenceReason: sourceAttribution.customerImportSourceInferenceReason,
     customerImportDate: sourceAttribution.customerImportDate,
     customerImportDateIso: sourceAttribution.customerImportDateIso,
     customerCreatedBy: sourceAttribution.customerCreatedBy,
@@ -814,21 +1563,40 @@ function buildExplorerRow(item) {
     customerCreateDateIso: sourceAttribution.customerCreateDateIso,
     daysSinceImport: sourceAttribution.daysSinceImport,
     daysSinceCreated: sourceAttribution.daysSinceCreated,
+    daysSinceRecord: sourceAttribution.daysSinceRecord,
+    recordAgeBasis: sourceAttribution.recordAgeBasis,
+    recordAgeBasisLabel: sourceAttribution.recordAgeBasisLabel,
     importAgeBucket: sourceAttribution.importAgeBucket,
     createAgeBucket: sourceAttribution.createAgeBucket,
+    recordAgeBucket: sourceAttribution.recordAgeBucket,
     hasBulkSource: sourceAttribution.hasBulkSource,
     hasManualCreator: sourceAttribution.hasManualCreator,
     orderCount: orderCount(row),
+    orderHistoryLabel: orderHistoryLabel(row),
     businessSegment: segment,
     businessSegmentLabel: businessSegmentLabel(segment),
     durationSeconds: item.evaluation.durationSeconds,
-    importedNoSale: item.evaluation.outcome.importedNoSale || "Blank",
+    importedNoSale: item.evaluation.outcome.importedNoSaleLabel,
+    importedNoSaleRaw: item.evaluation.outcome.importedNoSale,
+    importedNoSaleReliability: item.evaluation.outcome.importedNoSaleReliability,
+    importedNoSalePriority: item.evaluation.outcome.importedNoSalePriority,
     localOutcome: item.evaluation.outcome.localCategory,
     contactClassification: item.evaluation.contact.classification,
     transcriptQuality: item.evaluation.transcript.qualityBand,
+    aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
+    aiVoiceAssistantResponse: item.evaluation.aiVoiceAssistant?.responseClassification || "not_encountered",
+    aiVoiceAssistantHandledSuccessfully: Boolean(item.evaluation.aiVoiceAssistant?.handledSuccessfully),
+    aiVoiceAssistantBailed: Boolean(item.evaluation.aiVoiceAssistant?.bailed),
+    aiVoiceAssistantTactics: item.evaluation.aiVoiceAssistant?.tacticLabels || [],
+    aiVoiceAssistantFutureStatus: item.evaluation.aiVoiceAssistant?.followThrough?.status || "not_applicable",
+    aiVoiceAssistantFutureCallId: item.evaluation.aiVoiceAssistant?.followThrough?.futureCallId || "",
+    systemAudioDetected: Boolean(item.evaluation.systemAudio?.detected),
+    systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
+    systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
     followUpStatus: item.followUpStatus,
     followUpChannel: item.evaluation.opportunity.followUpChannel,
     reviewRequired: item.evaluation.outcome.reviewRequired,
+    ...governance,
     evidence: item.evaluation.evidence.map((evidence) => evidence.summary || evidence.text).filter(Boolean).slice(0, 2),
     transcriptPreview: item.evaluation.preview
   };
@@ -836,6 +1604,9 @@ function buildExplorerRow(item) {
 
 module.exports = {
   analyzeCsvText,
+  buildFilteredAnalysis,
+  attachInternalItems,
+  internalItemsFor,
   IGNORED_FIELDS,
   ENTITY_FIELDS
 };

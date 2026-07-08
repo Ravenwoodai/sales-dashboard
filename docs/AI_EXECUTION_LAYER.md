@@ -87,5 +87,5 @@ The model should return compact JSON with classification, follow-up assessment, 
 - Send transcript jobs only through the Execution Layer.
 - Do not call vLLM, Ollama, or provider runtimes from Sales Dashboard.
 - Do not reconstruct redacted phone numbers.
-- Do not use `CustomerCreateDate` or `CustomerImportDate` until the export provides reliable timestamps.
+- Use `CustomerImportDate` and `CustomerCreateDate` only if they have already been parsed as valid source-quality Record Age context by the dashboard; do not infer from malformed date fragments.
 - Store only job references in the dashboard store; detailed model outputs remain in the Execution Layer job record.
