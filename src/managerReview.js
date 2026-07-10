@@ -231,6 +231,38 @@ function normalizeCorrection(correction = {}, review = {}) {
   };
 }
 
+function normalizeSuggestedCorrection(suggestion = {}, review = {}) {
+  const fieldName = validateCorrectionField(suggestion.fieldName || suggestion.field_name);
+  return {
+    fieldName,
+    reviewId: suggestion.reviewId || suggestion.review_id || review.reviewId || review.id || "",
+    callId: suggestion.callId || suggestion.call_id || review.callId || "",
+    alertId: suggestion.alertId || suggestion.alert_id || review.alertId || "",
+    previousDisplayValue: clean(suggestion.previousDisplayValue ?? suggestion.previous_display_value),
+    deterministicValue: clean(suggestion.deterministicValue ?? suggestion.deterministic_value),
+    rawValue: clean(suggestion.rawValue ?? suggestion.raw_value),
+    llmValue: clean(suggestion.llmValue ?? suggestion.llm_value),
+    managerSuggestedValue: clean(suggestion.managerSuggestedValue ?? suggestion.manager_suggested_value ?? suggestion.suggestedValue ?? suggestion.suggested_value),
+    suggestedValue: clean(suggestion.suggestedValue ?? suggestion.suggested_value ?? suggestion.managerSuggestedValue ?? suggestion.manager_suggested_value),
+    correctionReason: clean(suggestion.correctionReason ?? suggestion.correction_reason ?? suggestion.reason),
+    evidenceAssessment: clean(suggestion.evidenceAssessment ?? suggestion.evidence_assessment),
+    evidence: clean(suggestion.evidence),
+    confidence: Number.isFinite(Number(suggestion.confidence)) ? Number(suggestion.confidence) : null,
+    confidenceBand: clean(suggestion.confidenceBand ?? suggestion.confidence_band),
+    sourceResultId: clean(suggestion.sourceResultId ?? suggestion.source_result_id),
+    sourceFindingField: clean(suggestion.sourceFindingField ?? suggestion.source_finding_field),
+    sourceEvaluationGoal: clean(suggestion.sourceEvaluationGoal ?? suggestion.source_evaluation_goal),
+    sourceProvenance: clean(suggestion.sourceProvenance ?? suggestion.source_provenance),
+    note: clean(suggestion.note)
+  };
+}
+
+function normalizeSuggestedCorrections(suggestions = [], review = {}) {
+  return Array.isArray(suggestions)
+    ? suggestions.filter((entry) => entry && typeof entry === "object").map((entry) => normalizeSuggestedCorrection(entry, review))
+    : [];
+}
+
 function normalizeHistory(history = []) {
   return Array.isArray(history) ? history.filter((entry) => entry && typeof entry === "object") : [];
 }
@@ -270,11 +302,13 @@ function normalizeManagerReview(review = {}) {
     latestAction: clean(review.latestAction || review.latest_action),
     latestActionAt: review.latestActionAt || review.latest_action_at || "",
     corrections: [],
+    suggestedCorrections: [],
     reviewHistory: normalizeHistory(review.reviewHistory || review.review_history),
     confirmedOutcome: clean(review.confirmedOutcome || review.confirmed_outcome),
     confirmedFollowUpRequired: Boolean(review.confirmedFollowUpRequired || review.confirmed_follow_up_required)
   };
   normalized.corrections = normalizeCorrections(review.corrections || [], normalized);
+  normalized.suggestedCorrections = normalizeSuggestedCorrections(review.suggestedCorrections || review.suggested_corrections || [], normalized);
   return normalized;
 }
 
@@ -352,6 +386,7 @@ function applyManagerReviewAction(existingReview = null, input = {}) {
     reviewScope,
     signalName: input.signalName || input.signal_name,
     reviewStatus: "unreviewed",
+    suggestedCorrections: input.suggestedCorrections || input.suggested_corrections || [],
     source: input.source || "dashboard",
     createdAt: now,
     updatedAt: now,
@@ -409,6 +444,7 @@ function applyManagerReviewAction(existingReview = null, input = {}) {
     latestActionAt: now,
     source: clean(input.source) || base.source || "dashboard",
     corrections: [...(base.corrections || []), ...newCorrections],
+    suggestedCorrections: input.suggestedCorrections || input.suggested_corrections || base.suggestedCorrections || [],
     reviewHistory: [
       ...(base.reviewHistory || []),
       {

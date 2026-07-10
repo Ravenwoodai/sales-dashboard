@@ -26,6 +26,24 @@ const {
   reviewIdFor,
   summarizeManagerReviews
 } = require("./managerReview");
+const {
+  archiveEvaluationTemplate,
+  archiveKnowledgebaseEntry,
+  buildEvaluationStudioReportRollups,
+  createDefaultEvaluationStudio,
+  createEvaluationRun,
+  evaluationStudioSummary,
+  listEvaluationTemplates,
+  listEvaluationResults,
+  listKnowledgebaseEntries,
+  normalizeEvaluationStudio,
+  quarantineEvaluationRun,
+  resumeEvaluationRun,
+  updateEvaluationRun,
+  upsertEvaluationResult,
+  upsertEvaluationTemplate,
+  upsertKnowledgebaseEntry
+} = require("./evaluationStudio");
 const { buildLeadUtilizationReport } = require("./leadUtilizationReport");
 
 const STORE_SCHEMA_VERSION = "sales_dashboard_store.v1";
@@ -47,6 +65,7 @@ function createEmptyStore() {
     alertEvents: [],
     managerReviews: [],
     aiJobs: [],
+    evaluationStudio: createDefaultEvaluationStudio(),
     reports: []
   };
 }
@@ -70,6 +89,7 @@ function readStore(options = {}) {
       alertEvents: Array.isArray(parsed.alertEvents) ? parsed.alertEvents : [],
       managerReviews: Array.isArray(parsed.managerReviews) ? parsed.managerReviews.map(normalizeManagerReview) : [],
       aiJobs: Array.isArray(parsed.aiJobs) ? parsed.aiJobs : [],
+      evaluationStudio: normalizeEvaluationStudio(parsed.evaluationStudio),
       reports: Array.isArray(parsed.reports) ? parsed.reports : []
     };
   } catch (error) {
@@ -506,6 +526,150 @@ function saveAiJobReference(job, options = {}) {
   };
 }
 
+function saveEvaluationKnowledgebaseEntry(input = {}, options = {}) {
+  let savedEntry = null;
+  const store = updateStore((currentStore) => {
+    const nextStudio = upsertKnowledgebaseEntry(currentStore.evaluationStudio, input);
+    savedEntry = nextStudio.knowledgebaseEntries.find((entry) => entry.id === (input.id || nextStudio.knowledgebaseEntries[0]?.id)) || nextStudio.knowledgebaseEntries[0];
+    return {
+      ...currentStore,
+      evaluationStudio: nextStudio
+    };
+  }, options);
+  return {
+    entry: savedEntry,
+    store
+  };
+}
+
+function archiveEvaluationKnowledgebaseEntry(id, options = {}) {
+  let savedEntry = null;
+  const store = updateStore((currentStore) => {
+    const nextStudio = archiveKnowledgebaseEntry(currentStore.evaluationStudio, id);
+    savedEntry = nextStudio.knowledgebaseEntries.find((entry) => entry.id === id);
+    return {
+      ...currentStore,
+      evaluationStudio: nextStudio
+    };
+  }, options);
+  return {
+    entry: savedEntry,
+    store
+  };
+}
+
+function saveEvaluationTemplate(input = {}, options = {}) {
+  let savedTemplate = null;
+  const store = updateStore((currentStore) => {
+    const nextStudio = upsertEvaluationTemplate(currentStore.evaluationStudio, input);
+    savedTemplate = nextStudio.evaluationTemplates.find((template) => template.id === (input.id || nextStudio.evaluationTemplates[0]?.id)) || nextStudio.evaluationTemplates[0];
+    return {
+      ...currentStore,
+      evaluationStudio: nextStudio
+    };
+  }, options);
+  return {
+    template: savedTemplate,
+    store
+  };
+}
+
+function archiveEvaluationTemplateRecord(id, options = {}) {
+  let savedTemplate = null;
+  const store = updateStore((currentStore) => {
+    const nextStudio = archiveEvaluationTemplate(currentStore.evaluationStudio, id);
+    savedTemplate = nextStudio.evaluationTemplates.find((template) => template.id === id);
+    return {
+      ...currentStore,
+      evaluationStudio: nextStudio
+    };
+  }, options);
+  return {
+    template: savedTemplate,
+    store
+  };
+}
+
+function saveEvaluationRun(input = {}, context = {}, options = {}) {
+  let savedRun = null;
+  const store = updateStore((currentStore) => {
+    const result = createEvaluationRun(currentStore.evaluationStudio, input, context);
+    savedRun = result.run;
+    return {
+      ...currentStore,
+      evaluationStudio: result.studio
+    };
+  }, options);
+  return {
+    run: savedRun,
+    store
+  };
+}
+
+function updateStoredEvaluationRun(runId, patch = {}, options = {}) {
+  let savedRun = null;
+  const store = updateStore((currentStore) => {
+    const result = updateEvaluationRun(currentStore.evaluationStudio, runId, patch);
+    savedRun = result.run;
+    return {
+      ...currentStore,
+      evaluationStudio: result.studio
+    };
+  }, options);
+  return {
+    run: savedRun,
+    store
+  };
+}
+
+function quarantineStoredEvaluationRun(runId, input = {}, options = {}) {
+  let savedRun = null;
+  const store = updateStore((currentStore) => {
+    const result = quarantineEvaluationRun(currentStore.evaluationStudio, runId, input);
+    savedRun = result.run;
+    return {
+      ...currentStore,
+      evaluationStudio: result.studio
+    };
+  }, options);
+  return {
+    run: savedRun,
+    store
+  };
+}
+
+function resumeStoredEvaluationRun(runId, input = {}, options = {}) {
+  let savedRun = null;
+  const store = updateStore((currentStore) => {
+    const result = resumeEvaluationRun(currentStore.evaluationStudio, runId, input);
+    savedRun = result.run;
+    return {
+      ...currentStore,
+      evaluationStudio: result.studio
+    };
+  }, options);
+  return {
+    run: savedRun,
+    store
+  };
+}
+
+function saveEvaluationResult(input = {}, options = {}) {
+  let savedResult = null;
+  const store = updateStore((currentStore) => {
+    const result = upsertEvaluationResult(currentStore.evaluationStudio, input);
+    savedResult = result.result;
+    return {
+      ...currentStore,
+      evaluationStudio: result.studio
+    };
+  }, options);
+  return {
+    result: savedResult,
+    store
+  };
+}
+
 function findActiveAlertIndex(events = [], alertId, importId = null) {
   const id = String(alertId || "").trim();
   if (!id) return -1;
@@ -583,7 +747,7 @@ function bulkUpdateAlertLifecycle(alertIds = [], input = {}, options = {}) {
   };
 }
 
-function dashboardPersistence(store, currentImportId = null) {
+function dashboardPersistence(store, currentImportId = null, options = {}) {
   const allReports = [...store.reports].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   const reports = activeReportsOnly(allReports).map((report) => ({
     ...report,
@@ -611,12 +775,40 @@ function dashboardPersistence(store, currentImportId = null) {
     managerNotes: review.managerNotes,
     correctionCount: (review.corrections || []).length,
     correctedFields: (review.corrections || []).map((correction) => correction.fieldName),
-    latestCorrection: (review.corrections || []).slice(-1)[0] || null
+    latestCorrection: (review.corrections || []).slice(-1)[0] || null,
+    suggestedCorrectionCount: (review.suggestedCorrections || []).length,
+    suggestedCorrectionFields: (review.suggestedCorrections || []).map((suggestion) => suggestion.fieldName),
+    latestSuggestedCorrection: (review.suggestedCorrections || []).slice(-1)[0] || null
   }));
   const managerReviewGovernance = summarizeManagerReviews(currentReviews);
   const currentAiJobs = currentImportId
     ? store.aiJobs.filter((job) => job.importId === currentImportId)
     : store.aiJobs;
+  const evaluationStudio = normalizeEvaluationStudio(store.evaluationStudio);
+  const evaluationCallIds = options.evaluationCallIds
+    ? new Set(Array.from(options.evaluationCallIds).map((id) => String(id || "").trim()).filter(Boolean))
+    : null;
+  const evaluationStudioView = {
+    summary: evaluationStudioSummary(evaluationStudio, currentImportId, { callIds: evaluationCallIds }),
+    reportRollups: buildEvaluationStudioReportRollups(evaluationStudio, { importId: currentImportId || "", callIds: evaluationCallIds }),
+    knowledgebaseEntries: listKnowledgebaseEntries(evaluationStudio).slice(0, 50),
+    evaluationTemplates: listEvaluationTemplates(evaluationStudio).slice(0, 50),
+    evaluationRuns: (evaluationStudio.evaluationRuns || [])
+      .filter((run) => !currentImportId || run.importId === currentImportId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      .slice(0, 30),
+    evaluationResults: listEvaluationResults(evaluationStudio, {
+      importId: currentImportId || "",
+      callIds: evaluationCallIds,
+      reviewRecommended: false
+    }).slice(0, 50),
+    evidenceQueue: listEvaluationResults(evaluationStudio, {
+      importId: currentImportId || "",
+      callIds: evaluationCallIds,
+      reviewRecommended: true
+    }).slice(0, 50)
+  };
 
   return {
     schemaVersion: "sales_dashboard_persistence_view.v1",
@@ -625,6 +817,7 @@ function dashboardPersistence(store, currentImportId = null) {
     managerReviewSummaries,
     managerReviewStatusByCallId: Object.fromEntries(managerReviewSummaries.map((review) => [review.callId, review.reviewStatus])),
     managerReviewGovernance,
+    evaluationStudio: evaluationStudioView,
     importHistory: imports.slice(0, 20),
     reports: reports.slice(0, 30),
     counts: {
@@ -651,7 +844,13 @@ function dashboardPersistence(store, currentImportId = null) {
       currentManagerCorrectedCalls: managerReviewGovernance.correctedCalls,
       currentManagerEscalatedCalls: managerReviewGovernance.escalatedCalls,
       currentManagerReviewNeededCalls: managerReviewGovernance.reviewNeededCalls,
-      currentAiJobs: currentAiJobs.length
+      currentAiJobs: currentAiJobs.length,
+      evaluationKnowledgebaseEntries: evaluationStudioView.summary.activeKnowledgebaseEntries,
+      evaluationTemplates: evaluationStudioView.summary.activeTemplates,
+      evaluationRuns: evaluationStudioView.summary.runs,
+      evaluationResults: evaluationStudioView.summary.results,
+      evaluationReviewRecommendedResults: evaluationStudioView.summary.reviewRecommendedResults,
+      evaluationEvidenceUnavailableResults: evaluationStudioView.summary.evidenceUnavailableResults
     },
     alertLifecycleSummary: currentAlertSummary
   };
@@ -667,6 +866,15 @@ module.exports = {
   persistAnalysis,
   saveGeneratedReport,
   saveAiJobReference,
+  saveEvaluationKnowledgebaseEntry,
+  archiveEvaluationKnowledgebaseEntry,
+  saveEvaluationTemplate,
+  archiveEvaluationTemplateRecord,
+  saveEvaluationRun,
+  updateStoredEvaluationRun,
+  quarantineStoredEvaluationRun,
+  resumeStoredEvaluationRun,
+  saveEvaluationResult,
   saveManagerReview,
   updateManagerReview,
   bulkUpdateManagerReviews,

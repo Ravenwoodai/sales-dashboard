@@ -1,9 +1,17 @@
 "use strict";
 
 const { clean, isMissing } = require("./transcriptEvaluator");
+const {
+  SOURCE_TIMEZONE_LABEL,
+  formatSourceDateTimeParts,
+  formatSourceDateTimeValue,
+  formatSourceDateValue,
+  isoDateFromParts,
+  isoTimeFromParts,
+  sourceComparableFromParts
+} = require("./dateTimeFormat");
 
 const FILTER_SCHEMA_VERSION = "sales_dashboard_filter_state.v1";
-const SOURCE_TIMEZONE_LABEL = "Source call time (timezone not supplied)";
 
 const EMPTY_VALUES = new Set(["", "all", "any", "*"]);
 
@@ -168,10 +176,18 @@ function sourceDateTimeParts(subject) {
   const dateParts = parseDateParts(dateValue);
   if (!dateParts) return null;
   const timeParts = parseTimeParts(timeValue);
-  const date = `${dateParts.year}-${String(dateParts.month).padStart(2, "0")}-${String(dateParts.day).padStart(2, "0")}`;
-  const time = `${String(timeParts.hour).padStart(2, "0")}:${String(timeParts.minute).padStart(2, "0")}:${String(timeParts.second).padStart(2, "0")}`;
+  const parts = { ...dateParts, ...timeParts };
+  const date = isoDateFromParts(parts);
+  const time = isoTimeFromParts(parts);
   const serial = Number(`${date.replace(/-/g, "")}${time.replace(/:/g, "")}`);
-  return { ...dateParts, ...timeParts, date, time, label: `${date} ${time}`, serial };
+  return {
+    ...parts,
+    date,
+    time,
+    comparable: sourceComparableFromParts(parts),
+    label: formatSourceDateTimeParts(parts),
+    serial
+  };
 }
 
 function valueOrBucket(value, bucket) {
@@ -323,8 +339,8 @@ function subjectMatchesDate(subject, filterState = {}) {
   if (!parts) return !(filterState.dateFrom || filterState.dateTo || filterState.dateTimeFrom || filterState.dateTimeTo);
   if (filterState.dateFrom && parts.date < filterState.dateFrom) return false;
   if (filterState.dateTo && parts.date > filterState.dateTo) return false;
-  if (filterState.dateTimeFrom && parts.label < filterState.dateTimeFrom) return false;
-  if (filterState.dateTimeTo && parts.label > filterState.dateTimeTo) return false;
+  if (filterState.dateTimeFrom && parts.comparable < filterState.dateTimeFrom) return false;
+  if (filterState.dateTimeTo && parts.comparable > filterState.dateTimeTo) return false;
   return true;
 }
 
@@ -395,10 +411,10 @@ function activeFilterEntries(filterState = {}) {
   const state = filterState.schemaVersion ? filterState : normalizeFilterState(filterState);
   const entries = [];
   if (state.businessSegment) entries.push({ key: "businessSegment", label: "Business", value: state.businessSegment, display: displayValue("businessSegment", state.businessSegment) });
-  if (state.dateFrom) entries.push({ key: "dateFrom", label: "From", value: state.dateFrom, display: state.dateFrom });
-  if (state.dateTo) entries.push({ key: "dateTo", label: "To", value: state.dateTo, display: state.dateTo });
-  if (state.dateTimeFrom) entries.push({ key: "dateTimeFrom", label: "From time", value: state.dateTimeFrom, display: state.dateTimeFrom });
-  if (state.dateTimeTo) entries.push({ key: "dateTimeTo", label: "To time", value: state.dateTimeTo, display: state.dateTimeTo });
+  if (state.dateFrom) entries.push({ key: "dateFrom", label: "From", value: state.dateFrom, display: formatSourceDateValue(state.dateFrom) });
+  if (state.dateTo) entries.push({ key: "dateTo", label: "To", value: state.dateTo, display: formatSourceDateValue(state.dateTo) });
+  if (state.dateTimeFrom) entries.push({ key: "dateTimeFrom", label: "From time", value: state.dateTimeFrom, display: formatSourceDateTimeValue(state.dateTimeFrom.slice(0, 10), state.dateTimeFrom.slice(11)) });
+  if (state.dateTimeTo) entries.push({ key: "dateTimeTo", label: "To time", value: state.dateTimeTo, display: formatSourceDateTimeValue(state.dateTimeTo.slice(0, 10), state.dateTimeTo.slice(11)) });
   VALUE_FILTERS.forEach((filter) => {
     (state.values?.[filter.key] || []).forEach((value) => {
       entries.push({ key: filter.key, label: filter.label, value, display: displayValue(filter.key, value) });

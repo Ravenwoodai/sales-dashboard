@@ -149,3 +149,20 @@ Consequences:
 - authoritative review actors use the server-resolved `local_manager` placeholder until authentication exists
 - review history, correction reason, evidence assessment, previous displayed value, corrected value, notes, actor, and timestamp are preserved for audit
 - aggregate metrics remain deterministic unless a manager-reviewed value is explicitly labelled as such
+
+## ADR-014 - Evaluation Studio Is A Governed Overlay, Not A Replacement App
+Date: 2026-07-10
+Status: Accepted
+Decision: Sales Dashboard remains the system of record while Batch 7 borrows Neuron-Compute-Training's knowledgebase/prompt-management ideas and LatentPulse's structured/local evaluation governance ideas into a local Evaluation Studio overlay.
+Context: The sibling projects already contain useful company sales knowledgebase material, editable prompt concepts, local model sidecar patterns, strict structured outputs, and gold-review thinking. Replacing Sales Dashboard would risk losing the active import, allocation parking, global filters, alert lifecycle, manager review, report visibility, and data-confidence guardrails already built here.
+Consequences:
+- Evaluation Studio stores knowledgebase entries, strict-schema templates, queued/prompt-test runs, local AI harvest state, result records, and report-safe rollups as local management artifacts.
+- Evaluation templates may use safe custom evaluation goals so managers can add new question types without code changes; parked campaign/allocation goal names remain blocked.
+- Neuron/LatentPulse-derived seeds are included as starting guidance, but managers can edit/archive them inside Sales Dashboard.
+- Optional local model submission must go through `src/aiExecutionLayer.js`; Sales Dashboard does not call model runtimes directly.
+- Evaluation Studio outputs must remain evidence-backed, confidence-labelled, versioned, and manager-reviewable.
+- Evaluation results preserve prompt/template version and knowledgebase-version context so stored findings can be audited against the exact management context used.
+- Evaluation Studio result handoff may add suggested correction prefill for allowlisted manager-review fields, but suggestions remain separate from confirmed manager corrections until a manager acts.
+- Evaluation Studio run quarantine/resume/harvest state is governance metadata only; it does not delete jobs, raw calls, result records, or manager review history.
+- Evaluation Studio must not silently overwrite raw imported fields, deterministic outputs, LLM outputs, alert evidence, or manager review history.
+- Parked campaign/allocation imports remain excluded from active evaluation, reporting, filters, and performance claims.

@@ -2,14 +2,23 @@
 This file tracks execution plans for Sales Dashboard.
 
 ## Active Plans
-- Strict-schema LLM evaluator option
-  - Goal: add a versioned local/approved model evaluation layer only after deterministic and manager-reviewed workflows remain stable.
-  - Scope: schema validation, retry/quarantine states, evidence snippets, confidence scores, and failure handling.
-  - Risks: avoid replacing deterministic or manager-reviewed outputs silently.
-  - Verification: add strict schema and failure-mode tests before enabling in the dashboard.
-  - Status: future work.
+- None.
 
 ## Completed Plans
+### Batch 7 Evaluation Studio
+- Goal: add a governed Evaluation Studio where managers can manage sales knowledgebase entries, strict-schema evaluation templates, local batch evaluation runs, evidence/confidence outputs, and manager-reviewed corrections without replacing raw, deterministic, LLM, or manager-review records.
+- Scope shipped: `src/evaluationStudio.js`, seeded Neuron/LatentPulse-derived knowledgebase entries, editable/archivable knowledgebase records, standalone `/evaluation-studio` workspace with text-file loader for knowledgebase material, editable/archivable strict-schema templates with safe custom evaluation goals, queued run records with template/knowledgebase snapshots, all-eligible-call batch selection support, one-call prompt test runs, versioned Evaluation Studio result records that preserve template and knowledgebase versions, result/evidence queues, manager-review handoff from result records with safe suggested correction prefill, run quarantine/resume governance with history, batch result harvesting from queued local AI jobs, global-filter-aware Evaluation Studio result and rollup views, report-safe Evaluation Studio lead utilisation/coaching rollups, `/api/evaluation-studio` APIs including `/api/evaluation-studio/results`, `/api/evaluation-studio/prompt-tests`, and `/api/evaluation-studio/report-rollups`, compact dashboard Evaluation Results bridge, explicit optional Execution Layer submission path, and regression tests.
+- Risks handled: evaluator outputs remain review signals and never overwrite raw imported, deterministic, LLM, alert, or manager-reviewed records; local AI work routes through the Execution Layer instead of direct model calls; raw `AllocatedLeadID` and parked allocation/campaign data are blocked from performance evidence; report rollups avoid sales, revenue, conversion, disciplinary, and allocation claims.
+- Verification: `node --test tests/*.test.js` passes with 105 tests after custom-goal, all-eligible-call batch, result knowledgebase-version provenance, Evaluation Studio global-filter coverage, and final requirement audit.
+- Status: complete.
+
+### Lead Harvest Queue
+- Goal: help managers harvest New Business leads where a customer gave a positive response and callback/follow-up context appears in the call transcript.
+- Scope shipped: deterministic `src/leadHarvestAnalytics.js` candidate model, `/api/lead-harvest`, dashboard Lead Harvest Queue cards/tables/evidence rows, drill-down metrics for candidates/open/later-matching-call-observed/matching-unavailable records, possible name/timing/context extraction, customer objection tags, salesperson handling tags, newest/oldest/view-all queue links, and tests for New Business scoping, warm exclusion, terminal-outcome exclusion, API rollups, sorting, and proof rows.
+- Risks handled: queue rows are review candidates rather than confirmed sales; later matching call observed means a later stable-ID call exists but does not prove completion; objection/handling tags are transcript indicators, not manager-confirmed truth; missing stable IDs are labelled matching unavailable; phone values and parked allocation/campaign data are not used.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
 ### One-Dial Reattempt Evidence Buckets
 - Goal: stop treating every single-dial matched record as a waste/risk signal.
 - Scope shipped: deterministic `valid_one_dial_outcome`, `risky_one_dial_no_contact`, `needs_review`, and strict `oneDialNoContactNoLater` proof metrics in lead reattempt analytics; dashboard cards/tables/drilldowns/report wording changed from one-and-done risk to one-dial evidence buckets; records touched wording changed to records dialed.
@@ -54,7 +63,7 @@ This file tracks execution plans for Sales Dashboard.
 
 ### Reporting Period And Active Dataset Clarity
 - Goal: make the active dashboard unmistakable about which call dataset, import, date range, source timezone, and data window it is showing.
-- Scope shipped: source-call-time date range labels, UTC processing timestamps, active dataset/import banner with filename/hash/row counts/dedup counts, call-data-only single-day/partial-day/trend/follow-up warnings, and explicit unsupported sales/revenue/conversion warning.
+- Scope shipped: source-call-time date range labels, AEST processing timestamps, active dataset/import banner with filename/hash/row counts/dedup counts, call-data-only single-day/partial-day/trend/follow-up warnings, and explicit unsupported sales/revenue/conversion warning.
 - Risks handled: displayed call dates avoid local timezone shifting, parked campaign/allocation imports are not used in any new banner/warning/metric, and active dashboard scope remains call CSV plus transcript intelligence only.
 - Verification: `node --test tests/*.test.js`.
 - Status: complete.
@@ -110,8 +119,8 @@ This file tracks execution plans for Sales Dashboard.
 
 ### Readable Transcript Evidence Display
 - Goal: make transcript evidence easy to scan in dashboard/report tables while preserving raw proof for audit.
-- Scope shipped: evidence summaries on dashboard, drill-down, alert, review, explorer, and lead-utilization report surfaces; ordered transcript proof cards on call pages; readable full-transcript turn view; raw transcript retained below the readable view.
-- Risks handled: proof snippets no longer start mid-word or flatten several transcript fragments into one table cell; source transcript order is preserved in proof turns instead of being re-sorted by the UI.
+- Scope shipped: evidence summaries on dashboard, drill-down, alert, review, explorer, and lead-utilization report surfaces; call pages now show the readable Transcript Timeline before separate Detected Signal proof excerpts; raw transcript remains available below the readable view.
+- Risks handled: proof snippets no longer start mid-word or flatten several transcript fragments into one table cell; signal excerpts are not presented as the full conversation; source transcript order is preserved in the timeline instead of being re-sorted by the UI; 12-month/next-financial-year callback wording is classified as long-term deferral rather than active follow-up.
 - Verification: `node --test tests/*.test.js`; browser verification at `http://127.0.0.1:3101` for drill-down proof summaries, call proof cards, report proof-summary samples, desktop layout, and mobile-width overflow.
 - Status: complete.
 

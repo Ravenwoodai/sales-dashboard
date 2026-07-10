@@ -23,6 +23,14 @@ node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"
 
 Do not commit the project API key. Store it in the user environment, a local `.env` loader, or another private operator process.
 
+Evaluation Studio prompt tests and batch runs use a separate local Execution Layer task type:
+
+```text
+sales_dashboard_evaluation_studio
+```
+
+That task is for editable Evaluation Studio templates and knowledgebase-driven transcript review. The normal transcript intelligence extraction task remains separate as `sales_transcript_intelligence_extraction`.
+
 ## Endpoints Added
 
 ```text
@@ -31,6 +39,8 @@ GET  /api/ai/status?health=true
 POST /api/ai/transcript-evaluation
 GET  /api/ai/jobs/<job-id>
 POST /ai/transcript-evaluations
+POST /api/evaluation-studio/prompt-tests
+POST /api/evaluation-studio/runs/<run-id>/harvest
 ```
 
 `POST /api/ai/transcript-evaluation` accepts:

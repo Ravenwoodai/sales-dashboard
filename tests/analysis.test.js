@@ -153,11 +153,11 @@ test("analysis exposes source-call date range without browser timezone shifting"
     row({ call_id: "late", call_date: "1/07/2026", call_time: "23:30:00" })
   ]));
 
-  assert.equal(analysis.dateRange.sourceStart, "2026-07-01 00:30:00");
-  assert.equal(analysis.dateRange.sourceEnd, "2026-07-01 23:30:00");
-  assert.equal(analysis.dateRange.sourceTimezoneLabel, "Source call time (timezone not supplied)");
-  assert.match(analysis.dateRange.display, /2026-07-01 00:30:00 to 2026-07-01 23:30:00/);
-  assert.match(analysis.dateRange.display, /Source call time/);
+  assert.equal(analysis.dateRange.sourceStart, "01/07/2026 00:30:00 AEST");
+  assert.equal(analysis.dateRange.sourceEnd, "01/07/2026 23:30:00 AEST");
+  assert.equal(analysis.dateRange.sourceTimezoneLabel, "Source call time (AEST)");
+  assert.match(analysis.dateRange.display, /01\/07\/2026 00:30:00 AEST to 01\/07\/2026 23:30:00 AEST/);
+  assert.match(analysis.dateRange.display, /Source call time \(AEST\)/);
   assert.doesNotMatch(analysis.dateRange.display, /2026-06-30|2026-07-02|30\/06\/2026|2\/07\/2026/);
 });
 
@@ -375,9 +375,9 @@ test("global date filters use source call days without browser timezone shifts",
 
   const julyFirst = buildFilteredAnalysis(analysis, { dateFrom: "2026-07-01", dateTo: "2026-07-01" });
   assert.deepEqual(julyFirst.drilldownRows.map((row) => row.callId), ["early", "late"]);
-  assert.equal(julyFirst.dateRange.sourceStart, "2026-07-01 00:30:00");
-  assert.equal(julyFirst.dateRange.sourceEnd, "2026-07-01 23:30:00");
-  assert.equal(julyFirst.dateRange.sourceTimezoneLabel, "Source call time (timezone not supplied)");
+  assert.equal(julyFirst.dateRange.sourceStart, "01/07/2026 00:30:00 AEST");
+  assert.equal(julyFirst.dateRange.sourceEnd, "01/07/2026 23:30:00 AEST");
+  assert.equal(julyFirst.dateRange.sourceTimezoneLabel, "Source call time (AEST)");
   assert.doesNotMatch(julyFirst.dateRange.display, /2026-06-30|2026-07-02|30\/06\/2026|2\/07\/2026/);
 
   const lateOnly = buildFilteredAnalysis(analysis, {
@@ -639,6 +639,120 @@ test("analysis tracks lead reattempt rates and retry patterns by segment source 
   assert.equal("spielDeliveredLikely" in riskyOneDialRecord, false);
 });
 
+test("lead harvest model finds positive callback candidates without warm or terminal outcomes", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "harvest-later",
+      call_time: "09:00:00",
+      customer_id: "customer-harvest-later",
+      AllocatedLeadID: "lead-harvest-later",
+      ContactId: "contact-harvest-later",
+      Salesperson: "Seller A",
+      CustomerImportSource: "GoogleMaps",
+      transcription_text: "Outbound call Customer: Yeah 100%, send me the information and call me back tomorrow morning. My name is Morgan. Agent: Great, I will send that through and follow up tomorrow.",
+      OrderCount: "0"
+    }),
+    row({
+      call_id: "harvest-later-follow",
+      call_time: "10:00:00",
+      customer_id: "customer-harvest-later",
+      AllocatedLeadID: "lead-harvest-later",
+      ContactId: "contact-harvest-later",
+      Salesperson: "Seller B",
+      CustomerImportSource: "GoogleMaps",
+      transcription_text: "Outbound call Customer: Hi, I saw the email and can talk now. Agent: Thanks for taking the call.",
+      OrderCount: "0"
+    }),
+    row({
+      call_id: "harvest-open",
+      call_time: "11:00:00",
+      customer_id: "customer-harvest-open",
+      AllocatedLeadID: "lead-harvest-open",
+      ContactId: "contact-harvest-open",
+      Salesperson: "Seller A",
+      CustomerImportSource: "Facebook",
+      transcription_text: "Outbound call Customer: Sounds good, the owner Serge is back next week, call him back on Monday afternoon. Agent: Perfect, I will call back then.",
+      OrderCount: "0"
+    }),
+    row({
+      call_id: "harvest-no-stable",
+      call_time: "12:00:00",
+      customer_id: "NULL",
+      AllocatedLeadID: "NULL",
+      ContactId: "NULL",
+      FoundContactID: "NULL",
+      FoundCustomerID: "NULL",
+      Salesperson: "Seller C",
+      CustomerImportSource: "Self Sourced",
+      transcription_text: "Outbound call Customer: Yes please email the details and call me back after lunch. Agent: No problem, I will call back after lunch.",
+      OrderCount: "0"
+    }),
+    row({
+      call_id: "harvest-long-term",
+      call_time: "12:30:00",
+      customer_id: "customer-harvest-long-term",
+      AllocatedLeadID: "lead-harvest-long-term",
+      ContactId: "contact-harvest-long-term",
+      Salesperson: "Seller C",
+      CustomerImportSource: "Facebook",
+      transcription_text: "Outbound call Customer: I like the idea but don't have the money right now. Give me a call back in 12 months before next financial year and I'll be happy to support you. Agent: No stress.",
+      OrderCount: "0"
+    }),
+    row({
+      call_id: "harvest-warm",
+      call_time: "13:00:00",
+      customer_id: "customer-harvest-warm",
+      AllocatedLeadID: "lead-harvest-warm",
+      ContactId: "contact-harvest-warm",
+      Salesperson: "Seller D",
+      CustomerImportSource: "Referral",
+      transcription_text: "Outbound call Customer: Yes, send me the quote and call me back tomorrow. Agent: I will follow up tomorrow.",
+      OrderCount: "2"
+    }),
+    row({
+      call_id: "harvest-terminal",
+      call_time: "14:00:00",
+      customer_id: "customer-harvest-terminal",
+      AllocatedLeadID: "lead-harvest-terminal",
+      ContactId: "contact-harvest-terminal",
+      Salesperson: "Seller E",
+      CustomerImportSource: "Facebook",
+      transcription_text: "Outbound call Customer: No thanks, not interested and please remove me. Agent: Sorry about that.",
+      OrderCount: "0"
+    })
+  ]));
+
+  assert.equal(analysis.leadHarvest.totals.candidateCalls, 4);
+  assert.equal(analysis.leadHarvest.totals.newBusinessCandidateCalls, 3);
+  assert.equal(analysis.leadHarvest.totals.warmBusinessCandidateCalls, 1);
+  assert.equal(analysis.leadHarvest.totals.openNewBusinessCandidates, 1);
+  assert.equal(analysis.leadHarvest.totals.newBusinessMatchingUnavailable, 1);
+  assert.equal(analysis.leadHarvest.totals.newBusinessLaterMatchingCallObserved, 1);
+  assert.equal(analysis.leadHarvest.totals.newBusinessHarvestQueue, 2);
+
+  const later = analysis.leadHarvest.records.find((record) => record.callId === "harvest-later");
+  const open = analysis.leadHarvest.records.find((record) => record.callId === "harvest-open");
+  const noStable = analysis.leadHarvest.records.find((record) => record.callId === "harvest-no-stable");
+  assert.equal(later.status, "later_matching_call_observed");
+  assert.equal(later.laterCallId, "harvest-later-follow");
+  assert.equal(later.possibleContactName, "Morgan");
+  assert.equal(open.status, "open_no_later_matching_call");
+  assert.equal(open.possibleDecisionMakerName, "Serge");
+  assert.equal(open.objectionType, "not_decision_maker");
+  assert.equal(open.objectionLabel, "Not decision maker / decision maker unavailable");
+  assert.match(open.objectionEvidence, /owner Serge is back next week/i);
+  assert.equal(open.salespersonHandlingType, "clear_next_step");
+  assert.match(open.salespersonHandlingEvidence, /call back then/i);
+  assert.equal(noStable.status, "matching_unavailable");
+  assert.equal(noStable.objectionType, "needs_information_or_review");
+  assert.equal(noStable.salespersonHandlingType, "clear_next_step");
+  assert.ok(analysis.leadHarvest.objectionRows.some((row) => row.objectionType === "not_decision_maker" && row.newBusinessOpenCandidates === 1));
+  assert.ok(analysis.leadHarvest.handlingRows.some((row) => row.salespersonHandlingType === "clear_next_step" && row.newBusinessCandidateCalls >= 3));
+  assert.equal(analysis.leadHarvest.records.some((record) => record.callId === "harvest-terminal"), false);
+  assert.equal(analysis.leadHarvest.records.some((record) => record.callId === "harvest-long-term"), false);
+  assert.equal(analysis.leadHarvest.records.every((record) => !/allocation|campaign|QTY ACTIONED/i.test(JSON.stringify(record))), true);
+});
+
 test("one-dial utilisation risk counts only hard no-contact evidence", () => {
   const base = {
     oneAndDone: true,
@@ -881,6 +995,31 @@ test("local evaluator does not treat sales script later-this-year wording as a c
 
   assert.equal(evaluation.opportunity.requestedCallback, false);
   assert.equal(evaluation.opportunity.followUpRequired, false);
+});
+
+test("local evaluator treats 12-month callback wording as long-term deferral, not active follow-up", () => {
+  const evaluation = evaluateCall({
+    call_id: "12",
+    CallTotalSeconds: "180",
+    call_duration_seconds: "170",
+    NoSaleType: "NULL",
+    transcription_text: [
+      "Outbound call Henry Tapson (CWA): I was seeing if you're still interested in supporting our volunteers.",
+      "Customer: I don't have the money in the account at the moment, but definitely give me a call back in 12 months' time before next financial year and I'll be happy to support you.",
+      "Henry Tapson (CWA): No stress at all, thanks for your time."
+    ].join(" ")
+  });
+
+  assert.equal(evaluation.contact.probableLiveHuman, true);
+  assert.equal(evaluation.opportunity.longTermDeferral, true);
+  assert.equal(evaluation.opportunity.requestedCallback, false);
+  assert.equal(evaluation.opportunity.followUpRequired, false);
+  assert.equal(evaluation.opportunity.followUpChannel, "none");
+  assert.equal(evaluation.outcome.localCategory, "long_term_deferral");
+  assert.equal(evaluation.evidence.some((item) => item.signal === "follow_up"), false);
+  const deferralEvidence = evaluation.evidence.find((item) => item.signal === "long_term_deferral");
+  assert.equal(deferralEvidence.summary, "Long-term deferral or future nurture signal");
+  assert.match(deferralEvidence.text, /12 months|next financial year/i);
 });
 
 test("local evaluator normalizes human-like Voicemail speaker turns to Customer", () => {

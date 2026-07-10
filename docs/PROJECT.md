@@ -20,9 +20,11 @@ It preserves the raw import in memory, profiles the call export, runs a local de
 - Use stable IDs such as `customer_id`, `ContactId`, `AllocatedLeadID`, `FoundCustomerID`, and `FoundContactID` for limited follow-up linkage.
 - Locally classify transcript quality, contact type, local outcome, follow-up signals, risk flags, and imported-disposition mismatches.
 - Show executive metrics, data confidence, alert centre, manager review queue, salesperson scorecards, source/list quality based on call CSV fields, follow-up leakage, lead reattempt behaviour, transcript intelligence, and sanitized call explorer.
+- Show a Lead Harvest Queue for New Business positive-response callback candidates, using deterministic call/transcript evidence and stable-ID later-call checks only. Candidate names, callback timing, and handover context are possible extracted review context, not confirmed sales outcomes.
 - Persist derived import history, versioned local evaluation artifacts, alert events with lifecycle history, manager review records, and generated reports under the local ignored `data/` folder.
 - Let managers acknowledge, progress, resolve, dismiss, reopen, note, bulk-update, and mark likely false-positive call-data alerts without changing the original alert evidence; until authentication exists, lifecycle actor attribution is fixed to `local_manager`.
 - Let managers mark calls/signals for review, start review, confirm, correct, dismiss, escalate, reopen, note, and bulk-update manager review records. Manager corrections are stored as separate review/correction/history overlays and do not overwrite raw imported fields, deterministic outputs, LLM outputs, or alert evidence.
+- Provide a standalone Evaluation Studio page for governed transcript evaluation: seeded Neuron/LatentPulse-derived knowledgebase entries, editable knowledgebase records, editable strict-schema evaluation templates with safe custom evaluation goals, queued evaluation runs that can target all eligible transcript calls, one-call prompt test runs, automatic reconciliation of small queued prompt-test jobs when the Studio page/API is read, run quarantine/resume governance, batch result harvesting, versioned evidence/confidence result records with prompt and knowledgebase-version provenance, review-safe evidence queues, report-safe lead utilisation/coaching rollups, manager-review handoff from result records with safe suggested correction prefill, and optional explicit local Execution Layer submission without changing active deterministic metrics. The main Sales Dashboard shows only evaluation-result signals and links into the separate studio workspace.
 - Provide a Reports Library so future generated data/reports can be stored and viewed from the dashboard; normal report APIs and UI hide parked, superseded, allocation-related, and stale stable-target reports while preserving them in storage.
 - When local model processing is required, submit jobs through `C:\Users\User\Desktop\ai-execution-layer` using its Execution Layer API rather than calling model runtimes directly.
 - Clearly state that the current CSV does not support confirmed sales conversion, revenue attribution, order value, or won/lost commercial outcome.
@@ -40,17 +42,30 @@ It preserves the raw import in memory, profiles the call export, runs a local de
 - Allocations API: `http://127.0.0.1:3000/api/allocations`
 - AI status URL: `http://127.0.0.1:3000/api/ai/status`
 - Manager reviews API: `http://127.0.0.1:3000/api/manager-reviews`
+- Evaluation Studio UI: `http://127.0.0.1:3000/evaluation-studio`
+- Evaluation Studio API: `http://127.0.0.1:3000/api/evaluation-studio`
+- Evaluation Studio results API: `http://127.0.0.1:3000/api/evaluation-studio/results`
+- Evaluation Studio prompt tests API: `POST http://127.0.0.1:3000/api/evaluation-studio/prompt-tests`
+- Evaluation Studio run harvest API: `POST http://127.0.0.1:3000/api/evaluation-studio/runs/<run-id>/harvest`
+- Evaluation Studio run quarantine API: `POST http://127.0.0.1:3000/api/evaluation-studio/runs/<run-id>/quarantine`
+- Evaluation Studio run resume API: `POST http://127.0.0.1:3000/api/evaluation-studio/runs/<run-id>/resume`
+- Evaluation Studio report rollups API: `http://127.0.0.1:3000/api/evaluation-studio/report-rollups`
+- Evaluation Studio result review handoff: `POST http://127.0.0.1:3000/api/evaluation-studio/results/<result-id>/review`
+- Lead Harvest API: `http://127.0.0.1:3000/api/lead-harvest`
 - Store path: `data/store/state.json` by default, or `SALES_DASHBOARD_STORE_PATH`
 
 ## Success Criteria
 - The July 1 CSV can be loaded without copying sensitive source data into the repository.
 - The dashboard uses only supported fields for MVP metrics.
 - Phone values and invalid customer date/import date fragments are explicitly excluded from analytics.
+- UI date/time display uses Australian format and AEST labels. Source call dates are displayed as source call time in AEST without browser timezone shifting; stored processing/review/report timestamps are converted to fixed AEST.
 - Transcript-derived metrics are confidence-aware, table views show readable proof summaries, and call proof pages show ordered transcript turns plus raw transcript audit text.
 - Follow-up leakage is treated as indeterminate when the upload lacks enough future data.
 - Managers can inspect calls needing review without relying on imported `NoSaleType` or `Baz_DetailedNotes` as final truth.
 - Manager-reviewed values are labelled as manager-reviewed overlays and remain inspectable alongside raw imported, deterministic, and LLM-reviewed values.
+- Evaluation Studio knowledgebase, templates, run records, harvest history, result records, and report-safe rollups are versioned/auditable management artifacts. Local model runs and stored results must keep prompt version, knowledgebase version, evidence, confidence, provenance, and guardrails visible, and must not silently replace deterministic or manager-reviewed values. Managers can define safe custom evaluation goals, but parked campaign/allocation concepts remain blocked. Sending a result to review creates a separate manager-review overlay with suggested correction prefill only; a suggestion is not a manager correction until a manager confirms it.
 - One-dial lead reattempt records are treated as neutral until split by deterministic evidence. The reportable lead-utilisation-risk signal is restricted to one-dial no-contact records with no later matching call observed; ambiguous rows need manager or later local-LLM review before any stronger conclusion.
+- Lead Harvest Queue rows are call-data-only candidates where deterministic evidence shows live-human conversation, positive response, and callback/follow-up context. They use stable IDs to label later matching calls when available, never phone values or parked allocation data.
 - Generated reports are saved through `/api/reports`; normal report APIs and the dashboard Reports Library return active, non-parked reports only.
 - Allocation workbooks, when configured, are preserved only as parked metadata and must not affect active metrics, reports, alerts, source/list quality, or AI transcript context.
 

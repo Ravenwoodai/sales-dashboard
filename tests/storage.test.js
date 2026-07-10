@@ -475,6 +475,44 @@ test("manager review corrections are auditable and do not overwrite raw or deriv
   assert.equal(persistence.managerReviewSummaries[0].latestCorrection.managerCorrectedValue, "information_requested");
 });
 
+test("manager review suggested corrections persist separately from confirmed corrections", () => {
+  const storePath = tempStorePath();
+  const saved = saveManagerReview({
+    importId: "import-test",
+    callId: "48500001",
+    action: "mark_review_needed",
+    source: "evaluation_studio",
+    suggestedCorrections: [
+      {
+        fieldName: "follow_up_required",
+        previousDisplayValue: "indeterminate",
+        managerSuggestedValue: "true",
+        evidence: "Customer: please call me tomorrow.",
+        confidence: 0.82,
+        sourceResultId: "eval-result-1"
+      }
+    ]
+  }, { storePath });
+
+  assert.equal(saved.review.reviewStatus, "review_needed");
+  assert.equal(saved.review.corrections.length, 0);
+  assert.equal(saved.review.suggestedCorrections.length, 1);
+  assert.equal(saved.review.suggestedCorrections[0].fieldName, "follow_up_required");
+  assert.equal(saved.review.suggestedCorrections[0].managerSuggestedValue, "true");
+
+  const persistence = dashboardPersistence(saved.store, "import-test");
+  assert.equal(persistence.managerReviewSummaries[0].correctionCount, 0);
+  assert.equal(persistence.managerReviewSummaries[0].suggestedCorrectionCount, 1);
+  assert.equal(persistence.managerReviewSummaries[0].latestSuggestedCorrection.fieldName, "follow_up_required");
+
+  assert.throws(() => saveManagerReview({
+    importId: "import-test",
+    callId: "48500002",
+    action: "mark_review_needed",
+    suggestedCorrections: [{ fieldName: "campaign_allocation", managerSuggestedValue: "bad" }]
+  }, { storePath }), /Invalid or protected manager correction field/);
+});
+
 test("manager review validation rejects invalid statuses scopes protected fields and allocation fields", () => {
   const storePath = tempStorePath();
   assert.throws(() => saveManagerReview({

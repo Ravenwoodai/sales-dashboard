@@ -3,6 +3,7 @@
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { sourceNameFor } = require("./sourceQuality");
 const { clean, isMissing } = require("./transcriptEvaluator");
+const { formatSourceDateTimeValue } = require("./dateTimeFormat");
 
 const STABLE_LEAD_FIELDS = ["customer_id", "AllocatedLeadID", "ContactId", "FoundContactID", "FoundCustomerID"]
   .filter((field) => ENTITY_FIELDS.includes(field));
@@ -443,7 +444,7 @@ function buildLeadUtilizationReport(analysis, importRecord) {
         record.salesperson,
         record.firstCallId || record.primaryCallId || "Unknown",
         record.stableLeadSource || "Stable ID",
-        `${clean(firstCall.date)} ${clean(firstCall.time)}`.trim() || clean(record.firstCallAt),
+        formatSourceDateTimeValue(firstCall.date, firstCall.time) || clean(record.firstCallAt),
         clean(firstCall.contactClassification || record.oneDialBucketLabel).replace(/\|/g, "/"),
         clean(record.oneDialReason || "One-dial no-contact with no later matching call observed").replace(/\|/g, "/")
       ]);

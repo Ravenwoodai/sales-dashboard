@@ -14,6 +14,7 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - Project credentials for the Execution Layer must come from the runtime environment and must never be committed.
 - If an LLM evaluator is added later, transcript text must be treated as untrusted data and wrapped separately from system instructions.
 - Future LLM outputs must use strict schema validation, evidence snippets, confidence scores, version metadata, and review/failure states.
+- Evaluation Studio prompts and knowledgebase entries are user-managed context. Treat them as untrusted local content, keep them versioned, and pass them only through the approved AI Execution Layer with explicit guardrails.
 
 ## Secrets
 - Never commit secrets, tokens, private keys, or real credentials.
@@ -26,6 +27,7 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - Treat alert lifecycle actors as local placeholders until authentication exists; normal lifecycle actions resolve to `local_manager` server-side and ignore client-supplied actor names.
 - Treat manager review actors the same way: review actions resolve to `local_manager` server-side, client-supplied actor/reviewer fields are not authoritative, and manager corrections must not overwrite raw imported fields, deterministic outputs, LLM outputs, or generated alert evidence.
 - Manager review notes, correction reasons, and evidence assessments are untrusted display text and must be escaped when rendered.
+- Evaluation Studio knowledgebase entries, prompt/template text, output schemas, and run metadata are untrusted display text and must be escaped when rendered.
 - Hide parked or superseded report content from normal report APIs and dashboard report views while preserving local store records.
 - Add role-based access before exposing transcript detail outside localhost.
 

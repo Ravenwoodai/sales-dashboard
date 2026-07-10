@@ -8,6 +8,7 @@ const DEFAULT_LAYER_PATH = "C:\\Users\\User\\Desktop\\ai-execution-layer";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_TASK_TYPE = "sales_transcript_evaluation";
 const INTELLIGENCE_TASK_TYPE = "sales_transcript_intelligence_extraction";
+const EVALUATION_STUDIO_TASK_TYPE = "sales_dashboard_evaluation_studio";
 
 function clean(value) {
   return value === undefined || value === null ? "" : String(value).trim();
@@ -371,6 +372,7 @@ module.exports = {
   DEFAULT_BASE_URL,
   DEFAULT_LAYER_PATH,
   DEFAULT_TASK_TYPE,
+  EVALUATION_STUDIO_TASK_TYPE,
   INTELLIGENCE_TASK_TYPE,
   buildTranscriptIntelligenceInput,
   buildTranscriptEvaluationInput,

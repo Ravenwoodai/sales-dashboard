@@ -4,7 +4,7 @@
 Sales Dashboard is a local Node.js web app for scheduled CSV/XLSX sales-call transcript exports. It profiles import quality, deduplicates calls, runs deterministic local transcript evaluation, parks optional campaign/allocation imports outside active analytics, optionally submits local model jobs through the AI Execution Layer, persists derived local history, and renders a manager-facing dashboard without using unsupported phone/date, sales, or revenue assumptions.
 
 ## 2. Core Objective
-Make the current call export useful and safe: surface contact quality, meaningful conversations, follow-up signals, lead reattempt behaviour, imported-outcome mismatches, call-CSV source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries. Preserve separate campaign/allocation data only as parked diagnostics.
+Make the current call export useful and safe: surface contact quality, meaningful conversations, follow-up signals, lead reattempt behaviour, lead harvest candidates, imported-outcome mismatches, call-CSV source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries. Preserve separate campaign/allocation data only as parked diagnostics.
 
 ## 3. Key Entities
 - CSV/XLSX import
@@ -12,12 +12,17 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - Local call evaluation
 - Evidence snippet
 - Lead reattempt bucket
+- Lead harvest candidate
 - Alert event
 - Alert lifecycle action
 - Manager review queue item
 - Manager review record
 - Manager review correction
 - Manager review history event
+- Evaluation Studio knowledgebase entry
+- Evaluation Studio template
+- Evaluation Studio run
+- Evaluation Studio result
 - Generated report
 - Global filter state
 - Parked allocation import diagnostic
@@ -33,14 +38,16 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 4. Deduplicate calls by `call_id`, ignore privacy-reduced fields for analytics, and parse valid customer import/create dates only for source-quality Record Age.
 5. Evaluate each transcript locally with deterministic rules in `src/transcriptEvaluator.js`.
 6. Link follow-up signals through stable source IDs only.
-7. Build active call/transcript metrics, deterministic one-dial lead reattempt buckets, parked allocation status, alerts, sanitized evaluation rows, and explorer rows in `src/analysis.js`.
-8. Apply shared global call/transcript filters with `src/globalFilters.js` for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.
-9. Merge alert lifecycle state with generated call-data alerts using `src/alertLifecycle.js`.
-10. Apply governed manager review overlays from `src/managerReview.js` and `src/storage.js` so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.
-11. Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, and reports through `src/storage.js`.
-12. Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.
-13. Submit optional local model transcript jobs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`.
-14. Render the dashboard through `src/dashboardRenderer.js`.
+7. Build active call/transcript metrics, deterministic one-dial lead reattempt buckets, lead harvest candidates, parked allocation status, alerts, sanitized evaluation rows, and explorer rows in `src/analysis.js`.
+8. Format all UI-facing dates and times through `src/dateTimeFormat.js` using Australian `DD/MM/YYYY HH:mm:ss AEST` display. Source call times are labelled as source call time in AEST without browser timezone conversion; system timestamps are converted to fixed AEST.
+9. Apply shared global call/transcript filters with `src/globalFilters.js` for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.
+10. Merge alert lifecycle state with generated call-data alerts using `src/alertLifecycle.js`.
+11. Apply governed manager review overlays from `src/managerReview.js` and `src/storage.js` so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.
+12. Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, queued evaluation runs including all eligible transcript calls when requested, one-call prompt test runs, automatic reconciliation of small queued prompt-test jobs when the Studio page/API is read, run quarantine/resume state, batch result harvesting, versioned result records with prompt and knowledgebase provenance, global-filter-aware report-safe evaluation rollups, and result-to-manager-review handoffs with safe suggested correction prefill through `src/evaluationStudio.js`, `src/storage.js`, the standalone `/evaluation-studio` page, `/api/evaluation-studio`, `/api/evaluation-studio/prompt-tests`, `/api/evaluation-studio/report-rollups`, `/api/evaluation-studio/results`, and `/api/evaluation-studio/results/<id>/review`.
+13. Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, Evaluation Studio artifacts/results, and reports through `src/storage.js`.
+14. Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.
+15. Submit optional local model transcript jobs and explicit Evaluation Studio runs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`.
+16. Render the dashboard through `src/dashboardRenderer.js`.
 
 ## 5. Architecture Snapshot
 - `src/main.js`: local HTTP server, `/health`, `/api/summary`, and optional reload route.
@@ -52,8 +59,11 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - `src/globalFilters.js`: shared active call/transcript filter state, option generation, missing-value buckets, and denominator summaries.
 - `src/alertLifecycle.js`: alert status, active/closed count, server-resolved local actor, manager note, and lifecycle-history helpers.
 - `src/managerReview.js`: manager review status/scope/correction allowlist, local actor resolution, correction overlay, and review-history helpers.
+- `src/evaluationStudio.js`: Evaluation Studio knowledgebase/template/run/result model, seeded Neuron/LatentPulse-derived defaults, safe custom evaluation goals, strict output schema validation, prompt-test run typing, run quarantine/resume governance, batch result harvesting support, prompt/knowledgebase-version provenance on results, evidence/confidence result normalization, global-filter-aware report-safe rollups from labelled findings, result-to-manager-review mapping, suggested correction prefill from allowlisted findings, and guarded local-model input construction.
+- `src/dateTimeFormat.js`: Australian/AEST UI date/time formatter for source call times, filters, reports, and stored system timestamps.
 - `src/transcriptEvaluator.js`: local transcript-quality, contact, outcome, follow-up, and risk classifier.
-- `src/analysis.js`: import profiling, deduplication, active/filtered call-transcript metrics, parked allocation status, deterministic lead reattempt buckets, alerts, follow-up status, manager-review governance overlays, and sanitized rows.
+- `src/analysis.js`: import profiling, deduplication, active/filtered call-transcript metrics, parked allocation status, deterministic lead reattempt buckets, lead harvest candidates, alerts, follow-up status, manager-review governance overlays, and sanitized rows.
+- `src/leadHarvestAnalytics.js`: positive-response callback candidate queue with possible name/timing extraction and stable-ID later-call labels.
 - `src/storage.js`: ignored local JSON store, import artifact writer, generated report saver, active report visibility view, alert lifecycle persistence, and manager review correction/history persistence.
 - `src/aiExecutionLayer.js`: optional local AI Execution Layer client for transcript jobs.
 - `src/dashboardRenderer.js`: HTML renderer and escaping layer.
@@ -83,7 +93,14 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - Reports API: `http://127.0.0.1:3000/api/reports`
 - Allocations API: `http://127.0.0.1:3000/api/allocations`
 - Manager Reviews API: `http://127.0.0.1:3000/api/manager-reviews`
+- Lead Harvest API: `http://127.0.0.1:3000/api/lead-harvest`
 - AI status API: `http://127.0.0.1:3000/api/ai/status`
+- Evaluation Studio UI: `http://127.0.0.1:3000/evaluation-studio`
+- Evaluation Studio API: `http://127.0.0.1:3000/api/evaluation-studio`
+- Evaluation Studio Prompt Tests API: `POST http://127.0.0.1:3000/api/evaluation-studio/prompt-tests`
+- Evaluation Studio Report Rollups API: `http://127.0.0.1:3000/api/evaluation-studio/report-rollups`
+- Evaluation Studio Results API: `http://127.0.0.1:3000/api/evaluation-studio/results`
+- Evaluation Studio Result Review API: `POST http://127.0.0.1:3000/api/evaluation-studio/results/<result-id>/review`
 - Local store: `data/store/state.json`, ignored by Git.
 
 ## 8. Source Map
@@ -96,5 +113,5 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - `/runtime/AUTONOMOUS_BACKLOG.md`
 
 ## 9. Metadata
-- Last Generated: 2026-07-08T04:45:00.000Z
+- Last Generated: 2026-07-10T09:00:00.000Z
 - Confidence Level: high

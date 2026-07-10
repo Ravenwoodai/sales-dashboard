@@ -425,6 +425,7 @@ function followUpSummary(channel) {
   if (channel === "email_or_sms") return "Customer asked for information by email or SMS";
   if (channel === "meeting") return "Meeting or appointment signal found";
   if (channel === "call") return "Callback requested or promised";
+  if (channel === "future_nurture") return "Long-term deferral or future nurture signal";
   return "Positive follow-up signal found";
 }
 
@@ -490,6 +491,14 @@ const PATTERNS = {
     /\bring (?:me|us|them|him|her|you)?\s*back later\b/i,
     /\bnot now\b/i,
     /\btoo busy\b/i
+  ],
+  longTermDeferral: [
+    /\b(?:call|ring|phone|get back to|try|contact|reach)\s+(?:me|us|him|her|them|the owner|the boss)?\s*(?:back|again)?\s*(?:in|after|within)?\s*(?:about|around|roughly)?\s*(?:12|twelve)\s+months?(?:'?\s*time)?\b/i,
+    /\b(?:in|after|within)\s+(?:about|around|roughly)?\s*(?:12|twelve)\s+months?(?:'?\s*time)?\b/i,
+    /\bnext financial year\b/i,
+    /\bbefore (?:the )?next financial year\b/i,
+    /\b(?:try|call|ring|contact|get back to|reach)\s+(?:me|us|him|her|them)?\s*(?:again|back)?\s+(?:this time )?next year\b/i,
+    /\bthis time next year\b/i
   ],
   emailOrSms: [
     /\bsend (?:me )?(?:an )?email\b/i,
@@ -563,11 +572,13 @@ function evaluateCall(row) {
     : systemAudioSubtypeFor({ transcript: "", aiVoiceAssistant, systemAudio: false, voicemail: false });
   const wrongNumber = transcriptAvailable && hasAny(transcript, PATTERNS.wrongNumber);
   const notInterested = transcriptAvailable && hasAny(transcript, PATTERNS.notInterested);
-  const callback = transcriptAvailable && hasAny(transcript, PATTERNS.callback);
+  const longTermDeferral = transcriptAvailable && hasAny(transcript, PATTERNS.longTermDeferral);
+  const callback = transcriptAvailable && hasAny(transcript, PATTERNS.callback) && !longTermDeferral;
   const emailOrSms = transcriptAvailable && hasAny(transcript, PATTERNS.emailOrSms);
   const quote = transcriptAvailable && hasAny(transcript, PATTERNS.quote);
   const appointment = transcriptAvailable && hasAny(transcript, PATTERNS.appointment);
   const positiveInterest = transcriptAvailable && hasAny(transcript, PATTERNS.positiveInterest);
+  const currentPositiveInterest = positiveInterest && !longTermDeferral;
   const complaint = transcriptAvailable && hasAny(transcript, PATTERNS.complaint);
   const optOut = transcriptAvailable && hasAny(transcript, PATTERNS.optOut);
 
@@ -591,7 +602,7 @@ function evaluateCall(row) {
     (wrongNumber || callback || emailOrSms || quote || appointment || positiveInterest || notInterested || complaint || optOut || (speakerLabelsPresent && words >= 16 && durationSeconds >= 10));
   const meaningfulConversation = probableLiveHuman && (words >= 35 || durationSeconds >= 30);
   const actionableConversation =
-    meaningfulConversation && (callback || emailOrSms || quote || appointment || positiveInterest || complaint || optOut || wrongNumber || notInterested);
+    meaningfulConversation && (callback || emailOrSms || quote || appointment || currentPositiveInterest || longTermDeferral || complaint || optOut || wrongNumber || notInterested);
 
   let contactClassification = "unknown";
   if (noAnswer || noTranscriptNoPickup) contactClassification = "no_answer";
@@ -609,13 +620,14 @@ function evaluateCall(row) {
   else if (quote) localOutcomeCategory = "quote_requested";
   else if (emailOrSms) localOutcomeCategory = "send_information";
   else if (appointment) localOutcomeCategory = "appointment_or_meeting";
-  else if (positiveInterest) localOutcomeCategory = "positive_interest";
+  else if (longTermDeferral) localOutcomeCategory = "long_term_deferral";
+  else if (currentPositiveInterest) localOutcomeCategory = "positive_interest";
   else if (notInterested) localOutcomeCategory = "not_interested";
   else if (contactClassification === "no_answer") localOutcomeCategory = "no_answer";
   else if (contactClassification === "voicemail") localOutcomeCategory = "voicemail";
   else if (meaningfulConversation) localOutcomeCategory = "other";
 
-  const followUpRequired = callback || emailOrSms || quote || appointment || positiveInterest;
+  const followUpRequired = callback || emailOrSms || quote || appointment || currentPositiveInterest;
   const followUpChannel = quote ? "quote" : emailOrSms ? "email_or_sms" : appointment ? "meeting" : callback ? "call" : followUpRequired ? "other" : "none";
   const importedNoSale = isMissing(row.NoSaleType) ? "" : clean(row.NoSaleType);
   const importedNoSaleLabel = importedNoSale || "Unprocessed By Salesperson";
@@ -644,11 +656,19 @@ function evaluateCall(row) {
       confidence
     ));
   }
+  if (longTermDeferral && !followUpRequired) {
+    evidence.push(evidenceItem(
+      "long_term_deferral",
+      followUpSummary("future_nurture"),
+      evidenceFor(transcript, PATTERNS.longTermDeferral),
+      confidence
+    ));
+  }
   if (outcomeMismatch) {
     evidence.push(evidenceItem(
       "outcome_mismatch",
       "Imported outcome may not match the transcript",
-      evidenceFor(transcript, [/\bcustomer\s*:/i, ...PATTERNS.callback, ...PATTERNS.notInterested, ...PATTERNS.positiveInterest], "Local outcome differs from imported disposition."),
+      evidenceFor(transcript, [...PATTERNS.callback, ...PATTERNS.longTermDeferral, ...PATTERNS.notInterested, ...PATTERNS.positiveInterest], "Local outcome differs from imported disposition."),
       confidence
     ));
   }
@@ -710,6 +730,7 @@ function evaluateCall(row) {
     opportunity: {
       positiveInterest,
       requestedCallback: callback,
+      longTermDeferral,
       requestedEmailOrSms: emailOrSms,
       requestedQuote: quote,
       appointmentOrMeeting: appointment,

@@ -13,7 +13,10 @@ function dashboardFixture(overrides = {}) {
     dateRange: {
       start: "2026-07-01T00:00:00.000Z",
       end: "2026-07-01T01:00:00.000Z",
-      display: "2026-07-01 00:00:00 to 2026-07-01 01:00:00 (Source call time)"
+      sourceStart: "01/07/2026 00:00:00 AEST",
+      sourceEnd: "01/07/2026 01:00:00 AEST",
+      sourceTimezoneLabel: "Source call time (AEST)",
+      display: "01/07/2026 00:00:00 AEST to 01/07/2026 01:00:00 AEST (Source call time (AEST))"
     },
     totals: {
       uniqueCalls: 2,

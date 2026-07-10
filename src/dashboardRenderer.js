@@ -8,6 +8,12 @@ const {
   reviewStatusLabel,
   reviewStatusTone
 } = require("./managerReview");
+const { EVALUATION_GOALS } = require("./evaluationStudio");
+const {
+  formatAestDateTime,
+  formatSourceDateTimeValue,
+  formatSourceDateValue
+} = require("./dateTimeFormat");
 
 function escapeHtml(value) {
   return String(value === undefined || value === null ? "" : value)
@@ -33,21 +39,30 @@ function formatRatioPercent(value) {
 
 function formatDateRange(range) {
   if (!range || !range.start || !range.end) return "No CSV loaded";
-  if (range.display) return range.display;
   if (range.sourceStart && range.sourceEnd) {
-    return `${range.sourceStart} to ${range.sourceEnd} (${range.sourceTimezoneLabel || "source call time"})`;
+    return `${formatSourceDateTimeValue(range.sourceStart)} to ${formatSourceDateTimeValue(range.sourceEnd)} (${range.sourceTimezoneLabel || "Source call time (AEST)"})`;
   }
+  if (range.display) return range.display;
   const start = new Date(range.start);
   const end = new Date(range.end);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "Date range unavailable";
-  return `${start.toISOString().slice(0, 19).replace("T", " ")} to ${end.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+  return `${formatAestDateTime(start)} to ${formatAestDateTime(end)}`;
 }
 
 function formatDateTime(value) {
-  if (!value) return "Unknown";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return String(value);
-  return `${parsed.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+  return formatAestDateTime(value);
+}
+
+function formatSourceTime(row = {}) {
+  return row.sourceTime || formatSourceDateTimeValue(row.date, row.time);
+}
+
+function formatSourceDate(value) {
+  return formatSourceDateValue(value);
+}
+
+function humanizeSlug(value) {
+  return String(value || "Unknown").replace(/_/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function shortHash(value) {
@@ -313,7 +328,7 @@ function renderAlertCentre(alertRows = [], summary = {}, options = {}) {
     ${table([
       { label: "Select", render: (row) => `<input class="table-checkbox" form="alert-bulk-form" type="checkbox" name="alertIds" value="${escapeHtml(row.id || row.alertId || "")}" />` },
       { label: "Status", render: (row) => badge(alertStatusLabel(row.status), alertStatusTone(row.status)) },
-      { label: "Manager review", render: (row) => `${managerReviewBadge(row, new Map())}<br />${managerCorrectionSummary(row, new Map())}<div class="alert-actions">${managerReviewActionForm(row, "mark_review_needed", "Review call", { returnTo, importId, reviewScope: "alert", source: "alert_centre" })}</div>` },
+      { label: "Manager review", render: (row) => `${managerReviewBadge(row, new Map())}<br />${managerCorrectionSummary(row, new Map())}<br />${managerSuggestedCorrectionSummary(row, new Map())}<div class="alert-actions">${managerReviewActionForm(row, "mark_review_needed", "Review call", { returnTo, importId, reviewScope: "alert", source: "alert_centre" })}</div>` },
       { label: "Severity", render: (row) => badge(row.severity, row.severity === "critical" ? "critical" : row.severity === "warning" ? "warning" : "notice") },
       { label: "Alert", render: (row) => `<strong>${escapeHtml(row.category || row.ruleId || "Alert")}</strong><br /><span class="muted small">${escapeHtml(row.message || "")}</span><br /><span class="muted small mono">${escapeHtml(row.ruleId || "")}</span>` },
       { label: "Affected", render: (row) => `${customerIdCell(row)}<br /><span class="muted small">Owner: ${escapeHtml(row.owner || "Unknown")}</span><br />${callLink(row.callId)}` },
@@ -379,6 +394,15 @@ function managerCorrectionSummary(row = {}, persistenceOrMap = new Map()) {
   if (!fields.length && !latest) return `<span class="muted small">No manager correction</span>`;
   const fieldText = fields.length ? fields.slice(0, 3).join(", ") : "corrected value";
   return `<span class="evidence">${escapeHtml(fieldText)}${latest ? `<br /><span class="muted small">Preferred: ${escapeHtml(latest)}</span>` : ""}</span>`;
+}
+
+function managerSuggestedCorrectionSummary(row = {}, persistenceOrMap = new Map()) {
+  const summary = managerReviewSummaryFor(row, persistenceOrMap);
+  const fields = row.managerSuggestedCorrectionFields || summary?.suggestedCorrectionFields || [];
+  const latest = row.managerSuggestedValue || summary?.latestSuggestedCorrection?.managerSuggestedValue || summary?.latestSuggestedCorrection?.suggestedValue || "";
+  if (!fields.length && !latest) return "";
+  const fieldText = fields.length ? fields.slice(0, 3).join(", ") : "suggested value";
+  return `<span class="muted small">Suggested prefill: ${escapeHtml(fieldText)}${latest ? `<br />Value: ${escapeHtml(latest)}` : ""}</span>`;
 }
 
 function aiAssistantResponseBadge(row) {
@@ -707,6 +731,17 @@ function renderEmptyState(message) {
       lowestRetrySalespeople: [],
       records: []
     },
+    leadHarvest: {
+      totals: {},
+      salespersonRows: [],
+      sourceRows: [],
+      statusRows: [],
+      priorityRows: [],
+      objectionRows: [],
+      handlingRows: [],
+      latestRows: [],
+      records: []
+    },
     businessSegmentMetrics: [],
     businessSegmentViews: {},
     explorerRows: [],
@@ -730,9 +765,18 @@ function renderEmptyState(message) {
         inProgressAlerts: 0,
         resolvedAlerts: 0,
         dismissedAlerts: 0,
-        falsePositiveAlerts: 0
+        falsePositiveAlerts: 0,
+        evaluationKnowledgebaseEntries: 0,
+        evaluationTemplates: 0,
+        evaluationRuns: 0
       },
-      alertLifecycleSummary: {}
+      alertLifecycleSummary: {},
+      evaluationStudio: {
+        summary: {},
+        knowledgebaseEntries: [],
+        evaluationTemplates: [],
+        evaluationRuns: []
+      }
     },
     emptyMessage: message
   };
@@ -749,6 +793,7 @@ function compactText(value, maxLength = 180) {
 function signalLabel(signal) {
   const labels = {
     follow_up: "Follow-up signal found",
+    long_term_deferral: "Long-term deferral found",
     outcome_mismatch: "Imported outcome may not match transcript",
     complaint: "Complaint or risk wording found",
     opt_out: "Opt-out request found",
@@ -792,18 +837,34 @@ function renderEvidenceSummary(row, options = {}) {
   return `<span class="evidence-summary"><span>${escapeHtml(compactText(summary, options.maxLength || 180))}</span>${link ? ` ${link}` : ""}</span>`;
 }
 
-function renderTurnList(turns, emptyMessage = "No ordered speaker turns were detected for this excerpt.") {
+function turnRoleClass(speaker) {
+  const text = String(speaker || "").trim();
+  if (/^customer$/i.test(text)) return "customer-turn";
+  if (/^agent$/i.test(text) || /\(CWA\)$/i.test(text)) return "salesperson-turn";
+  if (/^voicemail$/i.test(text) || /^transcript$/i.test(text)) return "system-turn";
+  return "other-turn";
+}
+
+function renderTurnList(turns, emptyMessage = "No ordered speaker turns were detected for this excerpt.", options = {}) {
   const rows = (turns || []).filter((turn) => turn?.text);
   if (!rows.length) {
     return `<div class="empty">${escapeHtml(emptyMessage)}</div>`;
   }
 
-  return `<div class="turn-list">
-    ${rows.map((turn) => `<div class="turn ${turn.matched ? "matched" : ""}">
+  const className = ["turn-list", options.className].filter(Boolean).join(" ");
+  return `<div class="${escapeHtml(className)}">
+    ${rows.map((turn) => `<div class="turn ${turnRoleClass(turn.speaker)} ${turn.matched ? "matched" : ""}">
       <div class="speaker">${escapeHtml(turn.speaker || "Transcript")}</div>
       <div>${escapeHtml(turn.text)}</div>
     </div>`).join("")}
   </div>`;
+}
+
+function isUsefulMatchText(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  if (/^(?:customer|agent|voicemail|outbound call|inbound call):?$/i.test(text)) return false;
+  return text.length > 2;
 }
 
 function renderEvidenceProofCards(items) {
@@ -813,14 +874,17 @@ function renderEvidenceProofCards(items) {
   }
 
   return `<div class="proof-list">
-    ${rows.map((item) => `<article class="proof-card">
+    ${rows.map((item) => {
+      const matchText = isUsefulMatchText(item.matchText) ? item.matchText : "";
+      return `<article class="proof-card">
       <div class="proof-head">
         <strong>${escapeHtml(item.summary || signalLabel(item.signal))}</strong>
         <span class="muted small">${escapeHtml(signalLabel(item.signal))} | ${Math.round(Number(item.confidence || 0) * 100)}%</span>
       </div>
-      ${item.matchText ? `<p class="muted small">Matched phrase: <span class="mono">${escapeHtml(item.matchText)}</span></p>` : ""}
-      ${item.turns?.length ? renderTurnList(item.turns) : `<p class="proof-text">${escapeHtml(item.text || "Evidence unavailable")}</p>`}
-    </article>`).join("")}
+      ${matchText ? `<p class="muted small">Matched phrase: <span class="mono">${escapeHtml(matchText)}</span></p>` : ""}
+      ${item.turns?.length ? renderTurnList(item.turns, "No ordered speaker turns were detected for this signal excerpt.", { className: "signal-excerpt-list" }) : `<p class="proof-text">${escapeHtml(item.text || "Evidence unavailable")}</p>`}
+    </article>`;
+    }).join("")}
   </div>`;
 }
 
@@ -841,6 +905,9 @@ function renderDrilldownPage(result) {
     ...(result.filters?.aiAssistantResponse ? { aiAssistantResponse: result.filters.aiAssistantResponse } : {}),
     ...(result.filters?.aiAssistantTactic ? { aiAssistantTactic: result.filters.aiAssistantTactic } : {}),
     ...(result.filters?.systemAudioSubtype ? { systemAudioSubtype: result.filters.systemAudioSubtype } : {}),
+    ...(result.filters?.objectionType ? { objectionType: result.filters.objectionType } : {}),
+    ...(result.filters?.handlingType ? { handlingType: result.filters.handlingType } : {}),
+    ...(result.filters?.sort ? { sort: result.filters.sort } : {}),
     ...(result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? { minImportAgeDays: result.filters.minImportAgeDays } : {}),
     ...(result.filters?.maxAttempts !== null && result.filters?.maxAttempts !== undefined ? { maxAttempts: result.filters.maxAttempts } : {}),
     ...(result.filters?.businessSegment ? { businessSegment: result.filters.businessSegment } : {})
@@ -875,6 +942,9 @@ function renderDrilldownPage(result) {
     result.filters?.aiAssistantResponse ? `AI response: ${result.filters.aiAssistantResponse}` : "",
     result.filters?.aiAssistantTactic ? `AI tactic: ${result.filters.aiAssistantTactic}` : "",
     result.filters?.systemAudioSubtype ? `System audio: ${result.filters.systemAudioSubtype}` : "",
+    result.filters?.objectionType ? `Objection: ${result.filters.objectionType}` : "",
+    result.filters?.handlingType ? `Handling: ${result.filters.handlingType}` : "",
+    result.filters?.sort ? `Order: ${result.filters.sort}` : "",
     result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? `Record age older than: ${result.filters.minImportAgeDays} days` : "",
     result.filters?.maxAttempts !== null && result.filters?.maxAttempts !== undefined ? `Attempts: ${result.filters.maxAttempts}` : "",
     result.filters?.businessSegmentLabel ? `Business: ${result.filters.businessSegmentLabel}` : ""
@@ -883,6 +953,7 @@ function renderDrilldownPage(result) {
   const visibleEnd = result.count ? (result.offset || 0) + result.displayedCount : 0;
   const isReattempt = result.kind === "reattempt";
   const isSystemAudio = result.kind === "systemAudio";
+  const isHarvest = result.kind === "harvest";
 
   const rowTable = isLead
     ? table([
@@ -913,7 +984,7 @@ function renderDrilldownPage(result) {
       ? table([
         { label: "Call", render: (row) => callLink(row.callId) },
         { label: "Customer ID", render: (row) => customerIdCell(row) },
-        { label: "Time", render: (row) => `${escapeHtml(row.date)} ${escapeHtml(row.time)}` },
+        { label: "Time", render: (row) => escapeHtml(formatSourceTime(row)) },
         { label: "Salesperson", key: "salesperson" },
         { label: "Source", key: "source" },
         { label: "Subtype", key: "subtypeLabel" },
@@ -921,10 +992,28 @@ function renderDrilldownPage(result) {
         { label: "Recovered", render: (row) => row.futureCallId ? callLink(row.futureCallId, "Future call") : `<span class="muted small">${escapeHtml(String(row.futureStatus || "").replace(/_/g, " "))}</span>` },
         { label: "Proof", render: (row) => `<span class="evidence">${escapeHtml(row.transcriptPreview || "Open call proof")}</span>` }
       ], rows, "No system audio records match this drill-down.")
+    : isHarvest
+      ? table([
+        { label: "Call", render: (row) => callLink(row.callId) },
+        { label: "Customer ID", render: (row) => customerIdCell(row) },
+        { label: "Source time", render: (row) => `<span class="mono">${escapeHtml(formatSourceTime(row))}</span>` },
+        { label: "Salesperson", key: "salesperson" },
+        { label: "Source", key: "source" },
+        { label: "Business", key: "businessSegmentLabel" },
+        { label: "Possible name", render: (row) => escapeHtml(row.possibleContactName || row.possibleDecisionMakerName || "Not stated") },
+        { label: "Objection", render: (row) => `${escapeHtml(row.objectionLabel || "Unknown")}<br /><span class="muted small">${escapeHtml(row.objectionEvidence || "Evidence unavailable")}</span>` },
+        { label: "Salesperson handling", render: (row) => `${escapeHtml(row.salespersonHandlingLabel || "Unknown")}<br /><span class="muted small">${escapeHtml(row.salespersonHandlingEvidence || "Evidence unavailable")}</span>` },
+        { label: "Callback timing", render: (row) => `${escapeHtml(row.callbackTimingSummary || "Timing not specified")}<br /><span class="muted small">${escapeHtml(row.callbackTimingText || "Open proof to confirm timing")}</span>` },
+        { label: "Status", render: (row) => badge(row.statusLabel || row.status, row.status === "open_no_later_matching_call" ? "warning" : row.status === "later_matching_call_observed" ? "success" : "neutral") },
+        { label: "Later match", render: (row) => row.laterCallId ? callLink(row.laterCallId, "Later call") : `<span class="muted small">${escapeHtml(row.matchingConfidence === "unavailable" ? "Matching unavailable" : "No later matching call observed")}</span>` },
+        { label: "Confidence", render: (row) => badge(row.confidenceLabel || "Confidence unavailable", row.confidenceBand === "high" ? "success" : row.confidenceBand === "medium" ? "notice" : "warning") },
+        { label: "Handover context", render: (row) => `<span class="evidence-summary">${escapeHtml(row.handoverSummary || row.positiveSignalSummary || "Open call evidence to inspect context")}<a class="proof-link" href="/calls/${encodeURIComponent(row.callId)}">Open call evidence</a></span>` },
+        { label: "Evidence snippet", render: (row) => `<span class="evidence-summary">${escapeHtml((row.evidenceSnippets || [row.evidenceSummary || "Evidence unavailable"])[0])}</span>` }
+      ], rows, "No lead harvest records match this drill-down.")
     : table([
       { label: "Call", render: (row) => callLink(row.callId) },
       { label: "Customer ID", render: (row) => customerIdCell(row) },
-      { label: "Time", render: (row) => `${escapeHtml(row.date)} ${escapeHtml(row.time)}` },
+      { label: "Time", render: (row) => escapeHtml(formatSourceTime(row)) },
       { label: "Salesperson", key: "salesperson" },
       { label: "Source", key: "source" },
       { label: "Business", key: "businessSegmentLabel" },
@@ -1102,7 +1191,7 @@ function renderDrilldownPage(result) {
       <section class="panel">
         <div class="stack" style="margin-bottom: 12px;">
           <span class="badge">${escapeHtml(result.metric)}</span>
-          <span class="badge">${escapeHtml(isLead ? "Matched-record proof" : isReattempt ? "Reattempt proof" : isSystemAudio ? "System audio proof" : "Call-row proof")}</span>
+          <span class="badge">${escapeHtml(isLead ? "Matched-record proof" : isReattempt ? "Reattempt proof" : isSystemAudio ? "System audio proof" : isHarvest ? "Lead harvest proof" : "Call-row proof")}</span>
           <span class="badge">Ignored: ${escapeHtml(result.excludedRawFields.join(", "))}</span>
         </div>
         <div class="drill-actions" style="margin-bottom: 12px;">
@@ -1155,11 +1244,25 @@ function renderReviewCorrections(review) {
   ].filter(Boolean).join("<br />")).join("<hr />");
 }
 
+function renderReviewSuggestions(review) {
+  const suggestions = review?.suggestedCorrections || [];
+  if (!suggestions.length) return `<span class="muted small">No suggested prefill</span>`;
+  return suggestions.slice(0, 4).map((suggestion) => [
+    `<strong>${escapeHtml(suggestion.fieldName)}</strong>`,
+    `Suggested: ${escapeHtml(suggestion.managerSuggestedValue || suggestion.suggestedValue || "Not supplied")}`,
+    suggestion.previousDisplayValue ? `Previous: ${escapeHtml(suggestion.previousDisplayValue)}` : "",
+    suggestion.confidence !== null && suggestion.confidence !== undefined ? `Confidence: ${formatPercent(Number(suggestion.confidence || 0))}` : "Confidence unavailable",
+    suggestion.evidence ? `Evidence: ${escapeHtml(compactText(suggestion.evidence, 180))}` : "Evidence unavailable",
+    `<span class="muted small">Suggested only; not a manager correction until confirmed.</span>`
+  ].filter(Boolean).join("<br />")).join("<hr />");
+}
+
 function renderReviewHistory(reviews) {
   const rows = (reviews || []).map(normalizeManagerReview);
   return table([
     { label: "Status", render: (row) => badge(reviewStatusLabel(row.reviewStatus), reviewStatusTone(row.reviewStatus)) },
     { label: "Scope", render: (row) => escapeHtml(row.reviewScope || "call") },
+    { label: "Suggested prefill", render: (row) => renderReviewSuggestions(row) },
     { label: "Corrections", render: (row) => renderReviewCorrections(row) },
     { label: "Notes", render: (row) => `<span class="evidence">${escapeHtml(row.managerNotes || "No notes")}</span>` },
     { label: "Reviewed", render: (row) => `${escapeHtml(row.reviewedBy || "local_manager")}<br /><span class="muted small">${escapeHtml(formatDateTime(row.updatedAt || row.reviewedAt || row.createdAt))}</span>` }
@@ -1506,6 +1609,633 @@ function renderProcessingStatePanel(data, persistence = {}, intelligenceTotals =
   </section>`;
 }
 
+function renderKnowledgebaseActions(row = {}) {
+  const returnTo = "/evaluation-studio";
+  return `<details class="compact-details">
+    <summary>Edit entry</summary>
+    <form class="studio-form" method="post" action="/evaluation-studio/knowledgebase">
+      <input type="hidden" name="id" value="${escapeHtml(row.id || "")}" />
+      <input name="title" value="${escapeHtml(row.title || "")}" required />
+      <input name="category" value="${escapeHtml(row.category || "general")}" />
+      <input name="tags" value="${escapeHtml((row.tags || []).join(", "))}" />
+      <textarea name="content" rows="4" required>${escapeHtml(row.content || "")}</textarea>
+      <button type="submit">Save changes</button>
+    </form>
+    <form class="inline-alert-form" method="post" action="/evaluation-studio/knowledgebase/${encodeURIComponent(row.id || "")}/archive">
+      <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+      <button type="submit">Archive entry</button>
+    </form>
+  </details>`;
+}
+
+function renderTemplateActions(row = {}) {
+  const returnTo = "/evaluation-studio";
+  return `<details class="compact-details">
+    <summary>Edit template</summary>
+    <form class="studio-form" method="post" action="/evaluation-studio/templates">
+      <input type="hidden" name="id" value="${escapeHtml(row.id || "")}" />
+      <input name="name" value="${escapeHtml(row.name || "")}" required />
+      <input name="evaluationGoal" value="${escapeHtml(row.evaluationGoal || "procedure_adherence")}" required />
+      <input name="tags" value="${escapeHtml((row.tags || []).join(", "))}" />
+      <textarea name="instructions" rows="4" required>${escapeHtml(row.instructions || "")}</textarea>
+      <textarea name="outputSchema" rows="4" required>${escapeHtml(JSON.stringify(row.outputSchema || {}, null, 2))}</textarea>
+      <button type="submit">Save changes</button>
+    </form>
+    <form class="inline-alert-form" method="post" action="/evaluation-studio/templates/${encodeURIComponent(row.id || "")}/archive">
+      <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+      <button type="submit">Archive template</button>
+    </form>
+  </details>`;
+}
+
+function renderEvaluationRunActions(row = {}) {
+  const id = row.id || "";
+  const status = String(row.status || "queued");
+  if (!id || status === "completed") return `<span class="muted small">No action needed</span>`;
+  const returnTo = "/evaluation-studio";
+  const harvestForm = status === "quarantined" ? "" : `<form class="inline-alert-form" method="post" action="/evaluation-studio/runs/${encodeURIComponent(id)}/harvest">
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+    <button type="submit">Harvest results</button>
+  </form>`;
+  const quarantineForm = status === "quarantined" ? "" : `<form class="inline-alert-form" method="post" action="/evaluation-studio/runs/${encodeURIComponent(id)}/quarantine">
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+    <input name="reason" placeholder="Quarantine reason" />
+    <button type="submit">Quarantine</button>
+  </form>`;
+  const resumeForm = status === "quarantined" ? `<form class="inline-alert-form" method="post" action="/evaluation-studio/runs/${encodeURIComponent(id)}/resume">
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
+    <input type="hidden" name="reason" value="Resume from dashboard" />
+    <button type="submit">Resume</button>
+  </form>` : "";
+  return `<div class="alert-actions">${harvestForm}${quarantineForm}${resumeForm}</div>`;
+}
+
+function renderEvaluationStudio(persistence = {}, data = {}) {
+  const studio = persistence.evaluationStudio || {};
+  const summary = studio.summary || {};
+  const knowledgebaseRows = (studio.knowledgebaseEntries || []).slice(0, 8);
+  const templateRows = (studio.evaluationTemplates || []).slice(0, 8);
+  const runRows = (studio.evaluationRuns || []).slice(0, 8);
+  const resultRows = (studio.evaluationResults || []).slice(0, 8);
+  const evidenceRows = (studio.evidenceQueue || []).slice(0, 8);
+  const reportRollups = studio.reportRollups || {};
+  const reportTotals = reportRollups.totals || {};
+  const reportSignalRows = (reportRollups.signalRows || []).slice(0, 8);
+  const reportExampleRows = (reportRollups.priorityExamples || []).slice(0, 8);
+  const templateOptions = templateRows.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)} (${escapeHtml(template.evaluationGoal || "goal")})</option>`).join("");
+  const goalDatalist = Array.from(EVALUATION_GOALS || [])
+    .sort()
+    .map((goal) => `<option value="${escapeHtml(goal)}">${escapeHtml(humanizeSlug(goal))}</option>`)
+    .join("");
+  const defaultSchema = JSON.stringify({
+    schema_version: "sales_dashboard_evaluation_result.v1",
+    status: "usable|insufficient_evidence|failed",
+    confidence: "0-1",
+    evidence_availability: "available|partial|unavailable",
+    manager_summary: "short summary",
+    findings: []
+  }, null, 2);
+  const currentImportId = persistence.currentImportId || "";
+  const seededFrom = (summary.seededFrom || []).join(", ") || "Neuron and LatentPulse patterns";
+  return `<section class="panel" id="evaluation-studio">
+    <div class="panel-header">
+      <div>
+        <h2>Evaluation Studio</h2>
+        <p class="muted small">Manage the sales knowledgebase, evaluation goals, prompt templates, and governed local evaluation runs. Results are evidence-backed review signals, not sales or revenue claims.</p>
+      </div>
+      ${badge("Active call data only", "success")}
+    </div>
+    <div class="panel-body">
+      <div class="metrics">
+        ${metricCard("Knowledgebase", formatNumber(summary.activeKnowledgebaseEntries || 0), `${formatNumber(summary.archivedKnowledgebaseEntries || 0)} archived; seeded from ${seededFrom}`, "info")}
+        ${metricCard("Evaluation goals", formatNumber(summary.activeTemplates || 0), `${formatNumber(summary.archivedTemplates || 0)} archived templates`, "info")}
+        ${metricCard("Batch runs", formatNumber(summary.runs || 0), summary.lastRun ? `Latest: ${escapeHtml(summary.lastRun.status || "queued")}` : "No run queued yet", "warn")}
+        ${metricCard("Evaluation results", formatNumber(summary.results || 0), `${formatNumber(summary.reviewRecommendedResults || 0)} need manager review`, summary.reviewRecommendedResults ? "warn" : "info")}
+        ${metricCard("Evidence gaps", formatNumber(summary.evidenceUnavailableResults || 0), "Model output labelled evidence unavailable", summary.evidenceUnavailableResults ? "warn" : "good")}
+        ${metricCard("Manager governance", formatNumber(persistence.counts?.currentManagerReviewedCalls || 0), `${formatNumber(persistence.counts?.currentManagerCorrectedCalls || 0)} corrected overlays`, "good")}
+      </div>
+
+      <div class="grid-2" style="margin-top: 14px;">
+        <div>
+          <h3>Knowledgebase Entries</h3>
+          <p class="muted small">Use this for procedure, scripts, objection handling, product context, callback guidance, and coaching standards.</p>
+          <form class="studio-form" method="post" action="/evaluation-studio/knowledgebase" style="margin: 10px 0 12px;">
+            <input name="title" placeholder="Title" required />
+            <select name="category">
+              <option value="procedure">Procedure</option>
+              <option value="sales_script">Sales script</option>
+              <option value="objection_handling">Objection handling</option>
+              <option value="callback_handling">Callback handling</option>
+              <option value="lead_validity">Lead validity</option>
+              <option value="coaching">Coaching</option>
+              <option value="compliance">Compliance</option>
+              <option value="general">General</option>
+            </select>
+            <input name="tags" placeholder="Tags, comma separated" />
+            <label class="file-inline-control">
+              <span>Load text file</span>
+              <input data-knowledgebase-file-input type="file" accept=".txt,.md,.json,.csv,text/plain,text/markdown,application/json,text/csv" />
+            </label>
+            <span class="muted small" data-knowledgebase-file-status></span>
+            <textarea name="content" placeholder="Knowledgebase content" rows="5" required></textarea>
+            <button type="submit">Save entry</button>
+          </form>
+          ${table([
+            { label: "Title", render: (row) => `<strong>${escapeHtml(row.title)}</strong><br /><span class="muted small">${escapeHtml(row.category)} | v${formatNumber(row.version || 1)}</span>` },
+            { label: "Tags", render: (row) => (row.tags || []).map((tag) => badge(tag, "neutral")).join("") || badge("No tags", "neutral") },
+            { label: "Source", render: (row) => escapeHtml(row.sourceProject || "Manager entered") },
+            { label: "Status", render: (row) => badge(row.isActive ? "Active" : "Archived", row.isActive ? "success" : "neutral") },
+            { label: "Actions", render: (row) => renderKnowledgebaseActions(row) }
+          ], knowledgebaseRows, "No knowledgebase entries are available.")}
+        </div>
+
+        <div>
+          <h3>Evaluation Templates</h3>
+          <p class="muted small">Templates define the goal, prompt instructions, strict output schema, and evidence expectations for local transcript evaluation.</p>
+          <form class="studio-form" method="post" action="/evaluation-studio/templates" style="margin: 10px 0 12px;">
+            <input name="name" placeholder="Template name" required />
+            <input name="evaluationGoal" list="evaluation-goal-options" placeholder="Evaluation goal, e.g. objection_handling" value="callback_opportunity" required />
+            <datalist id="evaluation-goal-options">${goalDatalist}</datalist>
+            <input name="tags" placeholder="Tags, comma separated" />
+            <textarea name="instructions" placeholder="Prompt instructions" rows="5" required></textarea>
+            <textarea name="outputSchema" rows="5">${escapeHtml(defaultSchema)}</textarea>
+            <button type="submit">Save template</button>
+          </form>
+          ${table([
+            { label: "Template", render: (row) => `<strong>${escapeHtml(row.name)}</strong><br /><span class="muted small">${escapeHtml(row.evaluationGoal)} | v${formatNumber(row.version || 1)}</span>` },
+            { label: "Prompt hash", render: (row) => `<span class="mono">${escapeHtml(String(row.promptHash || "").slice(0, 12))}</span>` },
+            { label: "Tags", render: (row) => (row.tags || []).map((tag) => badge(tag, "neutral")).join("") || badge("No tags", "neutral") },
+            { label: "Status", render: (row) => badge(row.isActive ? "Active" : "Archived", row.isActive ? "success" : "neutral") },
+            { label: "Actions", render: (row) => renderTemplateActions(row) }
+          ], templateRows, "No evaluation templates are available.")}
+        </div>
+      </div>
+
+      <div class="guardrails" style="margin-top: 14px;">
+        <div class="note">
+          <h3>Queue A Batch Run</h3>
+          <p class="muted small">A queued run records the template, knowledgebase version, import, call selection, and guardrails. Local model submission is explicit and goes through the existing execution layer.</p>
+          <form class="studio-form" method="post" action="/evaluation-studio/runs" style="margin-top: 10px;">
+            <input type="hidden" name="importId" value="${escapeHtml(currentImportId)}" />
+            <select name="templateId" required>
+              ${templateOptions || `<option value="">No active templates</option>`}
+            </select>
+            <select name="businessSegment">
+              <option value="">All Business</option>
+              <option value="new">New Business</option>
+              <option value="warm">Warm Business</option>
+            </select>
+            <input name="limit" type="number" min="1" max="50000" value="${Math.min(Number(data.totals?.uniqueCalls || 100), 50000)}" />
+            <button type="submit">Queue run</button>
+          </form>
+        </div>
+        <div class="note">
+          <h3>Test A Prompt</h3>
+          <p class="muted small">Run one template against one call before launching a batch. Draft tests store the prompt input and version context; local AI submission is opt-in.</p>
+          <form class="studio-form" method="post" action="/evaluation-studio/prompt-tests" style="margin-top: 10px;">
+            <input type="hidden" name="importId" value="${escapeHtml(currentImportId)}" />
+            <select name="templateId" required>
+              ${templateOptions || `<option value="">No active templates</option>`}
+            </select>
+            <input name="callId" placeholder="Call ID to test" required />
+            <select name="businessSegment">
+              <option value="">All Business</option>
+              <option value="new">New Business</option>
+              <option value="warm">Warm Business</option>
+            </select>
+            <label class="muted small" style="display: flex; gap: 8px; align-items: center; text-transform: none;">
+              <input type="checkbox" name="submitNow" value="true" style="width: auto;" />
+              Submit to local AI now
+            </label>
+            <button type="submit">Create prompt test</button>
+          </form>
+        </div>
+        <div class="note">
+          <h3>Governance Rules</h3>
+          <p class="muted small">Raw imported fields, deterministic outputs, LLM outputs, alert evidence, and manager review history are not overwritten. Model results must show evidence, confidence, prompt version, knowledgebase version, and review state before they are used for reporting.</p>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 16px;">Recent Evaluation Runs</h3>
+      ${table([
+        { label: "Run", render: (row) => `<span class="mono">${escapeHtml(String(row.id || "").slice(0, 18))}</span><br /><span class="muted small">${escapeHtml(row.templateSnapshot?.name || row.templateId || "")}</span>` },
+        { label: "Type", render: (row) => badge(String(row.runType || "batch").replace(/_/g, " "), row.runType === "prompt_test" ? "notice" : "neutral") },
+        { label: "Status", render: (row) => `${badge(String(row.status || "queued").replace(/_/g, " "), row.status === "failed" || row.status === "quarantined" ? "critical" : row.status === "running" ? "notice" : row.status === "completed" ? "success" : "neutral")}<br /><span class="muted small">${escapeHtml(row.quarantineReason || (row.resumeCount ? `${formatNumber(row.resumeCount)} resumes` : ""))}</span>` },
+        { label: "Calls", render: (row) => `${formatNumber(row.plannedCallCount || 0)} planned<br /><span class="muted small">${formatNumber(row.queuedJobCount || 0)} queued, ${formatNumber(row.failedCallCount || 0)} failed</span>` },
+        { label: "Versions", render: (row) => `Template v${formatNumber(row.templateVersion || 1)}<br /><span class="muted small">${formatNumber((row.knowledgebaseSnapshot || []).length)} KB entries</span>` },
+        { label: "Updated", render: (row) => `${formatDateTime(row.updatedAt || row.createdAt)}<br /><span class="muted small">${formatNumber((row.runHistory || []).length)} history events</span>` },
+        { label: "Actions", render: (row) => renderEvaluationRunActions(row) }
+      ], runRows, "No evaluation run has been queued yet.")}
+
+      <h3 style="margin-top: 16px;">Evaluation Evidence Queue</h3>
+      <p class="muted small" style="margin: 4px 0 10px;">These are local model outputs that need manager review or have weak/missing evidence. They are not manager-confirmed outcomes.</p>
+      ${table([
+        { label: "Call", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "Unknown")}</a><br /><span class="muted small">${escapeHtml(row.evaluationGoal || "evaluation")}</span>` },
+        { label: "Status", render: (row) => `${badge(String(row.status || "usable").replace(/_/g, " "), row.status === "failed" ? "critical" : row.status === "insufficient_evidence" ? "warning" : "success")}<br />${badge(String(row.provenance || "evaluation_studio_local_model").replace(/_/g, " "), "notice")}` },
+        { label: "Confidence", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(String(row.confidenceBand || "confidence_unavailable").replace(/_/g, " "))}</span>` },
+        { label: "Evidence", render: (row) => {
+          const firstFinding = (row.findings || [])[0] || {};
+          return `<span class="evidence">${escapeHtml(firstFinding.evidence || row.managerSummary || "Evidence unavailable")}</span><span class="muted small">${escapeHtml(String(row.evidenceAvailability || "unavailable").replace(/_/g, " "))}</span>`;
+        } },
+        { label: "Review", render: (row) => `${row.managerReviewRecommended ? badge("Manager review recommended", "warn") : badge("Review optional", "neutral")}<br />${managerReviewBadge(row, persistence)}` },
+        { label: "Action", render: (row) => `<form class="inline-alert-form" method="post" action="/evaluation-studio/results/${encodeURIComponent(row.id || "")}/review">
+          <input type="hidden" name="importId" value="${escapeHtml(row.importId || currentImportId)}" />
+          <input type="hidden" name="returnTo" value="/evaluation-studio" />
+          <input type="hidden" name="action" value="mark_review_needed" />
+          <button type="submit">Send to review</button>
+        </form>` }
+      ], evidenceRows, "No Evaluation Studio results need manager review yet.")}
+
+      <h3 style="margin-top: 16px;">Report-Safe Evaluation Rollups</h3>
+      <p class="muted small" style="margin: 4px 0 10px;">Counts below come from labelled Evaluation Studio findings. They are process-review signals with evidence and confidence, not confirmed sales, revenue, conversion, or disciplinary proof.</p>
+      <div class="metrics">
+        ${metricCard("Evaluated calls", formatNumber(reportTotals.evaluatedCalls || 0), `${formatNumber(reportTotals.evaluatedResults || 0)} stored local-model results`, "info")}
+        ${metricCard("Callback opportunities", formatNumber(reportTotals.callbackOpportunities || 0), "Evidence-backed follow-up leakage review signals", "warn")}
+        ${metricCard("Possible waste indicators", formatNumber(reportTotals.possibleWasteIndicators || 0), "Lead utilisation issue signals requiring proof review", "risk")}
+        ${metricCard("Coaching opportunities", formatNumber(reportTotals.coachingOpportunities || 0), "Procedure or call-stage coaching signals", "notice")}
+      </div>
+      ${table([
+        { label: "Signal", render: (row) => escapeHtml(row.label || row.signal || "Signal") },
+        { label: "Count", render: (row) => formatNumber(row.count || 0) },
+        { label: "Use", render: (row) => `<span class="muted small">${escapeHtml(row.signal === "possibleWasteIndicators" ? "Review as possible waste indicators only." : row.signal === "coachingOpportunities" ? "Use as coaching opportunities." : "Use as evidence-backed signals.")}</span>` }
+      ], reportSignalRows, "No report-safe Evaluation Studio rollups yet.")}
+      ${table([
+        { label: "Call", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "Unknown")}</a><br /><span class="muted small">${escapeHtml(row.signalLabel || "signal")}</span>` },
+        { label: "Finding", render: (row) => `${escapeHtml(row.field || "finding")}<br /><span class="muted small">${escapeHtml(row.value || "Not supplied")}</span>` },
+        { label: "Confidence", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(String(row.confidenceBand || "confidence_unavailable").replace(/_/g, " "))}</span>` },
+        { label: "Proof", render: (row) => `<span class="evidence">${escapeHtml(row.evidence || "Evidence unavailable")}</span>` }
+      ], reportExampleRows, "No priority report examples yet.")}
+
+      <h3 style="margin-top: 16px;">Recent Evaluation Results</h3>
+      ${table([
+        { label: "Result", render: (row) => `<span class="mono">${escapeHtml(String(row.id || "").slice(0, 18))}</span><br /><span class="muted small">Call ${escapeHtml(row.callId || "unknown")}</span>` },
+        { label: "Template", render: (row) => `${escapeHtml(row.evaluationGoal || "evaluation")}<br /><span class="muted small">v${formatNumber(row.templateVersion || 1)} ${escapeHtml(String(row.promptHash || "").slice(0, 10))}</span>` },
+        { label: "Status", render: (row) => badge(String(row.status || "usable").replace(/_/g, " "), row.status === "failed" ? "critical" : row.status === "insufficient_evidence" ? "warning" : "success") },
+        { label: "Summary", render: (row) => `<span class="evidence">${escapeHtml(row.managerSummary || ((row.findings || [])[0]?.note) || "No manager summary supplied.")}</span>` },
+        { label: "Updated", render: (row) => formatDateTime(row.updatedAt || row.createdAt) }
+      ], resultRows, "No Evaluation Studio results have been stored yet.")}
+    </div>
+  </section>`;
+}
+
+function renderEvaluationStudioDashboardSummary(persistence = {}) {
+  const studio = persistence.evaluationStudio || {};
+  const summary = studio.summary || {};
+  const reportRollups = studio.reportRollups || {};
+  const reportTotals = reportRollups.totals || {};
+  return `<section class="panel" id="evaluation-results">
+    <div class="panel-header">
+      <div>
+        <h2>Evaluation Results</h2>
+        <p class="muted small">Signals from stored Evaluation Studio runs can support dashboard review. Prompt management and batch evaluation live in the separate studio workspace.</p>
+      </div>
+      <a class="filter-link" href="/evaluation-studio">Open Evaluation Studio</a>
+    </div>
+    <div class="panel-body">
+      <div class="metrics">
+        ${metricCard("Evaluated calls", formatNumber(reportTotals.evaluatedCalls || summary.results || 0), `${formatNumber(reportTotals.evaluatedResults || summary.results || 0)} stored evaluation results`, "info")}
+        ${metricCard("Review recommended", formatNumber(summary.reviewRecommendedResults || 0), "Evidence-backed results waiting for manager review", summary.reviewRecommendedResults ? "warn" : "good")}
+        ${metricCard("Evidence gaps", formatNumber(summary.evidenceUnavailableResults || 0), "Evaluation results labelled evidence unavailable", summary.evidenceUnavailableResults ? "warn" : "good")}
+        ${metricCard("Callback signals", formatNumber(reportTotals.callbackOpportunities || 0), "Process-review signals, not confirmed conversion", reportTotals.callbackOpportunities ? "warn" : "info")}
+      </div>
+      <p class="muted small" style="margin-top: 12px;">Evaluation Studio results remain evidence/confidence-labelled review signals. They do not overwrite raw call data, deterministic metrics, LLM outputs, or manager corrections.</p>
+    </div>
+  </section>`;
+}
+
+function renderStudioUtilityScript() {
+  return `<script>
+      (() => {
+        const fileInput = document.querySelector("[data-knowledgebase-file-input]");
+        if (!fileInput) return;
+        const form = fileInput.closest("form");
+        const status = document.querySelector("[data-knowledgebase-file-status]");
+        const titleInput = form ? form.querySelector("input[name='title']") : null;
+        const contentInput = form ? form.querySelector("textarea[name='content']") : null;
+        const setStatus = (message) => {
+          if (status) status.textContent = message || "";
+        };
+        fileInput.addEventListener("change", () => {
+          const file = fileInput.files && fileInput.files[0];
+          if (!file) return;
+          if (file.size > 524288) {
+            setStatus("Max 512KB");
+            fileInput.value = "";
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () => {
+            const text = String(reader.result || "").trim();
+            if (!text) {
+              setStatus("File was empty");
+              fileInput.value = "";
+              return;
+            }
+            if (titleInput && !titleInput.value.trim()) {
+              titleInput.value = file.name.replace(/\\.[^.]+$/, "").replace(/[-_]+/g, " ").trim();
+            }
+            if (contentInput) contentInput.value = text;
+            setStatus("Loaded; review then save");
+            fileInput.value = "";
+          };
+          reader.onerror = () => {
+            setStatus("Could not read file");
+            fileInput.value = "";
+          };
+          reader.readAsText(file);
+        });
+      })();
+    </script>`;
+}
+
+function renderEvaluationStudioPage(analysis, options = {}) {
+  const sourceData = analysis || renderEmptyState("Set SALES_DASHBOARD_CSV_PATH or start with --csv to load a scheduled CSV export.");
+  const activeSegment = normalizeBusinessSegment(options.businessSegment || options.segment);
+  const data = scopedDashboardData(sourceData, activeSegment);
+  const persistence = data.persistence || renderEmptyState("").persistence;
+  const hasAnyData = Boolean(analysis && analysis.totals && (data.filterSummary?.totalRecords || data.totals.uniqueCalls));
+  const segmentLabel = businessSegmentLabel(activeSegment);
+  const titleDetail = hasAnyData
+    ? `${formatNumber(data.totals.uniqueCalls || 0)} active calls available for transcript evaluation`
+    : "Load call data before running transcript evaluations.";
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Evaluation Studio - Sales Dashboard</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700;800&display=swap");
+      :root {
+        --background: #080A0F;
+        --surface: #0D1117;
+        --surface-elevated: #131A24;
+        --surface-soft: #182131;
+        --border: #263244;
+        --border-subtle: #1D2735;
+        --foreground: #F4F7FB;
+        --muted-foreground: #8A94A6;
+        --primary: #C9A45C;
+        --accent: #56D6E5;
+        --success: #34D399;
+        --warning: #F59E0B;
+        --danger: #F87171;
+        --shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--foreground);
+        background: var(--background);
+        font-family: "Instrument Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+      main {
+        width: min(1440px, calc(100vw - 40px));
+        margin: 0 auto;
+        padding: 28px 0 42px;
+        display: grid;
+        gap: 18px;
+      }
+      h1, h2, h3, p { margin: 0; letter-spacing: 0; }
+      h1 { font-size: 34px; line-height: 1.08; font-weight: 850; }
+      h2 { font-size: 17px; font-weight: 750; }
+      h3 { font-size: 14px; font-weight: 750; }
+      .topbar, .panel-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+      }
+      .page-kicker {
+        color: var(--primary);
+        font-size: 12px;
+        font-weight: 750;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+      .muted { color: var(--muted-foreground); }
+      .small { font-size: 13px; }
+      .stack, .alert-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .studio-nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .studio-nav a, .filter-link, .inline-alert-form button, .studio-form button {
+        min-height: 34px;
+        padding: 7px 11px;
+        border-radius: 6px;
+        border: 1px solid rgba(86, 214, 229, 0.36);
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 760;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .studio-nav a.active {
+        color: var(--primary);
+        border-color: rgba(201, 164, 92, 0.58);
+        background: rgba(201, 164, 92, 0.10);
+      }
+      .filter-link:hover, .studio-nav a:hover, .inline-alert-form button:hover, .studio-form button:hover {
+        border-color: rgba(86, 214, 229, 0.62);
+        color: var(--accent);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 4px 9px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 750;
+        white-space: nowrap;
+        border: 1px solid transparent;
+      }
+      .success { color: var(--success); background: rgba(52, 211, 153, 0.09); border-color: rgba(52, 211, 153, 0.22); }
+      .warning { color: var(--warning); background: rgba(245, 158, 11, 0.10); border-color: rgba(245, 158, 11, 0.24); }
+      .critical { color: var(--danger); background: rgba(248, 113, 113, 0.10); border-color: rgba(248, 113, 113, 0.24); }
+      .notice { color: var(--accent); background: rgba(86, 214, 229, 0.09); border-color: rgba(86, 214, 229, 0.22); }
+      .neutral { color: var(--muted-foreground); background: rgba(138, 148, 166, 0.10); border-color: rgba(138, 148, 166, 0.18); }
+      .panel, .metric {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        min-width: 0;
+      }
+      .panel-header {
+        padding: 15px 17px;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .panel-body { padding: 17px; }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(150px, 1fr));
+        gap: 12px;
+      }
+      .metric {
+        display: block;
+        min-height: 116px;
+        padding: 15px;
+        color: inherit;
+        text-decoration: none;
+      }
+      .metric.good { border-top: 3px solid var(--success); }
+      .metric.warn { border-top: 3px solid var(--warning); }
+      .metric.risk { border-top: 3px solid var(--danger); }
+      .metric.info { border-top: 3px solid var(--accent); }
+      .metric-label { color: var(--muted-foreground); font-size: 13px; margin-bottom: 12px; }
+      .metric-value { font-size: 29px; line-height: 1; font-weight: 850; }
+      .metric-detail { color: var(--muted-foreground); font-size: 13px; margin-top: 10px; }
+      .grid-2 {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 14px;
+      }
+      .guardrails {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .note {
+        padding: 12px;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+      }
+      .note h3 { margin-bottom: 6px; }
+      .studio-form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        align-items: start;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .studio-form textarea, .studio-form button { grid-column: 1 / -1; }
+      .studio-form input, .studio-form select, .studio-form textarea {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        padding: 8px 9px;
+        font: inherit;
+      }
+      .file-inline-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 7px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: rgba(86, 214, 229, 0.08);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .file-inline-control input {
+        max-width: 190px;
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
+      .inline-alert-form { display: inline; }
+      .table-wrap {
+        max-width: 100%;
+        overflow-x: auto;
+        border-top: 1px solid var(--border-subtle);
+      }
+      table {
+        width: 100%;
+        min-width: 780px;
+        border-collapse: collapse;
+      }
+      th, td {
+        padding: 11px 10px;
+        border-bottom: 1px solid var(--border-subtle);
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+      }
+      th {
+        color: var(--muted-foreground);
+        text-transform: uppercase;
+        font-size: 11px;
+        background: var(--surface-elevated);
+      }
+      tbody tr:hover { background: rgba(86, 214, 229, 0.035); }
+      td strong { color: var(--foreground); }
+      .data-link, .open-link { color: var(--accent); font-weight: 760; text-decoration: none; }
+      .data-link { border-bottom: 1px solid rgba(86, 214, 229, 0.32); }
+      .evidence, .evidence-summary { display: block; max-width: 320px; color: var(--muted-foreground); line-height: 1.4; }
+      .empty {
+        padding: 18px;
+        border: 1px dashed var(--border);
+        border-radius: 8px;
+        color: var(--muted-foreground);
+        background: var(--surface-elevated);
+      }
+      details { border-top: 1px solid var(--border-subtle); }
+      summary { cursor: pointer; padding: 13px 17px; font-weight: 760; }
+      .compact-details summary { padding: 8px 0; }
+      .mono {
+        font-family: "Geist Mono", "Cascadia Code", Consolas, monospace;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      @media (max-width: 1080px) {
+        .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .grid-2, .guardrails { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) {
+        main { width: min(100vw - 24px, 1440px); padding: 18px 0 30px; }
+        .topbar, .panel-header { flex-direction: column; align-items: stretch; }
+        .metrics, .studio-form { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="page-kicker">Transcript evaluation workspace</p>
+          <h1>Evaluation Studio</h1>
+          <p class="muted">${escapeHtml(titleDetail)} Results can feed dashboard review, but prompt design and batch evaluation stay here.</p>
+          <nav class="studio-nav" aria-label="Evaluation Studio navigation">
+            <a href="/">Sales Dashboard</a>
+            <a href="/evaluation-studio" class="active">Evaluation Studio</a>
+            <a href="/api/evaluation-studio">Studio JSON</a>
+          </nav>
+        </div>
+        <div class="stack">
+          ${hasAnyData ? badge("Active call data loaded", "success") : badge("No active call data", "warning")}
+          ${activeSegment ? badge(`${segmentLabel} view`, "notice") : ""}
+          ${badge(formatDateRange(data.dateRange), "neutral")}
+        </div>
+      </header>
+      ${!hasAnyData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
+      ${renderEvaluationStudio(persistence, data)}
+    </main>
+    ${renderStudioUtilityScript()}
+  </body>
+</html>`;
+}
+
 function normalizeBusinessSegment(value) {
   const text = String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
   if (["new", "new_business"].includes(text)) return "new";
@@ -1646,6 +2376,10 @@ function renderCallPage(call, options = {}) {
       .proof-text { margin-top: 8px; color: var(--muted-foreground); line-height: 1.5; }
       .turn-list { max-height: 520px; overflow: auto; }
       .turn { display: grid; grid-template-columns: minmax(100px, 150px) minmax(0, 1fr); gap: 10px; padding: 9px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-elevated); line-height: 1.45; }
+      .transcript-timeline { max-height: none; }
+      .transcript-timeline .turn { padding: 12px; }
+      .turn.customer-turn { border-color: rgba(86, 214, 229, 0.36); background: rgba(86, 214, 229, 0.06); }
+      .turn.salesperson-turn { border-color: rgba(201, 164, 92, 0.30); background: rgba(201, 164, 92, 0.055); }
       .turn.matched { border-color: rgba(86, 214, 229, 0.62); background: rgba(86, 214, 229, 0.07); }
       .speaker { color: var(--primary); font-weight: 760; }
       label { display: grid; gap: 5px; font-size: 13px; font-weight: 700; color: var(--foreground); }
@@ -1697,7 +2431,7 @@ function renderCallPage(call, options = {}) {
           <div>
             <p class="page-kicker">Call proof</p>
             <h1>Call ${escapeHtml(callId)}</h1>
-            <p class="muted">${call ? `Customer ID ${escapeHtml(customerIdValue(call))} | ${escapeHtml(call.salesperson)} | ${escapeHtml(call.date)} ${escapeHtml(call.time)} | ${escapeHtml(call.source)}` : "This call was not found in the current import."}</p>
+            <p class="muted">${call ? `Customer ID ${escapeHtml(customerIdValue(call))} | ${escapeHtml(call.salesperson)} | ${escapeHtml(formatSourceTime(call))} | ${escapeHtml(call.source)}` : "This call was not found in the current import."}</p>
           </div>
         </div>
         <a class="button-link" href="/#overview">Dashboard</a>
@@ -1739,8 +2473,13 @@ function renderCallPage(call, options = {}) {
         </div>
       </section>
       <section class="panel">
-        <h2>Evidence</h2>
-        <p class="muted small" style="margin-bottom: 12px;">Tables show deterministic summaries. These ordered transcript turns show the proof behind them; missing proof is labelled explicitly.</p>
+        <h2>Transcript Timeline</h2>
+        <p class="muted small" style="margin-bottom: 12px;">Full source transcript in detected speaker-turn order. Use this for normal reading; signal cards below are excerpts only.</p>
+        ${renderTurnList(call.transcriptTurns || [], "No speaker turns were detected. Use the raw transcript below for audit.", { className: "transcript-timeline" })}
+      </section>
+      <section class="panel">
+        <h2>Detected Signals</h2>
+        <p class="muted small" style="margin-bottom: 12px;">These excerpts explain why deterministic summaries were flagged. They are not the full conversation and may repeat nearby turns for context.</p>
         ${renderEvidenceProofCards(evidenceRows)}
       </section>
       <section class="panel">
@@ -1756,10 +2495,6 @@ function renderCallPage(call, options = {}) {
         <h2>Sanitized Raw Source Fields</h2>
         <p class="muted small" style="margin-bottom: 12px;">The redacted phone field is intentionally excluded. Source dates are normalized above when valid.</p>
         ${renderRawFieldTable(call.rawFields)}
-      </section>
-      <section class="panel">
-        <h2>Readable Transcript</h2>
-        ${renderTurnList(call.transcriptTurns || [], "No speaker turns were detected. Use the raw transcript below for audit.")}
       </section>
       <section class="panel">
         <h2>Raw Transcript</h2>
@@ -1902,6 +2637,51 @@ function renderDashboard(analysis, options = {}) {
   const leadReattemptSourceRows = (leadReattempt.sourceRows || []).slice(0, 12);
   const leadReattemptRegionRows = (leadReattempt.regionRows || []).slice(0, 12);
   const leadReattemptSegmentRows = leadReattempt.businessSegmentRows || [];
+  const leadHarvest = data.leadHarvest || renderEmptyState("").leadHarvest;
+  const leadHarvestTotals = leadHarvest.totals || {};
+  const leadHarvestSalespersonRows = (leadHarvest.salespersonRows || []).slice(0, 14);
+  const leadHarvestSourceRows = (leadHarvest.sourceRows || []).slice(0, 10);
+  const leadHarvestObjectionRows = (leadHarvest.objectionRows || []).slice(0, 8);
+  const leadHarvestHandlingRows = (leadHarvest.handlingRows || []).slice(0, 8);
+  const leadHarvestScopeSegment = activeSegment || "new";
+  const leadHarvestScopeLabel = activeSegment ? segmentLabel : "New Business";
+  const leadHarvestScopeFilters = withSegment({ businessSegment: leadHarvestScopeSegment });
+  const leadHarvestCandidateMetric = leadHarvestScopeSegment === "warm" ? "harvest.warmBusinessCandidates" : "harvest.newBusinessCandidates";
+  const leadHarvestScopeIsDefaultNew = leadHarvestScopeSegment === "new";
+  const leadHarvestCandidateCalls = leadHarvestScopeIsDefaultNew ? leadHarvestTotals.newBusinessCandidateCalls || 0 : leadHarvestTotals.candidateCalls || 0;
+  const leadHarvestOpenNoLater = leadHarvestScopeIsDefaultNew ? leadHarvestTotals.openNewBusinessCandidates || 0 : leadHarvestTotals.openCandidates || 0;
+  const leadHarvestMatchingUnavailable = leadHarvestScopeIsDefaultNew ? leadHarvestTotals.newBusinessMatchingUnavailable || 0 : leadHarvestTotals.matchingUnavailable || 0;
+  const leadHarvestLaterObserved = leadHarvestScopeIsDefaultNew ? leadHarvestTotals.newBusinessLaterMatchingCallObserved || 0 : leadHarvestTotals.laterMatchingCallObserved || 0;
+  const leadHarvestQueueCount = leadHarvestOpenNoLater + leadHarvestMatchingUnavailable;
+  const leadHarvestLatestRows = (leadHarvest.latestRows || leadHarvest.records || [])
+    .filter((row) => row.businessSegment === leadHarvestScopeSegment)
+    .slice(0, 18);
+  const leadHarvestNewestUrl = drilldownUrl("harvest.reviewQueue", { ...leadHarvestScopeFilters, limit: 250, sort: "newest" });
+  const leadHarvestOldestUrl = drilldownUrl("harvest.reviewQueue", { ...leadHarvestScopeFilters, limit: 250, sort: "oldest" });
+  const leadHarvestAllUrl = drilldownUrl("harvest.reviewQueue", { ...leadHarvestScopeFilters, limit: Math.max(leadHarvestQueueCount || 1, 250), sort: "oldest" });
+  const leadHarvestHighPriorityCount = (leadHarvest.records || [])
+    .filter((row) => row.businessSegment === leadHarvestScopeSegment && row.reviewPriority === "high")
+    .length || (leadHarvestScopeIsDefaultNew ? Number(leadHarvestTotals.highPriorityNewBusiness || 0) : 0);
+  const leadHarvestScopedCandidates = (row) => leadHarvestScopeSegment === "new"
+    ? Number(row.newBusinessCandidateCalls || 0)
+    : leadHarvestScopeSegment === "warm"
+      ? Number(row.warmBusinessCandidateCalls || 0)
+      : Number(row.candidateCalls || 0);
+  const leadHarvestScopedOpen = (row) => leadHarvestScopeSegment === "new"
+    ? Number(row.newBusinessOpenCandidates || 0)
+    : leadHarvestScopeSegment === "warm"
+      ? Number(row.warmBusinessOpenCandidates || 0)
+      : Number(row.openCandidates || 0);
+  const leadHarvestScopedLater = (row) => leadHarvestScopeSegment === "new"
+    ? Number(row.newBusinessLaterMatchingCallObserved || 0)
+    : leadHarvestScopeSegment === "warm"
+      ? Number(row.warmBusinessLaterMatchingCallObserved || 0)
+      : Number(row.laterMatchingCallObserved || 0);
+  const leadHarvestScopedUnavailable = (row) => leadHarvestScopeSegment === "new"
+    ? Number(row.newBusinessMatchingUnavailable || 0)
+    : leadHarvestScopeSegment === "warm"
+      ? Number(row.warmBusinessMatchingUnavailable || 0)
+      : Number(row.matchingUnavailable || 0);
   const intelligenceSalespersonRows = (intelligence.salespeople || []).slice(0, 10);
   const intelligenceSourceRows = (intelligence.sources || []).slice(0, 10);
   const intelligenceQueueRows = options.intelligenceCalls || [];
@@ -2054,6 +2834,25 @@ function renderDashboard(analysis, options = {}) {
         border-color: rgba(86, 214, 229, 0.65);
         color: var(--accent);
       }
+      .file-inline-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 7px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: rgba(86, 214, 229, 0.08);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .file-inline-control input {
+        max-width: 190px;
+        color: var(--muted-foreground);
+        font-size: 12px;
+      }
       .brand-status {
         color: var(--muted-foreground);
         font-size: 12px;
@@ -2202,6 +3001,30 @@ function renderDashboard(analysis, options = {}) {
       .filter-form.advanced {
         grid-template-columns: repeat(4, minmax(150px, 1fr));
         padding: 12px 0 0;
+      }
+      .studio-form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        align-items: start;
+        min-width: 0;
+        max-width: 100%;
+      }
+      .studio-form textarea,
+      .studio-form button {
+        grid-column: 1 / -1;
+      }
+      .studio-form input,
+      .studio-form select,
+      .studio-form textarea {
+        width: 100%;
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--foreground);
+        background: var(--surface-elevated);
+        padding: 8px 9px;
+        font: inherit;
       }
       .filter-control {
         display: grid;
@@ -2542,6 +3365,11 @@ function renderDashboard(analysis, options = {}) {
         gap: 14px;
         min-width: 0;
       }
+      .grid-2 > *,
+      .guardrails > *,
+      .audit-grid > * {
+        min-width: 0;
+      }
       .guardrails {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2749,7 +3577,7 @@ function renderDashboard(analysis, options = {}) {
         .topbar, .panel-header, aside { flex-direction: column; align-items: stretch; }
         nav { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
         nav a { padding: 8px 6px; font-size: 13px; }
-        .metrics, .dataset-grid, .filter-form, .filter-form.advanced { grid-template-columns: 1fr; }
+        .metrics, .dataset-grid, .filter-form, .filter-form.advanced, .studio-form { grid-template-columns: 1fr; }
         .segment-split { grid-template-columns: 1fr; }
         .command-meta, .pipeline-row { grid-template-columns: 1fr; }
         .pipeline-value { text-align: left; }
@@ -2780,8 +3608,11 @@ function renderDashboard(analysis, options = {}) {
           <a href="#ai-assistants">AI Assistants</a>
           <a href="#system-audio">System Audio</a>
           <a href="#lead-reattempts">Reattempts</a>
+          <a href="#lead-harvest">Lead Harvest</a>
           <a href="#source-quality">Source Quality</a>
           <a href="#intelligence">Intelligence</a>
+          <a href="#evaluation-results">Evaluation Results</a>
+          <a href="/evaluation-studio">Evaluation Studio</a>
           <a href="#provenance">Provenance</a>
           <a href="#lead-utilization">Follow-Up</a>
           <a href="#confidence">Data Confidence</a>
@@ -2812,6 +3643,8 @@ function renderDashboard(analysis, options = {}) {
         ${hasAnyData ? renderGlobalFilters(data) : ""}
 
         ${renderProcessingStatePanel(data, persistence, intelligenceTotals)}
+
+        ${renderEvaluationStudioDashboardSummary(persistence)}
 
         ${!hasAnyData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
         ${hasAnyData && !hasData ? `<section class="panel"><div class="panel-body"><div class="empty">No calls match the selected filters. Clear filters or broaden the date range before interpreting performance.</div></div></section>` : ""}
@@ -2922,7 +3755,7 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(row.label || row.date)}</span>` },
+              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(formatSourceDate(row.label || row.date))}</span>` },
               { label: "Calls", render: (row) => formatNumber(row.calls) },
               { label: "Encounters", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment()) },
               { label: "Rate", render: (row) => formatPercent(row.encounterRate) },
@@ -3030,7 +3863,7 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(row.label || row.date)}</span>` },
+              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(formatSourceDate(row.label || row.date))}</span>` },
               { label: "Barriers", render: (row) => dataLink("calls.systemAudio", formatNumber(row.encounters), withSegment()) },
               { label: "Screening", render: (row) => formatNumber(row.callScreening) },
               { label: "Carrier", render: (row) => formatNumber(row.carrierPhoneSystem) },
@@ -3225,6 +4058,118 @@ function renderDashboard(analysis, options = {}) {
               { label: "No later", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ region: row.region })) }
             ], leadReattemptRegionRows, "No region pattern rows are available.")}
           </div>
+        </section>
+
+        <section class="panel" id="lead-harvest">
+          <div class="panel-header">
+            <div>
+              <h2>Lead Harvest Queue</h2>
+              <p class="muted small">${escapeHtml(leadHarvestScopeLabel)} calls where deterministic evidence shows a live-human conversation, a positive response, and a callback/follow-up request. These are evidence-backed review candidates, not confirmed sales outcomes.</p>
+            </div>
+            ${badge(`${formatNumber(leadHarvestQueueCount)} to review`, leadHarvestQueueCount ? "warning" : "neutral")}
+          </div>
+          <div class="panel-body metrics">
+            ${metricCard("Open harvest candidates", formatNumber(leadHarvestQueueCount), `${formatNumber(leadHarvestOpenNoLater)} no later matching call; ${formatNumber(leadHarvestMatchingUnavailable)} matching unavailable`, "risk", drilldownUrl("harvest.reviewQueue", leadHarvestScopeFilters))}
+            ${metricCard("All candidates", formatNumber(leadHarvestCandidateCalls), `${escapeHtml(leadHarvestScopeLabel)} positive callback candidates`, "warn", drilldownUrl(leadHarvestCandidateMetric, leadHarvestScopeFilters))}
+            ${metricCard("Later matching call observed", formatNumber(leadHarvestLaterObserved), "A later stable-ID call exists; this does not prove completion", "good", drilldownUrl("harvest.laterObserved", leadHarvestScopeFilters))}
+            ${metricCard("High-priority review", formatNumber(leadHarvestHighPriorityCount), "High/medium confidence open candidates", "info", drilldownUrl("harvest.reviewQueue", leadHarvestScopeFilters))}
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Harvest Candidates By Salesperson</h2>
+                <p class="muted small">Open candidates are calls with no later stable-ID match in the active data. Matching unavailable means the row lacks a stable source ID, so follow-up cannot be proven from this dataset.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("harvest.openCandidates", { ...leadHarvestScopeFilters, salesperson: row.salesperson }))}">${escapeHtml(row.salesperson)}</a>` },
+              { label: "Candidates", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(leadHarvestScopedCandidates(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
+              { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
+              { label: "Later matching call observed", render: (row) => dataLink("harvest.laterObserved", formatNumber(leadHarvestScopedLater(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
+              { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
+              { label: "High/medium confidence", render: (row) => formatNumber(row.highOrMediumConfidence || 0) }
+            ], leadHarvestSalespersonRows.filter((row) => leadHarvestScopedCandidates(row)), "No lead harvest candidates are available in this scope.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Harvest Candidates By Source</h2>
+                <p class="muted small">Source uses call CSV source fields only. Parked allocation/campaign data is not used.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("harvest.openCandidates", { ...leadHarvestScopeFilters, source: row.source }))}">${escapeHtml(row.source)}</a>` },
+              { label: "Candidates", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(leadHarvestScopedCandidates(row)), { ...leadHarvestScopeFilters, source: row.source }) },
+              { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, source: row.source }) },
+              { label: "Later matching call observed", render: (row) => dataLink("harvest.laterObserved", formatNumber(leadHarvestScopedLater(row)), { ...leadHarvestScopeFilters, source: row.source }) },
+              { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, source: row.source }) }
+            ], leadHarvestSourceRows.filter((row) => leadHarvestScopedCandidates(row)), "No source-level harvest rows are available in this scope.")}
+          </div>
+        </section>
+
+        <section class="grid-2">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Harvest Objections</h2>
+                <p class="muted small">Detected from customer transcript turns only. Treat as review tags, not final truth.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Objection", render: (row) => escapeHtml(row.objectionLabel || row.objectionType || "Unknown") },
+              { label: "Candidates", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(leadHarvestScopedCandidates(row)), { ...leadHarvestScopeFilters, objectionType: row.objectionType }) },
+              { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, objectionType: row.objectionType }) },
+              { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, objectionType: row.objectionType }) }
+            ], leadHarvestObjectionRows.filter((row) => leadHarvestScopedCandidates(row)), "No objection tags are available in this scope.")}
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Salesperson Handling</h2>
+                <p class="muted small">Detected from salesperson transcript turns. This indicates response style, not a manager-confirmed quality grade.</p>
+              </div>
+            </div>
+            ${table([
+              { label: "Handling", render: (row) => escapeHtml(row.salespersonHandlingLabel || row.salespersonHandlingType || "Unknown") },
+              { label: "Candidates", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(leadHarvestScopedCandidates(row)), { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) },
+              { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) },
+              { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) }
+            ], leadHarvestHandlingRows.filter((row) => leadHarvestScopedCandidates(row)), "No handling tags are available in this scope.")}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Lead Harvest Evidence Queue</h2>
+              <p class="muted small">Use this as a callback prep list. Names, objections, handling, and timing are possible extracted context and should be checked against the call evidence before action.</p>
+            </div>
+            <div class="stack">
+              ${badge(`${formatNumber(leadHarvestLatestRows.length)} newest shown`, leadHarvestLatestRows.length ? "notice" : "neutral")}
+              <a class="button-link" href="${escapeHtml(leadHarvestNewestUrl)}">Newest</a>
+              <a class="button-link" href="${escapeHtml(leadHarvestOldestUrl)}">Oldest</a>
+              <a class="button-link" href="${escapeHtml(leadHarvestAllUrl)}">View all</a>
+            </div>
+          </div>
+          ${table([
+            { label: "Call", render: (row) => callLink(row.callId) },
+            { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("harvest.openCandidates", { ...leadHarvestScopeFilters, salesperson: row.salesperson }))}">${escapeHtml(row.salesperson)}</a>` },
+            { label: "Source", render: (row) => escapeHtml(row.source) },
+            { label: "Source time", render: (row) => `<span class="mono">${escapeHtml(row.sourceTime)}</span>` },
+            { label: "Possible name", render: (row) => escapeHtml(row.possibleContactName || row.possibleDecisionMakerName || "Not stated") },
+            { label: "Objection", render: (row) => `${escapeHtml(row.objectionLabel || "Unknown")}<br /><span class="muted small">${escapeHtml(row.objectionEvidence || "Evidence unavailable")}</span>` },
+            { label: "Salesperson handling", render: (row) => `${escapeHtml(row.salespersonHandlingLabel || "Unknown")}<br /><span class="muted small">${escapeHtml(row.salespersonHandlingEvidence || "Evidence unavailable")}</span>` },
+            { label: "Callback timing", render: (row) => `${escapeHtml(row.callbackTimingSummary || "Timing not specified")}<br /><span class="muted small">${escapeHtml(row.callbackTimingText || "Open proof to confirm timing")}</span>` },
+            { label: "Status", render: (row) => badge(row.statusLabel || row.status, row.status === "open_no_later_matching_call" ? "warning" : row.status === "later_matching_call_observed" ? "success" : "neutral") },
+            { label: "Confidence", render: (row) => badge(row.confidenceLabel || "Confidence unavailable", row.confidenceBand === "high" ? "success" : row.confidenceBand === "medium" ? "notice" : "warning") },
+            { label: "Handover context", render: (row) => `<span class="evidence-summary">${escapeHtml(row.handoverSummary || row.positiveSignalSummary || "Open call evidence to inspect context")}<a class="open-link" href="/calls/${encodeURIComponent(row.callId)}">Open call evidence</a></span>` },
+            { label: "Evidence snippet", render: (row) => `<span class="evidence">${escapeHtml((row.evidenceSnippets || [row.evidenceSummary || "Evidence unavailable"])[0])}</span>` }
+          ], leadHarvestLatestRows, "No positive callback harvest candidates are available in this scope.")}
         </section>
 
         <section class="panel" id="source-quality">
@@ -3556,7 +4501,7 @@ function renderDashboard(analysis, options = {}) {
               { label: "Customer ID", render: (row) => customerIdCell(row) },
               { label: "Salesperson", key: "salesperson" },
               { label: "Local outcome", render: (row) => badge(row.localOutcome, row.reviewRequired ? "warning" : "neutral") },
-              { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}` },
+              { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}<br />${managerSuggestedCorrectionSummary(row, reviewSummaryMap)}` },
               { label: "Provenance", render: (row) => `${provenanceBadge(row.localOutcomeProvenance || "Deterministic")} ${provenanceBadge(managerReviewState(row, persistence))}` },
               { label: "Confidence", render: (row) => confidenceBadgeForRow(row) },
               { label: "Follow-up", key: "followUpStatus" },
@@ -3617,13 +4562,13 @@ function renderDashboard(analysis, options = {}) {
           ${table([
             { label: "Call", render: (row) => callLink(row.callId) },
             { label: "Customer ID", render: (row) => customerIdCell(row) },
-            { label: "Time", render: (row) => `${escapeHtml(row.date)} ${escapeHtml(row.time)}` },
+            { label: "Time", render: (row) => escapeHtml(formatSourceTime(row)) },
             { label: "Salesperson", key: "salesperson" },
             { label: "Type", key: "callType" },
             { label: "Business", key: "businessSegmentLabel" },
             { label: "Duration", render: (row) => `${formatNumber(row.durationSeconds)}s` },
             { label: "Contact", key: "contactClassification" },
-            { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}` },
+            { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}<br />${managerSuggestedCorrectionSummary(row, reviewSummaryMap)}` },
             { label: "Provenance", render: (row) => `${provenanceBadge(row.contactClassificationProvenance || "Deterministic")} ${provenanceBadge(managerReviewState(row, persistence))}` },
             { label: "Confidence", render: (row) => confidenceBadgeForRow(row) },
             { label: "Derived outcome", render: (row) => `${escapeHtml(row.localOutcome)}<br />${provenanceBadge(row.localOutcomeProvenance || "Deterministic")}${row.managerCorrectedOutcome ? `<br />${provenanceBadge("Manager-reviewed")} <span class="muted small">${escapeHtml(row.managerCorrectedOutcome)}</span>` : ""}` },
@@ -3646,6 +4591,46 @@ function renderDashboard(analysis, options = {}) {
       </main>
     </div>
     <script>
+      (() => {
+        const fileInput = document.querySelector("[data-knowledgebase-file-input]");
+        if (!fileInput) return;
+        const form = fileInput.closest("form");
+        const status = document.querySelector("[data-knowledgebase-file-status]");
+        const titleInput = form ? form.querySelector("input[name='title']") : null;
+        const contentInput = form ? form.querySelector("textarea[name='content']") : null;
+        const setStatus = (message) => {
+          if (status) status.textContent = message || "";
+        };
+        fileInput.addEventListener("change", () => {
+          const file = fileInput.files && fileInput.files[0];
+          if (!file) return;
+          if (file.size > 524288) {
+            setStatus("Max 512KB");
+            fileInput.value = "";
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = () => {
+            const text = String(reader.result || "").trim();
+            if (!text) {
+              setStatus("File was empty");
+              fileInput.value = "";
+              return;
+            }
+            if (titleInput && !titleInput.value.trim()) {
+              titleInput.value = file.name.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim();
+            }
+            if (contentInput) contentInput.value = text;
+            setStatus("Loaded; review then save");
+            fileInput.value = "";
+          };
+          reader.onerror = () => {
+            setStatus("Could not read file");
+            fileInput.value = "";
+          };
+          reader.readAsText(file);
+        });
+      })();
       (() => {
         const input = document.querySelector("[data-logo-input]");
         const status = document.querySelector("[data-logo-status]");
@@ -3912,6 +4897,7 @@ module.exports = {
   renderCallPage,
   renderDashboard,
   renderDrilldownPage,
+  renderEvaluationStudioPage,
   renderEmptyState,
   renderReportPage,
   escapeHtml

@@ -5,10 +5,12 @@ const http = require("http");
 const path = require("path");
 const {
   checkAiExecutionHealth,
+  EVALUATION_STUDIO_TASK_TYPE,
   getAiJob,
   INTELLIGENCE_TASK_TYPE,
   publicAiExecutionStatus,
   resolveAiExecutionConfig,
+  submitAiTask,
   submitTranscriptIntelligenceExtraction,
   submitTranscriptEvaluation
 } = require("./aiExecutionLayer");
@@ -16,6 +18,7 @@ const { analyzeCsvText, attachInternalItems, buildFilteredAnalysis, internalItem
 const { buildDrilldownResult, findCallProof } = require("./drilldown");
 const { normalizeFilterState } = require("./globalFilters");
 const { summarizeLeadReattemptRecords } = require("./leadReattemptAnalytics");
+const { summarizeLeadHarvestRecords } = require("./leadHarvestAnalytics");
 const { summarizeSystemAudioRecords } = require("./systemAudioAnalytics");
 const {
   getIntelligenceSummary,
@@ -30,19 +33,41 @@ const {
 const { readAllocationFile } = require("./allocationCoverage");
 const { activeReportsOnly, buildParkedAllocationDiagnostic, classifyReportVisibility } = require("./allocationParking");
 const { normalizeAlertEvent, resolveAlertLifecycleActor } = require("./alertLifecycle");
+const {
+  buildEvaluationStudioInput,
+  buildEvaluationStudioReportRollups,
+  buildManagerReviewPrefillCorrections,
+  EVALUATION_STUDIO_ACTOR,
+  evaluationStudioSummary,
+  listEvaluationResults,
+  listEvaluationTemplates,
+  listKnowledgebaseEntries,
+  managerReviewReasonForEvaluationResult,
+  managerReviewScopeForEvaluationGoal,
+  normalizeEvaluationStudio
+} = require("./evaluationStudio");
 const { normalizeManagerReview, resolveManagerReviewActor } = require("./managerReview");
-const { renderCallPage, renderDashboard, renderDrilldownPage, renderEmptyState, renderReportPage } = require("./dashboardRenderer");
+const { renderCallPage, renderDashboard, renderDrilldownPage, renderEmptyState, renderEvaluationStudioPage, renderReportPage } = require("./dashboardRenderer");
 const { readTabularFile } = require("./sourceFile");
 const {
   bulkUpdateAlertLifecycle,
   bulkUpdateManagerReviews,
   dashboardPersistence,
+  archiveEvaluationKnowledgebaseEntry,
+  archiveEvaluationTemplateRecord,
   persistAnalysis,
+  quarantineStoredEvaluationRun,
   readStore,
+  resumeStoredEvaluationRun,
   resolveStorePath,
   saveAiJobReference,
+  saveEvaluationKnowledgebaseEntry,
+  saveEvaluationResult,
+  saveEvaluationRun,
+  saveEvaluationTemplate,
   saveGeneratedReport,
   saveManagerReview,
+  updateStoredEvaluationRun,
   updateManagerReview,
   updateAlertLifecycle
 } = require("./storage");
@@ -55,6 +80,8 @@ const BRAND_LOGO_TYPES = {
   "image/jpeg": "jpg",
   "image/webp": "webp"
 };
+const EVALUATION_STUDIO_AUTO_HARVEST_MAX_RUNS = 5;
+const EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS = 5;
 
 function resolveCsvPath(argv = process.argv.slice(2), env = process.env) {
   const csvFlagIndex = argv.findIndex((arg) => arg === "--csv" || arg === "--csv-path");
@@ -232,12 +259,14 @@ function publicAnalysis(analysis) {
   const { drilldownRows, businessSegmentViews, allocationCoverage, parkedAllocation, ...publicFields } = analysis;
   const publicSystemAudio = publicFields.systemAudio ? { ...publicFields.systemAudio, records: [] } : publicFields.systemAudio;
   const publicLeadReattempt = publicFields.leadReattempt ? { ...publicFields.leadReattempt, records: [] } : publicFields.leadReattempt;
+  const publicLeadHarvest = publicFields.leadHarvest ? { ...publicFields.leadHarvest, records: [] } : publicFields.leadHarvest;
   const publicBusinessSegmentViews = Object.fromEntries(
     Object.entries(businessSegmentViews || {}).map(([segment, view]) => {
       const { drilldownRows: segmentDrilldownRows, ...publicView } = view;
       return [segment, {
         ...publicView,
         leadReattempt: publicView.leadReattempt ? { ...publicView.leadReattempt, records: [] } : publicView.leadReattempt,
+        leadHarvest: publicView.leadHarvest ? { ...publicView.leadHarvest, records: [] } : publicView.leadHarvest,
         systemAudio: publicView.systemAudio ? { ...publicView.systemAudio, records: [] } : publicView.systemAudio
       }];
     })
@@ -245,6 +274,7 @@ function publicAnalysis(analysis) {
   return {
     ...publicFields,
     leadReattempt: publicLeadReattempt,
+    leadHarvest: publicLeadHarvest,
     systemAudio: publicSystemAudio,
     businessSegmentViews: publicBusinessSegmentViews
   };
@@ -389,11 +419,24 @@ function analysisForRequest(state, url, storePath) {
   const filteredCallIds = new Set((filtered.drilldownRows || []).map((row) => row.callId));
   return attachInternalItems({
     ...filtered,
-    persistence: dashboardPersistence(store, state.importRecord?.id || null),
+    persistence: dashboardPersistence(store, state.importRecord?.id || null, {
+      evaluationCallIds: filterState.active ? filteredCallIds : null
+    }),
     intelligence: filterState.active
       ? summarizeFilteredIntelligence(intelligenceRows.filter((row) => filteredCallIds.has(row.call_id)))
       : filtered.intelligence
   }, internalItemsFor(filtered));
+}
+
+function evaluationStudioCallIdsForRequest(state, url, storePath) {
+  if (!state.analysis) return null;
+  const filterState = normalizeFilterState(url.searchParams);
+  if (!filterState.active) return null;
+  const store = readStore({ storePath });
+  const intelligenceRows = allIntelligenceRowsForState(state, storePath);
+  const context = filterContextForStore(store, state.importRecord?.id || null, intelligenceRows);
+  const filtered = buildFilteredAnalysis(state.analysis, filterState, context);
+  return new Set((filtered.drilldownRows || []).map((row) => row.callId).filter(Boolean));
 }
 
 function updateAnalysisPreservingItems(analysis, patch) {
@@ -453,7 +496,99 @@ function currentIntelligenceSummary(storePath, importId) {
   };
 }
 
+function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
+  const studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const resultImportId = query.importId || (query.currentOnly ? currentImportId : "");
+  const resultLimit = normalizeLimit(query.limit, 50, 500);
+  const resultOffset = Math.max(0, Number(query.offset || 0));
+  const callIds = query.callIds || null;
+  const resultRows = listEvaluationResults(studio, {
+    importId: resultImportId,
+    runId: query.runId,
+    templateId: query.templateId,
+    callIds,
+    evaluationGoal: query.evaluationGoal || query.goal,
+    status: query.resultStatus || query.status,
+    reviewRecommended: query.reviewRecommended,
+    evidenceUnavailableOnly: query.evidenceUnavailableOnly,
+    includeSuperseded: query.includeSuperseded
+  });
+  return {
+    schemaVersion: "sales_dashboard_evaluation_studio_api.v1",
+    summary: evaluationStudioSummary(studio, currentImportId, { callIds }),
+    reportRollups: buildEvaluationStudioReportRollups(studio, { importId: resultImportId || currentImportId || "", callIds }),
+    knowledgebaseEntries: listKnowledgebaseEntries(studio, {
+      includeArchived: query.includeArchived,
+      category: query.category,
+      tag: query.tag
+    }),
+    evaluationTemplates: listEvaluationTemplates(studio, {
+      includeArchived: query.includeArchived,
+      evaluationGoal: query.evaluationGoal || query.goal
+    }),
+    evaluationRuns: (studio.evaluationRuns || [])
+      .filter((run) => !currentImportId || !query.currentOnly || run.importId === currentImportId)
+      .slice()
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
+    evaluationResults: resultRows.slice(resultOffset, resultOffset + resultLimit),
+    evidenceQueue: listEvaluationResults(studio, {
+      importId: resultImportId,
+      callIds,
+      reviewRecommended: true
+    }).slice(0, resultLimit),
+    resultQuery: {
+      importId: resultImportId || null,
+      filteredCallIds: callIds ? callIds.size : null,
+      limit: resultLimit,
+      offset: resultOffset,
+      matchingResults: resultRows.length,
+      displayedResults: resultRows.slice(resultOffset, resultOffset + resultLimit).length,
+      nextOffset: resultOffset + resultLimit < resultRows.length ? resultOffset + resultLimit : null,
+      previousOffset: resultOffset > 0 ? Math.max(0, resultOffset - resultLimit) : null
+    }
+  };
+}
+
+function findEvaluationStudioResult(store = {}, resultId = "", currentImportId = "") {
+  const studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const id = String(resultId || "").trim();
+  if (!id) return null;
+  return listEvaluationResults(studio, {
+    importId: currentImportId || "",
+    includeSuperseded: true
+  }).find((result) => result.id === id) || listEvaluationResults(studio, {
+    includeSuperseded: true
+  }).find((result) => result.id === id) || null;
+}
+
+function buildManagerReviewFromEvaluationResult(result = {}, input = {}) {
+  const mappedScope = managerReviewScopeForEvaluationGoal(result.evaluationGoal);
+  const reason = managerReviewReasonForEvaluationResult(result);
+  const callerNote = String(input.note || input.notes || input.managerNotes || "").trim();
+  const suggestedCorrections = buildManagerReviewPrefillCorrections(result);
+  const note = [
+    reason,
+    result.id ? `Evaluation result ID: ${result.id}` : "",
+    suggestedCorrections.length ? `Suggested correction prefill: ${suggestedCorrections.map((item) => `${item.fieldName}=${item.managerSuggestedValue}`).join("; ")}` : "",
+    callerNote
+  ].filter(Boolean).join("\n");
+  return {
+    importId: input.importId || result.importId || "current",
+    callId: result.callId,
+    action: input.action || "mark_review_needed",
+    reviewScope: input.reviewScope || input.scope || mappedScope,
+    signalName: input.signalName || `evaluation_studio:${result.evaluationGoal || "evaluation"}:${result.id || result.callId}`,
+    source: "evaluation_studio",
+    reviewReason: input.reviewReason || reason,
+    note,
+    suggestedCorrections,
+    reviewedBy: resolveManagerReviewActor(input)
+  };
+}
+
 function normalizeLimit(value, fallback = 250, max = 10000) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (["all", "*", "everything"].includes(text)) return max;
   return Math.max(1, Math.min(Number(value || fallback), max));
 }
 
@@ -464,7 +599,7 @@ function parseCallIdFilter(value) {
 
 function selectIntelligenceExtractionCalls(rows, body = {}, eligibleCallIds = null) {
   const businessSegment = String(body.businessSegment || body.segment || "").trim();
-  const limit = normalizeLimit(body.sampleSize || body.limit, 100, 10000);
+  const limit = normalizeLimit(body.sampleSize || body.limit, 100, 50000);
   const requestedCallIds = parseCallIdFilter(body.callIds || body.call_ids || body.callId || body.call_id || "");
   const candidates = (rows || []).filter((call) => {
     if (businessSegment && call.businessSegment !== businessSegment) return false;
@@ -504,6 +639,418 @@ function aiJobIsDone(status) {
 
 function aiJobIsFailed(status) {
   return ["failed", "error", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
+}
+
+function truthy(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function evaluationStudioRunHistoryEvent(run = {}, action, input = {}) {
+  const timestamp = input.timestamp || new Date().toISOString();
+  const history = Array.isArray(run.runHistory) ? run.runHistory : [];
+  return {
+    eventId: `eval_run_event_${String(run.id || "run").replace(/[^a-zA-Z0-9_-]/g, "_")}_${action}_${timestamp.replace(/[^0-9]/g, "")}_${history.length}`,
+    runId: run.id || "",
+    action,
+    previousStatus: run.status || "",
+    newStatus: input.newStatus || run.status || "",
+    actor: EVALUATION_STUDIO_ACTOR,
+    timestamp,
+    note: String(input.note || "").trim().slice(0, 1000),
+    metadata: input.metadata && typeof input.metadata === "object" ? input.metadata : {}
+  };
+}
+
+function existingEvaluationStudioJobResult(store = {}, runId, callId, jobId) {
+  const studio = normalizeEvaluationStudio(store.evaluationStudio);
+  return (studio.evaluationResults || []).find((result) =>
+    result.isLatest !== false
+    && result.runId === runId
+    && result.callId === callId
+    && (!jobId || result.jobId === jobId)
+  ) || null;
+}
+
+function evaluationStudioJobError(job = {}) {
+  const error = job.error || job.message || job.details || job.job?.error || job.job?.message || "";
+  if (!error) return "";
+  return typeof error === "string" ? error : JSON.stringify(error).slice(0, 1000);
+}
+
+function evaluationStudioAiJobMetadata(existing = {}, run = {}, jobRef = {}) {
+  return {
+    ...(existing.metadata || {}),
+    source: "evaluation_studio",
+    evaluationRunId: run.id,
+    evaluationTemplateId: run.templateId,
+    evaluationGoal: run.templateSnapshot?.evaluationGoal || jobRef.evaluationGoal || ""
+  };
+}
+
+function evaluationStudioHarvestStatus(run = {}, pendingCount = 0, completedCount = 0, failedCount = 0) {
+  if (pendingCount > 0) return "running";
+  if (failedCount > 0 && completedCount > 0) return "partially_completed";
+  if (failedCount > 0) return "failed";
+  if (Number(run.plannedCallCount || 0) && completedCount >= Number(run.plannedCallCount || 0)) return "completed";
+  if (completedCount > 0) return "partially_completed";
+  return run.status || "queued";
+}
+
+async function createEvaluationPromptTest(body = {}, options = {}) {
+  const { state, storePath, aiConfig, fetchImpl } = options;
+  if (!state?.analysis || !state?.importRecord?.id) {
+    const error = new Error("No current import is loaded.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const requestedCallId = String(body.callId || body.call_id || body.sampleCallId || body.sample_call_id || "").trim();
+  const call = requestedCallId
+    ? findCallProof(state.analysis, requestedCallId)
+    : selectIntelligenceExtractionCalls(state.analysis.drilldownRows || [], { ...body, limit: 1 }, null)
+      .find((candidate) => String(candidate.transcript || "").trim());
+  if (!call) {
+    const error = new Error("A matching call with transcript evidence was not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!String(call.transcript || "").trim()) {
+    const error = new Error("Prompt tests require a call with transcript text.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const submitNow = truthy(body.submitNow || body.submit || body.runNow);
+  const importId = body.importId || state.importRecord.id;
+  const initial = saveEvaluationRun({
+    ...body,
+    runType: "prompt_test",
+    status: submitNow ? "queued" : "draft",
+    callSelection: {
+      ...(body.callSelection || {}),
+      mode: "prompt_test",
+      callId: call.callId,
+      businessSegment: body.businessSegment || body.segment || "",
+      source: "evaluation_studio_prompt_test"
+    }
+  }, {
+    importId,
+    plannedCallCount: 1,
+    runType: "prompt_test"
+  }, { storePath });
+  let run = initial.run;
+  let store = initial.store;
+  let evaluationResult = null;
+  let executionLayerResponse = null;
+  const studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const template = studio.evaluationTemplates.find((item) => item.id === run.templateId);
+  const knowledgebase = studio.knowledgebaseEntries.filter((entry) => run.knowledgebaseIds.includes(entry.id));
+  const taskInput = buildEvaluationStudioInput(call, template, knowledgebase, {
+    importId: run.importId,
+    sourceName: state.analysis.sourceName
+  });
+
+  if (submitNow) {
+    executionLayerResponse = await submitAiTask(taskInput, {
+      config: aiConfig,
+      fetchImpl,
+      taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+      responseMode: body.responseMode,
+      metadata: {
+        source_system: "sales_dashboard",
+        source_type: "evaluation_studio_prompt_test",
+        source_record_id: call.callId,
+        import_id: run.importId,
+        evaluation_run_id: run.id,
+        evaluation_template_id: template.id,
+        evaluation_goal: template.evaluationGoal,
+        run_type: "prompt_test"
+      }
+    });
+    const jobId = aiJobId(executionLayerResponse);
+    const status = aiJobStatus(executionLayerResponse) || "queued";
+    if (!jobId) {
+      const error = new Error("Execution layer response did not include a job ID.");
+      error.statusCode = 502;
+      throw error;
+    }
+    saveAiJobReference({
+      importId: run.importId,
+      callId: call.callId,
+      jobId,
+      taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+      status,
+      metadata: {
+        source: "evaluation_studio_prompt_test",
+        evaluationRunId: run.id,
+        evaluationTemplateId: template.id,
+        evaluationGoal: template.evaluationGoal
+      }
+    }, { storePath });
+
+    if (aiJobIsDone(status)) {
+      const saved = saveEvaluationResult({
+        importId: run.importId,
+        runId: run.id,
+        templateId: template.id,
+        jobId,
+        result: aiJobResultPayload(executionLayerResponse)
+      }, { storePath });
+      evaluationResult = saved.result;
+      store = saved.store;
+      run = normalizeEvaluationStudio(store.evaluationStudio).evaluationRuns.find((item) => item.id === run.id) || run;
+    } else if (aiJobIsFailed(status)) {
+      const updated = updateStoredEvaluationRun(run.id, {
+        status: "failed",
+        startedAt: new Date().toISOString(),
+        failedCallCount: 1,
+        errors: [{ callId: call.callId, jobId, error: executionLayerResponse.error || executionLayerResponse.job?.error || "Local prompt test failed" }]
+      }, { storePath });
+      run = updated.run;
+      store = updated.store;
+    } else {
+      const updated = updateStoredEvaluationRun(run.id, {
+        status: "running",
+        startedAt: new Date().toISOString(),
+        queuedJobCount: 1,
+        queuedJobs: [{ callId: call.callId, jobId, status }]
+      }, { storePath });
+      run = updated.run;
+      store = updated.store;
+    }
+  }
+
+  return {
+    callId: call.callId,
+    submitted: submitNow,
+    taskInput,
+    evaluationRun: run,
+    evaluationResult,
+    executionLayerResponse,
+    store
+  };
+}
+
+async function harvestEvaluationStudioRunJobs(runId, options = {}) {
+  const { storePath, aiConfig, fetchImpl } = options;
+  let store = readStore({ storePath });
+  let studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const run = (studio.evaluationRuns || []).find((item) => item.id === runId);
+  if (!run) {
+    const error = new Error("Evaluation Studio run not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (run.status === "quarantined") {
+    const error = new Error("Quarantined Evaluation Studio runs must be resumed before harvesting.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const jobs = (Array.isArray(run.queuedJobs) ? run.queuedJobs : [])
+    .map((job) => ({
+      ...job,
+      callId: String(job.callId || job.call_id || "").trim(),
+      jobId: String(job.jobId || job.job_id || "").trim()
+    }))
+    .filter((job) => job.jobId);
+  if (!jobs.length) {
+    const error = new Error("This Evaluation Studio run has no queued local AI jobs to harvest.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const completed = [];
+  const pending = [];
+  const failed = [];
+  const errors = [];
+  const timestamp = new Date().toISOString();
+  const updatedJobs = [];
+
+  for (const jobRef of jobs) {
+    const currentAiJob = (store.aiJobs || []).find((job) =>
+      job.importId === run.importId && job.callId === jobRef.callId && job.jobId === jobRef.jobId
+    ) || {};
+    try {
+      const job = await getAiJob(jobRef.jobId, { config: aiConfig, fetchImpl });
+      const status = aiJobStatus(job) || jobRef.status || currentAiJob.status || "queued";
+      const savedJob = saveAiJobReference({
+        ...currentAiJob,
+        importId: run.importId,
+        callId: jobRef.callId,
+        jobId: jobRef.jobId,
+        taskType: currentAiJob.taskType || jobRef.taskType || EVALUATION_STUDIO_TASK_TYPE,
+        status,
+        metadata: evaluationStudioAiJobMetadata(currentAiJob, run, jobRef)
+      }, { storePath });
+      store = savedJob.store;
+
+      if (aiJobIsDone(status)) {
+        const alreadyStored = existingEvaluationStudioJobResult(store, run.id, jobRef.callId, jobRef.jobId);
+        let result = alreadyStored;
+        if (!alreadyStored) {
+          const savedResult = saveEvaluationResult({
+            importId: run.importId,
+            runId: run.id,
+            templateId: run.templateId,
+            jobId: jobRef.jobId,
+            callId: jobRef.callId,
+            result: aiJobResultPayload(job)
+          }, { storePath });
+          result = savedResult.result;
+          store = savedResult.store;
+        }
+        completed.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          status,
+          resultId: result.id,
+          alreadyStored: Boolean(alreadyStored)
+        });
+        updatedJobs.push({
+          ...jobRef,
+          status: "completed",
+          resultId: result.id,
+          harvestedAt: timestamp
+        });
+      } else if (aiJobIsFailed(status)) {
+        const reason = evaluationStudioJobError(job) || "Local AI job failed.";
+        failed.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          status,
+          error: reason
+        });
+        updatedJobs.push({
+          ...jobRef,
+          status: "failed",
+          error: reason,
+          harvestedAt: timestamp
+        });
+      } else {
+        pending.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          status
+        });
+        updatedJobs.push({
+          ...jobRef,
+          status,
+          lastCheckedAt: timestamp
+        });
+      }
+    } catch (error) {
+      errors.push({
+        callId: jobRef.callId,
+        jobId: jobRef.jobId,
+        error: error.message
+      });
+      updatedJobs.push({
+        ...jobRef,
+        status: jobRef.status || "queued",
+        lastHarvestError: error.message,
+        lastCheckedAt: timestamp
+      });
+    }
+  }
+
+  store = readStore({ storePath });
+  studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const latestRun = (studio.evaluationRuns || []).find((item) => item.id === run.id) || run;
+  const latestResults = (studio.evaluationResults || []).filter((result) =>
+    result.runId === run.id && result.isLatest !== false
+  );
+  const completedCallCount = latestResults.filter((result) => result.status !== "failed").length;
+  const failedCallCount = updatedJobs.filter((job) => aiJobIsFailed(job.status)).length;
+  const pendingJobCount = updatedJobs.filter((job) => !aiJobIsDone(job.status) && !aiJobIsFailed(job.status)).length;
+  const nextStatus = evaluationStudioHarvestStatus(latestRun, pendingJobCount, completedCallCount, failedCallCount);
+  const completedAt = nextStatus === "completed" && !latestRun.completedAt ? timestamp : latestRun.completedAt;
+  const event = evaluationStudioRunHistoryEvent(latestRun, "harvest", {
+    timestamp,
+    newStatus: nextStatus,
+    note: `Harvest checked ${jobs.length} local Evaluation Studio jobs.`,
+    metadata: {
+      completed: completed.length,
+      pending: pending.length,
+      failed: failed.length,
+      errors: errors.length
+    }
+  });
+  const updatedRun = updateStoredEvaluationRun(run.id, {
+    status: nextStatus,
+    completedAt,
+    queuedJobCount: pendingJobCount,
+    completedCallCount,
+    failedCallCount,
+    queuedJobs: updatedJobs,
+    errors: [
+      ...(Array.isArray(latestRun.errors) ? latestRun.errors : []),
+      ...failed.map((item) => ({ callId: item.callId, jobId: item.jobId, error: item.error })),
+      ...errors
+    ].slice(-200),
+    runHistory: [
+      ...(Array.isArray(latestRun.runHistory) ? latestRun.runHistory : []),
+      event
+    ].slice(-200)
+  }, { storePath });
+
+  return {
+    evaluationRun: updatedRun.run,
+    completed,
+    pending,
+    failed,
+    errors,
+    store: updatedRun.store
+  };
+}
+
+function evaluationStudioAutoHarvestCandidate(run = {}, currentImportId = null) {
+  const status = String(run.status || "").toLowerCase();
+  const jobs = Array.isArray(run.queuedJobs) ? run.queuedJobs : [];
+  if (run.runType !== "prompt_test") return false;
+  if (!["queued", "running", "partially_completed"].includes(status)) return false;
+  if (currentImportId && run.importId !== currentImportId) return false;
+  if (!jobs.length || jobs.length > EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS) return false;
+  return jobs.some((job) => String(job.jobId || job.job_id || "").trim() && !job.resultId);
+}
+
+async function autoHarvestEvaluationStudioPromptTests(options = {}) {
+  const { storePath, aiConfig, fetchImpl, currentImportId = null } = options;
+  let store = readStore({ storePath });
+  const studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const candidates = (studio.evaluationRuns || [])
+    .filter((run) => evaluationStudioAutoHarvestCandidate(run, currentImportId))
+    .slice()
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    .slice(0, EVALUATION_STUDIO_AUTO_HARVEST_MAX_RUNS);
+  const harvested = [];
+  const errors = [];
+
+  for (const run of candidates) {
+    try {
+      const result = await harvestEvaluationStudioRunJobs(run.id, { storePath, aiConfig, fetchImpl });
+      store = result.store;
+      harvested.push({
+        runId: run.id,
+        status: result.evaluationRun.status,
+        completed: result.completed.length,
+        pending: result.pending.length,
+        failed: result.failed.length,
+        errors: result.errors.length
+      });
+    } catch (error) {
+      errors.push({
+        runId: run.id,
+        error: error.message
+      });
+    }
+  }
+
+  return {
+    checkedRunCount: candidates.length,
+    harvested,
+    errors,
+    store
+  };
 }
 
 function createServer(options = {}) {
@@ -724,6 +1271,69 @@ function createServer(options = {}) {
           region,
           matchingRecords: hasRecordFilters ? filteredRecords.length : null
         }
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/lead-harvest" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      const requestedSegment = String(query.businessSegment || query.segment || "new").trim().toLowerCase().replace(/[-\s]+/g, "_");
+      const businessSegment = ["warm", "warm_business", "existing", "existing_business", "previous", "previous_sales"].includes(requestedSegment)
+        ? "warm"
+        : requestedSegment === "all" || requestedSegment === "all_business"
+          ? ""
+          : "new";
+      const source = String(query.source || "").trim();
+      const salesperson = String(query.salesperson || "").trim();
+      const status = String(query.status || query.harvestStatus || "").trim();
+      const confidenceBand = String(query.confidenceBand || query.confidence || "").trim();
+      const objectionType = String(query.objectionType || query.objection || "").trim();
+      const handlingType = String(query.handlingType || query.salespersonHandlingType || "").trim();
+      const sort = String(query.sort || query.order || "").trim().toLowerCase();
+      const limit = Math.max(1, Math.min(Number(query.limit || 10000), 10000));
+      const offset = Math.max(0, Number(query.offset || 0));
+      const leadHarvest = businessSegment && requestAnalysis?.businessSegmentViews?.[businessSegment]?.leadHarvest
+        ? requestAnalysis.businessSegmentViews[businessSegment].leadHarvest
+        : requestAnalysis?.leadHarvest || {};
+      const records = (leadHarvest.records || []).filter((record) => {
+        if (businessSegment && record.businessSegment !== businessSegment) return false;
+        if (source && record.source !== source) return false;
+        if (salesperson && record.salesperson !== salesperson) return false;
+        if (status && record.status !== status) return false;
+        if (confidenceBand && record.confidenceBand !== confidenceBand) return false;
+        if (objectionType && record.objectionType !== objectionType) return false;
+        if (handlingType && record.salespersonHandlingType !== handlingType) return false;
+        return true;
+      }).sort((a, b) => {
+        if (sort === "oldest" || sort === "oldest_first") return Number(a.timestamp || 0) - Number(b.timestamp || 0) || String(a.callId || "").localeCompare(String(b.callId || ""));
+        if (sort === "newest" || sort === "newest_first") return Number(b.timestamp || 0) - Number(a.timestamp || 0) || String(a.callId || "").localeCompare(String(b.callId || ""));
+        return 0;
+      });
+      const visibleRecords = records.slice(offset, offset + limit);
+      sendJson(response, 200, {
+        schemaVersion: leadHarvest.schemaVersion || "sales_dashboard_lead_harvest.v1",
+        definitions: leadHarvest.definitions || {},
+        ...summarizeLeadHarvestRecords(records),
+        records: visibleRecords,
+        query: {
+          businessSegment,
+          source,
+          salesperson,
+          status,
+          confidenceBand,
+          objectionType,
+          handlingType,
+          sort,
+          limit,
+          offset,
+          displayedRecords: visibleRecords.length,
+          matchingRecords: records.length,
+          nextOffset: offset + limit < records.length ? offset + limit : null,
+          previousOffset: offset > 0 ? Math.max(0, offset - limit) : null
+        },
+        filterState: requestAnalysis.filterState || null,
+        filterSummary: requestAnalysis.filterSummary || null
       });
       return;
     }
@@ -1088,6 +1698,468 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/api/evaluation-studio" && request.method === "GET") {
+      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+        storePath,
+        aiConfig,
+        fetchImpl,
+        currentImportId: state.importRecord?.id || null
+      });
+      const store = autoHarvest.store || readStore({ storePath });
+      const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
+      const payload = evaluationStudioApiPayload(store, state.importRecord?.id || null, {
+        includeArchived: url.searchParams.get("includeArchived"),
+        category: url.searchParams.get("category"),
+        tag: url.searchParams.get("tag"),
+        evaluationGoal: url.searchParams.get("evaluationGoal") || url.searchParams.get("goal"),
+        currentOnly: url.searchParams.get("currentOnly"),
+        callIds
+      });
+      sendJson(response, 200, {
+        ...payload,
+        autoHarvest: {
+          checkedRunCount: autoHarvest.checkedRunCount,
+          harvested: autoHarvest.harvested,
+          errors: autoHarvest.errors
+        }
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/knowledgebase" && request.method === "GET") {
+      const store = readStore({ storePath });
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_evaluation_studio_knowledgebase_api.v1",
+        knowledgebaseEntries: listKnowledgebaseEntries(studio, {
+          includeArchived: url.searchParams.get("includeArchived"),
+          category: url.searchParams.get("category"),
+          tag: url.searchParams.get("tag")
+        })
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/knowledgebase" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request);
+        const result = saveEvaluationKnowledgebaseEntry(body, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 201, { ok: true, knowledgebaseEntry: result.entry, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/knowledgebase/") && ["PATCH", "PUT", "DELETE"].includes(request.method)) {
+      try {
+        const id = decodeURIComponent(url.pathname.replace("/api/evaluation-studio/knowledgebase/", ""));
+        const result = request.method === "DELETE"
+          ? archiveEvaluationKnowledgebaseEntry(id, { storePath })
+          : saveEvaluationKnowledgebaseEntry({ ...(await readJsonBody(request)), id }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, { ok: true, knowledgebaseEntry: result.entry, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/templates" && request.method === "GET") {
+      const store = readStore({ storePath });
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_evaluation_studio_templates_api.v1",
+        evaluationTemplates: listEvaluationTemplates(studio, {
+          includeArchived: url.searchParams.get("includeArchived"),
+          evaluationGoal: url.searchParams.get("evaluationGoal") || url.searchParams.get("goal")
+        })
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/templates" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request);
+        const result = saveEvaluationTemplate(body, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 201, { ok: true, evaluationTemplate: result.template, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/templates/") && ["PATCH", "PUT", "DELETE"].includes(request.method)) {
+      try {
+        const id = decodeURIComponent(url.pathname.replace("/api/evaluation-studio/templates/", ""));
+        const result = request.method === "DELETE"
+          ? archiveEvaluationTemplateRecord(id, { storePath })
+          : saveEvaluationTemplate({ ...(await readJsonBody(request)), id }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, { ok: true, evaluationTemplate: result.template, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/runs" && request.method === "GET") {
+      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+        storePath,
+        aiConfig,
+        fetchImpl,
+        currentImportId: url.searchParams.get("importId") || state.importRecord?.id || null
+      });
+      const store = autoHarvest.store || readStore({ storePath });
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_evaluation_studio_runs_api.v1",
+        autoHarvest: {
+          checkedRunCount: autoHarvest.checkedRunCount,
+          harvested: autoHarvest.harvested,
+          errors: autoHarvest.errors
+        },
+        evaluationRuns: (studio.evaluationRuns || [])
+          .filter((run) => !url.searchParams.get("importId") || run.importId === url.searchParams.get("importId"))
+          .slice()
+          .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/runs" && request.method === "POST") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) {
+          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
+          return;
+        }
+        const body = await readJsonBody(request);
+        const calls = selectIntelligenceExtractionCalls(state.analysis.drilldownRows || [], body, null)
+          .filter((call) => String(call.transcript || "").trim());
+        const initial = saveEvaluationRun(body, {
+          importId: body.importId || state.importRecord.id,
+          plannedCallCount: calls.length
+        }, { storePath });
+        let run = initial.run;
+        let store = initial.store;
+        const submitNow = ["1", "true", "yes", "on"].includes(String(body.submitNow || body.submit || "").toLowerCase());
+        if (submitNow && calls.length) {
+          const studio = normalizeEvaluationStudio(store.evaluationStudio);
+          const template = studio.evaluationTemplates.find((item) => item.id === run.templateId);
+          const knowledgebase = studio.knowledgebaseEntries.filter((entry) => run.knowledgebaseIds.includes(entry.id));
+          const queuedJobs = [];
+          const errors = [];
+          for (const call of calls) {
+            try {
+              const input = buildEvaluationStudioInput(call, template, knowledgebase, {
+                importId: run.importId,
+                sourceName: state.analysis.sourceName
+              });
+              const result = await submitAiTask(input, {
+                config: aiConfig,
+                fetchImpl,
+                taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+                responseMode: body.responseMode,
+                metadata: {
+                  source_system: "sales_dashboard",
+                  source_type: "evaluation_studio_batch",
+                  source_record_id: call.callId,
+                  import_id: run.importId,
+                  evaluation_run_id: run.id,
+                  evaluation_template_id: template.id,
+                  evaluation_goal: template.evaluationGoal
+                }
+              });
+              const jobId = aiJobId(result);
+              const status = aiJobStatus(result) || "queued";
+              if (!jobId) throw new Error("Execution layer response did not include a job ID.");
+              saveAiJobReference({
+                importId: run.importId,
+                callId: call.callId,
+                jobId,
+                taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+                status,
+                metadata: {
+                  source: "evaluation_studio",
+                  evaluationRunId: run.id,
+                  evaluationTemplateId: template.id,
+                  evaluationGoal: template.evaluationGoal
+                }
+              }, { storePath });
+              queuedJobs.push({ callId: call.callId, jobId, status });
+            } catch (error) {
+              errors.push({ callId: call.callId, error: error.message });
+            }
+          }
+          const updated = updateStoredEvaluationRun(run.id, {
+            status: queuedJobs.length && errors.length ? "partially_completed" : queuedJobs.length ? "running" : "failed",
+            startedAt: new Date().toISOString(),
+            queuedJobCount: queuedJobs.length,
+            failedCallCount: errors.length,
+            queuedJobs,
+            errors
+          }, { storePath });
+          run = updated.run;
+          store = updated.store;
+        }
+        state.analysis = attachPersistence(state.analysis, store, state.importRecord?.id || null);
+        sendJson(response, submitNow ? 202 : 201, {
+          ok: true,
+          evaluationRun: run,
+          submitted: submitNow,
+          plannedCallCount: calls.length,
+          persistence: dashboardPersistence(store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/runs/") && url.pathname.endsWith("/harvest") && request.method === "POST") {
+      try {
+        const runId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/runs/".length, -"/harvest".length));
+        const result = await harvestEvaluationStudioRunJobs(runId, {
+          storePath,
+          aiConfig,
+          fetchImpl
+        });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, {
+          ok: true,
+          evaluationRun: result.evaluationRun,
+          completed: result.completed,
+          pending: result.pending,
+          failed: result.failed,
+          errors: result.errors,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/runs/") && url.pathname.endsWith("/quarantine") && request.method === "POST") {
+      try {
+        const runId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/runs/".length, -"/quarantine".length));
+        const body = await readJsonBody(request);
+        const result = quarantineStoredEvaluationRun(runId, {
+          reason: body.reason || body.quarantineReason || body.note || "",
+          metadata: { source: "api" }
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, {
+          ok: true,
+          evaluationRun: result.run,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/runs/") && url.pathname.endsWith("/resume") && request.method === "POST") {
+      try {
+        const runId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/runs/".length, -"/resume".length));
+        const body = await readJsonBody(request);
+        const result = resumeStoredEvaluationRun(runId, {
+          reason: body.reason || body.note || "",
+          metadata: { source: "api" }
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 200, {
+          ok: true,
+          evaluationRun: result.run,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/prompt-tests" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request);
+        const result = await createEvaluationPromptTest(body, {
+          state,
+          storePath,
+          aiConfig,
+          fetchImpl
+        });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, result.submitted ? 202 : 201, {
+          ok: true,
+          submitted: result.submitted,
+          callId: result.callId,
+          evaluationRun: result.evaluationRun,
+          evaluationResult: result.evaluationResult,
+          taskInput: body.includeTaskInput === false ? null : result.taskInput,
+          executionLayerResponse: result.executionLayerResponse,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/report-rollups" && request.method === "GET") {
+      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+        storePath,
+        aiConfig,
+        fetchImpl,
+        currentImportId: state.importRecord?.id || null
+      });
+      const store = autoHarvest.store || readStore({ storePath });
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      const importId = url.searchParams.get("importId") || (truthy(url.searchParams.get("currentOnly")) ? state.importRecord?.id : "");
+      const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_evaluation_studio_report_rollups_api.v1",
+        autoHarvest: {
+          checkedRunCount: autoHarvest.checkedRunCount,
+          harvested: autoHarvest.harvested,
+          errors: autoHarvest.errors
+        },
+        reportRollups: buildEvaluationStudioReportRollups(studio, { importId: importId || "", callIds })
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/results" && request.method === "GET") {
+      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+        storePath,
+        aiConfig,
+        fetchImpl,
+        currentImportId: state.importRecord?.id || null
+      });
+      const store = autoHarvest.store || readStore({ storePath });
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      const limit = normalizeLimit(url.searchParams.get("limit"), 100, 1000);
+      const offset = Math.max(0, Number(url.searchParams.get("offset") || 0));
+      const importId = url.searchParams.get("importId")
+        || (url.searchParams.get("currentOnly") ? state.importRecord?.id || "" : "");
+      const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
+      const results = listEvaluationResults(studio, {
+        importId,
+        runId: url.searchParams.get("runId") || url.searchParams.get("evaluationRunId"),
+        templateId: url.searchParams.get("templateId") || url.searchParams.get("evaluationTemplateId"),
+        callId: url.searchParams.get("callId"),
+        callIds,
+        evaluationGoal: url.searchParams.get("evaluationGoal") || url.searchParams.get("goal"),
+        status: url.searchParams.get("status"),
+        reviewRecommended: url.searchParams.get("reviewRecommended") || url.searchParams.get("reviewOnly"),
+        evidenceUnavailableOnly: url.searchParams.get("evidenceUnavailableOnly"),
+        includeSuperseded: url.searchParams.get("includeSuperseded")
+      });
+      const visibleResults = results.slice(offset, offset + limit);
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_evaluation_studio_results_api.v1",
+        autoHarvest: {
+          checkedRunCount: autoHarvest.checkedRunCount,
+          harvested: autoHarvest.harvested,
+          errors: autoHarvest.errors
+        },
+        results: visibleResults,
+        query: {
+          importId: importId || null,
+          filteredCallIds: callIds ? callIds.size : null,
+          limit,
+          offset,
+          displayedResults: visibleResults.length,
+          matchingResults: results.length,
+          nextOffset: offset + limit < results.length ? offset + limit : null,
+          previousOffset: offset > 0 ? Math.max(0, offset - limit) : null
+        }
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/results" && request.method === "POST") {
+      try {
+        const body = await readJsonBody(request, 5 * 1024 * 1024);
+        const payload = {
+          ...body,
+          importId: body.importId || body.import_id || state.importRecord?.id || "current",
+          runId: body.runId || body.evaluationRunId || body.evaluation_run_id,
+          templateId: body.templateId || body.evaluationTemplateId || body.template_id,
+          jobId: body.jobId || body.job_id || body.id || body.job?.id || body.job?.job_id,
+          result: body.result || body.output || body.response || body.data || body.payload || body.job || body
+        };
+        const result = saveEvaluationResult(payload, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, 201, {
+          ok: true,
+          evaluationResult: result.result,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/results/") && url.pathname.endsWith("/review") && request.method === "POST") {
+      try {
+        const resultId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/results/".length, -"/review".length));
+        const body = await readJsonBody(request);
+        const store = readStore({ storePath });
+        const evaluationResult = findEvaluationStudioResult(store, resultId, body.importId || state.importRecord?.id || "");
+        if (!evaluationResult) {
+          sendJson(response, 404, { ok: false, error: "Evaluation Studio result not found." });
+          return;
+        }
+        const review = saveManagerReview(buildManagerReviewFromEvaluationResult(evaluationResult, {
+          ...body,
+          importId: body.importId || evaluationResult.importId || state.importRecord?.id || "current"
+        }), { storePath });
+        state.analysis = attachPersistence(state.analysis, review.store, state.importRecord?.id || null);
+        sendJson(response, 201, {
+          ok: true,
+          evaluationResult,
+          review: review.review,
+          persistence: dashboardPersistence(review.store, state.importRecord?.id || null)
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/evaluation-studio/results/") && url.pathname.endsWith("/review") && request.method === "POST") {
+      try {
+        const resultId = decodeURIComponent(url.pathname.slice("/evaluation-studio/results/".length, -"/review".length));
+        const form = await readFormBody(request);
+        const returnTo = form.get("returnTo") || "/evaluation-studio";
+        const store = readStore({ storePath });
+        const evaluationResult = findEvaluationStudioResult(store, resultId, form.get("importId") || state.importRecord?.id || "");
+        if (!evaluationResult) {
+          sendJson(response, 404, { ok: false, error: "Evaluation Studio result not found." });
+          return;
+        }
+        const review = saveManagerReview(buildManagerReviewFromEvaluationResult(evaluationResult, {
+          importId: form.get("importId") || evaluationResult.importId || state.importRecord?.id || "current",
+          action: form.get("action") || "mark_review_needed",
+          reviewScope: form.get("reviewScope") || "",
+          signalName: form.get("signalName") || "",
+          note: form.get("note") || "",
+          reviewReason: form.get("reviewReason") || "",
+          reviewedBy: resolveManagerReviewActor(form)
+        }), { storePath });
+        state.analysis = attachPersistence(state.analysis, review.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: returnTo });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/api/calls/") && url.pathname.endsWith("/reviews") && request.method === "GET") {
       const callId = decodeURIComponent(url.pathname.slice("/api/calls/".length, -"/reviews".length));
       const store = readStore({ storePath });
@@ -1376,6 +2448,190 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/evaluation-studio/knowledgebase" && request.method === "POST") {
+      try {
+        const form = await readFormBody(request);
+        const result = saveEvaluationKnowledgebaseEntry({
+          id: form.get("id") || "",
+          title: form.get("title") || "",
+          category: form.get("category") || "general",
+          tags: form.get("tags") || "",
+          content: form.get("content") || "",
+          sourceProject: "Sales Dashboard",
+          sourceReference: "manager_entered"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: "/evaluation-studio" });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/evaluation-studio/knowledgebase/") && url.pathname.endsWith("/archive") && request.method === "POST") {
+      try {
+        const id = decodeURIComponent(url.pathname.slice("/evaluation-studio/knowledgebase/".length, -"/archive".length));
+        const form = await readFormBody(request);
+        const result = archiveEvaluationKnowledgebaseEntry(id, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: form.get("returnTo") || "/evaluation-studio" });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/evaluation-studio/templates" && request.method === "POST") {
+      try {
+        const form = await readFormBody(request, 2 * 1024 * 1024);
+        const result = saveEvaluationTemplate({
+          id: form.get("id") || "",
+          name: form.get("name") || "",
+          evaluationGoal: form.get("evaluationGoal") || "",
+          tags: form.get("tags") || "",
+          instructions: form.get("instructions") || "",
+          outputSchema: form.get("outputSchema") || "",
+          sourceProject: "Sales Dashboard",
+          sourceReference: "manager_entered"
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: "/evaluation-studio" });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/evaluation-studio/templates/") && url.pathname.endsWith("/archive") && request.method === "POST") {
+      try {
+        const id = decodeURIComponent(url.pathname.slice("/evaluation-studio/templates/".length, -"/archive".length));
+        const form = await readFormBody(request);
+        const result = archiveEvaluationTemplateRecord(id, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: form.get("returnTo") || "/evaluation-studio" });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/evaluation-studio/runs" && request.method === "POST") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) {
+          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
+          return;
+        }
+        const form = await readFormBody(request);
+        const body = {
+          templateId: form.get("templateId") || "",
+          importId: form.get("importId") || state.importRecord.id,
+          businessSegment: form.get("businessSegment") || "",
+          limit: form.get("limit") || 100,
+          callSelection: {
+            businessSegment: form.get("businessSegment") || "",
+            limit: form.get("limit") || 100,
+            source: "dashboard_form"
+          }
+        };
+        const calls = selectIntelligenceExtractionCalls(state.analysis.drilldownRows || [], body, null)
+          .filter((call) => String(call.transcript || "").trim());
+        const result = saveEvaluationRun(body, {
+          importId: state.importRecord.id,
+          plannedCallCount: calls.length
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: "/evaluation-studio" });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/evaluation-studio/runs/") && url.pathname.endsWith("/harvest") && request.method === "POST") {
+      try {
+        const runId = decodeURIComponent(url.pathname.slice("/evaluation-studio/runs/".length, -"/harvest".length));
+        const form = await readFormBody(request);
+        const returnTo = form.get("returnTo") || "/evaluation-studio";
+        const result = await harvestEvaluationStudioRunJobs(runId, {
+          storePath,
+          aiConfig,
+          fetchImpl
+        });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: returnTo });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/evaluation-studio/runs/") && url.pathname.endsWith("/quarantine") && request.method === "POST") {
+      try {
+        const runId = decodeURIComponent(url.pathname.slice("/evaluation-studio/runs/".length, -"/quarantine".length));
+        const form = await readFormBody(request);
+        const returnTo = form.get("returnTo") || "/evaluation-studio";
+        const result = quarantineStoredEvaluationRun(runId, {
+          reason: form.get("reason") || form.get("quarantineReason") || form.get("note") || "",
+          metadata: { source: "dashboard_form" }
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: returnTo });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/evaluation-studio/runs/") && url.pathname.endsWith("/resume") && request.method === "POST") {
+      try {
+        const runId = decodeURIComponent(url.pathname.slice("/evaluation-studio/runs/".length, -"/resume".length));
+        const form = await readFormBody(request);
+        const returnTo = form.get("returnTo") || "/evaluation-studio";
+        const result = resumeStoredEvaluationRun(runId, {
+          reason: form.get("reason") || form.get("note") || "",
+          metadata: { source: "dashboard_form" }
+        }, { storePath });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: returnTo });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/evaluation-studio/prompt-tests" && request.method === "POST") {
+      try {
+        const form = await readFormBody(request);
+        const body = {
+          importId: form.get("importId") || state.importRecord?.id || "current",
+          templateId: form.get("templateId") || "",
+          callId: form.get("callId") || "",
+          businessSegment: form.get("businessSegment") || "",
+          submitNow: form.get("submitNow") || ""
+        };
+        const result = await createEvaluationPromptTest(body, {
+          state,
+          storePath,
+          aiConfig,
+          fetchImpl
+        });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        response.writeHead(303, { Location: "/evaluation-studio" });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
     if (url.pathname === "/alerts" && request.method === "POST") {
       try {
         const form = await readFormBody(request);
@@ -1505,6 +2761,28 @@ function createServer(options = {}) {
         aiStatus: publicAiExecutionStatus(aiConfig),
         importId: state.importRecord?.id || null,
         returnTo: url.searchParams.get("returnTo") || `/calls/${encodeURIComponent(callId)}`
+      }));
+      return;
+    }
+
+    if (url.pathname === "/evaluation-studio" && request.method === "GET") {
+      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+        storePath,
+        aiConfig,
+        fetchImpl,
+        currentImportId: state.importRecord?.id || null
+      });
+      if (autoHarvest.harvested.length) {
+        state.analysis = attachPersistence(state.analysis, autoHarvest.store, state.importRecord?.id || null);
+      }
+      response.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
+      const studioAnalysis = analysisForRequest(state, url, storePath);
+      response.end(renderEvaluationStudioPage(studioAnalysis, {
+        businessSegment: activeBusinessSegment
       }));
       return;
     }

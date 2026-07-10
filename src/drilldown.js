@@ -3,6 +3,7 @@
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { clean, isMissing, parseTranscriptTurns, toInt } = require("./transcriptEvaluator");
 const { SOURCE_AGE_THRESHOLDS, regionNameFor, sourceAttributionFor } = require("./sourceQuality");
+const { formatSourceDateTimeValue } = require("./dateTimeFormat");
 
 const EXCLUDED_RAW_FIELDS = new Set([
   "__rowNumber",
@@ -288,6 +289,36 @@ const METRICS = {
     title: "Max Attempts On One Record",
     description: "Matched records matching the highest same-salesperson attempt count in this scope.",
     kind: "reattempt"
+  },
+  "harvest.newBusinessCandidates": {
+    title: "New Business Lead Harvest Candidates",
+    description: "New Business calls with deterministic live-human, positive-response, and callback/follow-up evidence. These are review candidates, not confirmed sales.",
+    kind: "harvest"
+  },
+  "harvest.warmBusinessCandidates": {
+    title: "Warm Business Lead Harvest Candidates",
+    description: "Warm Business calls with deterministic live-human, positive-response, and callback/follow-up evidence. These are review candidates, not confirmed sales.",
+    kind: "harvest"
+  },
+  "harvest.openCandidates": {
+    title: "Open Lead Harvest Candidates",
+    description: "Lead harvest candidates where no later matching call appears in the active call data. Stable IDs are used for matching; phone values and allocation data are not used.",
+    kind: "harvest"
+  },
+  "harvest.reviewQueue": {
+    title: "Lead Harvest Review Queue",
+    description: "Lead harvest candidates that need manager review: no later matching call observed or matching unavailable from the active stable IDs.",
+    kind: "harvest"
+  },
+  "harvest.laterObserved": {
+    title: "Harvest Candidates With Later Matching Call Observed",
+    description: "Lead harvest candidates where a later call to the same stable customer/contact/lead ID appears in the active data. This does not prove completion.",
+    kind: "harvest"
+  },
+  "harvest.matchingUnavailable": {
+    title: "Harvest Candidates With Matching Unavailable",
+    description: "Lead harvest candidates missing a stable matching ID, so later-call follow-up cannot be proven from the active data.",
+    kind: "harvest"
   }
 };
 
@@ -399,6 +430,7 @@ function buildCallProofRow(item) {
     contactId: contactIdFor(row),
     date: clean(row.call_date),
     time: clean(row.call_time),
+    sourceTime: formatSourceDateTimeValue(row.call_date, row.call_time),
     dateTime: item.dateTime ? item.dateTime.toISOString() : null,
     salesperson: clean(row.Salesperson) || "Unknown",
     source: sourceAttribution.customerImportSource,
@@ -510,6 +542,10 @@ function filterRows(rows, query = {}) {
   const aiAssistantResponse = clean(query.aiAssistantResponse || query.aiVoiceAssistantResponse);
   const aiAssistantTactic = clean(query.aiAssistantTactic || query.aiVoiceAssistantTactic);
   const systemAudioSubtype = clean(query.systemAudioSubtype || query.systemAudioType);
+  const harvestStatus = clean(query.harvestStatus || query.status);
+  const confidenceBand = clean(query.confidenceBand || query.confidence);
+  const objectionType = clean(query.objectionType || query.objection);
+  const handlingType = clean(query.handlingType || query.salespersonHandlingType);
   const minImportAgeDays = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, null);
   const maxAttempts = normalizeMinImportAgeDays(query.maxAttempts || query.attempts || query.personalCallCount, null);
 
@@ -528,9 +564,26 @@ function filterRows(rows, query = {}) {
     if (aiAssistantResponse && row.aiVoiceAssistantResponse !== aiAssistantResponse) return false;
     if (aiAssistantTactic && !(row.aiVoiceAssistantTactics || []).includes(aiAssistantTactic)) return false;
     if (systemAudioSubtype && row.systemAudioSubtype !== systemAudioSubtype && row.subtype !== systemAudioSubtype) return false;
+    if (harvestStatus && row.status !== harvestStatus) return false;
+    if (confidenceBand && row.confidenceBand !== confidenceBand) return false;
+    if (objectionType && row.objectionType !== objectionType) return false;
+    if (handlingType && row.salespersonHandlingType !== handlingType) return false;
     if (minImportAgeDays !== null && !(row.daysSinceRecord !== null && Number(row.daysSinceRecord) > minImportAgeDays)) return false;
     return true;
   });
+}
+
+function sortRows(rows = [], query = {}) {
+  const sort = clean(query.sort || query.order).toLowerCase();
+  if (!sort) return rows;
+  const sorted = [...rows];
+  if (sort === "oldest" || sort === "oldest_first") {
+    return sorted.sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0) || String(a.callId || "").localeCompare(String(b.callId || "")));
+  }
+  if (sort === "newest" || sort === "newest_first") {
+    return sorted.sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0) || String(a.callId || "").localeCompare(String(b.callId || "")));
+  }
+  return rows;
 }
 
 function alertRowsForMetric(analysis, metric) {
@@ -567,21 +620,26 @@ function buildDrilldownResult(analysis, query = {}) {
   const systemAudio = definition.kind === "systemAudio" && businessSegment && analysis.businessSegmentViews?.[businessSegment]?.systemAudio
     ? analysis.businessSegmentViews[businessSegment].systemAudio
     : analysis.systemAudio;
+  const leadHarvest = definition.kind === "harvest" && businessSegment && analysis.businessSegmentViews?.[businessSegment]?.leadHarvest
+    ? analysis.businessSegmentViews[businessSegment].leadHarvest
+    : analysis.leadHarvest;
   const sourceRows = metric.startsWith("alerts.")
     ? alertRowsForMetric(analysis, metric)
     : definition.kind === "lead"
       ? leadUtilization?.records || []
       : definition.kind === "reattempt"
         ? leadReattempt?.records || []
+        : definition.kind === "harvest"
+          ? leadHarvest?.records || []
         : definition.kind === "systemAudio"
           ? systemAudio?.records || []
       : analysis.drilldownRows || [];
-  const rows = filterRows(sourceRows, {
+  const rows = sortRows(filterRows(sourceRows, {
     ...query,
     metric,
     businessSegment: definition.kind === "lead" ? "" : businessSegment,
     segment: definition.kind === "lead" ? "" : query.segment
-  });
+  }), query);
   const limit = Math.max(1, Math.min(Number(query.limit || 500), 10000));
   const offset = Math.max(0, Number(query.offset || 0));
   const displayedRows = rows.slice(offset, offset + limit);
@@ -607,6 +665,11 @@ function buildDrilldownResult(analysis, query = {}) {
       aiAssistantResponse: clean(query.aiAssistantResponse || query.aiVoiceAssistantResponse),
       aiAssistantTactic: clean(query.aiAssistantTactic || query.aiVoiceAssistantTactic),
       systemAudioSubtype: clean(query.systemAudioSubtype || query.systemAudioType),
+      harvestStatus: clean(query.harvestStatus || query.status),
+      confidenceBand: clean(query.confidenceBand || query.confidence),
+      objectionType: clean(query.objectionType || query.objection),
+      handlingType: clean(query.handlingType || query.salespersonHandlingType),
+      sort: clean(query.sort || query.order),
       minImportAgeDays,
       maxAttempts,
       businessSegment,

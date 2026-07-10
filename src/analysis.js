@@ -10,7 +10,17 @@ const { buildCallProofRow } = require("./drilldown");
 const { SOURCE_AGE_THRESHOLDS, ageBucketSort, sourceAttributionFor } = require("./sourceQuality");
 const { buildAiVoiceAssistantModel, linkAiVoiceAssistantOutcomes } = require("./aiVoiceAssistantAnalytics");
 const { buildLeadReattemptModel } = require("./leadReattemptAnalytics");
+const { buildLeadHarvestModel } = require("./leadHarvestAnalytics");
 const { buildSystemAudioModel } = require("./systemAudioAnalytics");
+const {
+  SOURCE_TIMEZONE_LABEL,
+  formatSourceDateParts,
+  formatSourceDateTimeParts,
+  formatSourceDateTimeValue,
+  isoDateFromParts,
+  isoTimeFromParts,
+  sourceComparableFromParts
+} = require("./dateTimeFormat");
 const {
   applyCallFilters,
   buildFilterOptions,
@@ -53,8 +63,6 @@ const REQUIRED_COLUMNS = [
   "CustomerImportSource"
 ];
 
-const SOURCE_TIMEZONE_LABEL = "Source call time (timezone not supplied)";
-
 function parseSourceDateParts(value) {
   const date = clean(value);
   let dateMatch = date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
@@ -86,14 +94,16 @@ function sourceDateTimeParts(row) {
   const dateParts = parseSourceDateParts(row.call_date);
   const timeParts = parseSourceTimeParts(row.call_time);
   if (!dateParts || !timeParts) return null;
-  const date = `${dateParts.year}-${pad2(dateParts.month)}-${pad2(dateParts.day)}`;
-  const time = `${pad2(timeParts.hour)}:${pad2(timeParts.minute)}:${pad2(timeParts.second)}`;
+  const parts = { ...dateParts, ...timeParts };
+  const date = isoDateFromParts(parts);
+  const time = isoTimeFromParts(parts);
   return {
-    ...dateParts,
-    ...timeParts,
+    ...parts,
     date,
     time,
-    label: `${date} ${time}`,
+    comparable: sourceComparableFromParts(parts),
+    label: formatSourceDateTimeParts(parts),
+    dateLabel: formatSourceDateParts(parts),
     secondsOfDay: (timeParts.hour * 60 * 60) + (timeParts.minute * 60) + timeParts.second
   };
 }
@@ -148,7 +158,7 @@ function buildDataWindow(items, totals = {}) {
     warnings.push({
       code: "single_day_dataset",
       severity: "warning",
-      message: `This dataset covers a single source call date (${start?.date || "unknown"}). Treat trend and comparison views as a same-day snapshot.`
+      message: `This dataset covers a single source call date (${start?.dateLabel || "unknown"} AEST). Treat trend and comparison views as a same-day snapshot.`
     });
   }
   if (partialDay) {
@@ -846,6 +856,7 @@ function buildDashboardView(items, options = {}) {
   const sourceQuality = buildSourceQualityModel(items);
   const aiVoiceAssistant = buildAiVoiceAssistantModel(items);
   const leadReattempt = buildLeadReattemptModel(items);
+  const leadHarvest = buildLeadHarvestModel(items);
   const systemAudio = buildSystemAudioModel(items);
   const alerts = buildAlerts(items);
   const reviewQueue = items
@@ -877,6 +888,7 @@ function buildDashboardView(items, options = {}) {
     sourceQuality,
     aiVoiceAssistant,
     leadReattempt,
+    leadHarvest,
     systemAudio,
     leadUtilization: buildLeadUtilizationModel(items),
     alerts,
@@ -1368,6 +1380,7 @@ function analyzeCsvText(csvText, options = {}) {
   const sourceQuality = buildSourceQualityModel(items);
   const aiVoiceAssistant = buildAiVoiceAssistantModel(items);
   const leadReattempt = buildLeadReattemptModel(items);
+  const leadHarvest = buildLeadHarvestModel(items);
   const systemAudio = buildSystemAudioModel(items);
   const allocationRowsOption = options.allocationRows || options.allocations?.rows || [];
   const allocationConfigured = Boolean(
@@ -1433,6 +1446,7 @@ function analyzeCsvText(csvText, options = {}) {
     parkedAllocation,
     aiVoiceAssistant,
     leadReattempt,
+    leadHarvest,
     systemAudio,
     businessSegmentMetrics,
     businessSegmentViews,
@@ -1459,6 +1473,7 @@ function buildEvaluationRow(item) {
     contactId: isMissing(contactId) ? "" : contactId,
     date: clean(row.call_date),
     time: clean(row.call_time),
+    sourceTime: formatSourceDateTimeValue(row.call_date, row.call_time),
     salesperson: clean(row.Salesperson) || "Unknown",
     userId: clean(row.UserID) || "",
     callType: clean(row.CallType) || "Unknown",
@@ -1546,6 +1561,7 @@ function buildExplorerRow(item) {
     contactId: isMissing(contactId) ? "" : contactId,
     date: clean(row.call_date),
     time: clean(row.call_time),
+    sourceTime: formatSourceDateTimeValue(row.call_date, row.call_time),
     salesperson: clean(row.Salesperson) || "Unknown",
     callType: clean(row.CallType) || "Unknown",
     direction: clean(row.call_direction) || "Unknown",
