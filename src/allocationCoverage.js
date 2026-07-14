@@ -166,7 +166,6 @@ function seedCallStats(key, extras = {}) {
     meaningfulConversation: 0,
     actionableConversation: 0,
     followUpRequired: 0,
-    outcomeMismatches: 0,
     riskReviews: 0,
     totalDurationSeconds: 0,
     callsWithoutStableLead: 0,
@@ -184,7 +183,6 @@ function addCall(stats, item) {
   if (item.evaluation.contact.meaningfulConversation) stats.meaningfulConversation += 1;
   if (item.evaluation.contact.actionableConversation) stats.actionableConversation += 1;
   if (item.evaluation.opportunity.followUpRequired) stats.followUpRequired += 1;
-  if (item.evaluation.outcome.mismatch) stats.outcomeMismatches += 1;
   if (item.evaluation.risk.reviewRequired) stats.riskReviews += 1;
   stats.totalDurationSeconds += Number(item.evaluation.durationSeconds || 0);
 }

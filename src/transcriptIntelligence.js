@@ -245,13 +245,6 @@ function extractEventsAndFlags(call) {
     });
   }
 
-  if (call.localOutcome === "outcome_mismatch" || call.metricKeys?.includes("calls.outcomeMismatches")) {
-    addRiskFlag(flags, call, "disposition_mismatch", "medium", null, {
-      evidence: call.transcriptPreview || "Structured disposition may not match transcript evidence.",
-      confidence: 0.72
-    });
-  }
-
   return { events, flags };
 }
 
@@ -283,7 +276,6 @@ function utilizationScore(call, events, flags) {
   if (!pitchExplained && !hasNextStep && !validDisqualification) return 2;
   if (pitchExplained && !hasNextStep && !validDisqualification) return 3;
   if (pitchExplained || hasNextStep || validDisqualification) return highIntent ? 5 : 4;
-  if (flags.some((flag) => flag.flagType === "disposition_mismatch")) return 2;
   return 3;
 }
 
@@ -307,7 +299,6 @@ function buildCallIntelligence(call, options = {}) {
   const hasNextStep = events.some((event) => event.followUpRequired);
   const hasRisk = flags.some((flag) => flag.managerReviewRecommended);
   const hasHuman = !NO_CONTACT_CLASSIFICATIONS.has(clean(call.contactClassification)) && Boolean(clean(call.contactClassification));
-  const mismatch = call.metricKeys?.includes("calls.outcomeMismatches") || flags.some((flag) => flag.flagType === "disposition_mismatch");
   const validNoSale = events.some((event) => ["customer_refused", "wrong_number", "voicemail_left_or_detected", "no_answer_detected"].includes(event.eventType));
   const { leadKeyType, leadKey } = stableLeadKey(call);
   const reason = buildReason(call, score, events, flags);
@@ -341,9 +332,8 @@ function buildCallIntelligence(call, options = {}) {
       riskFlagExists: bool(hasRisk),
       validNoSale: bool(validNoSale),
       leadUtilizationScore: score,
-      salespersonQualityScore: Math.max(0, Math.min(100, score * 20 - (hasRisk ? 10 : 0) - (mismatch ? 8 : 0))),
-      managerReviewRequired: bool(hasRisk || mismatch || (hasHuman && score <= 2)),
-      dispositionMatchesTranscript: bool(!mismatch),
+      salespersonQualityScore: Math.max(0, Math.min(100, score * 20 - (hasRisk ? 10 : 0))),
+      managerReviewRequired: bool(hasRisk || (hasHuman && score <= 2)),
       llmConfidence: 0,
       deterministicConfidence: confidence,
       briefReason: reason,

@@ -39,7 +39,7 @@ Use this file as the table of contents, then load deeper docs only as needed.
 - Downgrade to **GPT-5.6 Luna** with **Low** reasoning only for bounded, objectively validated work: documentation, fixtures, mechanical tests, report formatting, read-only inventories, or straightforward extraction, classification, and transformation.
 - Escalate to **GPT-5.6 Sol** with **High** reasoning when task consequences or difficulty warrant it, not merely because a named file or subsystem is touched. Terra Medium remains suitable for a narrow, well-specified, reversible, strongly validated change in a sensitive area.
 - Recommend Sol High for material changes or reviews involving scheduler/worker/runtime startup; dispatch, queues, retries, timeouts, locking, concurrency, idempotency, or recovery; Carma or strict ABN/ABR matching; schema, migrations, or data integrity; Buyer API auth/privacy/security; production LLM routing/fallbacks; paid-search bid/budget/yield policy; autonomous-lane decisions; financial, pricing, margin, or revenue logic; rollback, kill-switch, approval, or audit controls; ambiguous cross-cutting architecture; weakly tested high-blast-radius changes; or difficult multi-subsystem incidents.
-- Before a high-risk write, pause for confirmation when the current model is known to be below the recommendation and the change could materially affect security, financial decisions, autonomous action, data integrity, or production availability. Display:
+- Before a high-risk write, pause for confirmation when the active model is unknown or known to be below the recommendation and the change could materially affect security, financial decisions, autonomous action, data integrity, or production availability. Unknown active state is not permission to infer compliance. Display:
 
   ```text
   MODEL ESCALATION RECOMMENDED
@@ -50,7 +50,7 @@ Use this file as the table of contents, then load deeper docs only as needed.
   Next action: switch the parent task or delegate a Sol review
   ```
 
-- Never claim the active parent model changed unless Codex explicitly confirms it. A Sol reviewer may be delegated automatically for read-only review but must never make application changes. Do not interrupt routine work solely because a stronger model exists.
+- Never claim the active parent model changed unless Codex explicitly confirms it. A Sol reviewer may be delegated automatically for read-only review but must never make application changes. When a Sol review is used for a high-risk write, wait for it; resolve blocking findings or obtain explicit user acceptance before writing. If the reviewer is unavailable, remain paused and escalate to the user. A reviewer does not authorize an underpowered parent to implement the change. Do not interrupt routine work solely because a stronger model exists.
 - Keep production application model routing separate from development-time Codex selection.
 
 ## Objective

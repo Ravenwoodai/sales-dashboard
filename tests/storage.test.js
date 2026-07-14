@@ -418,6 +418,58 @@ test("parked alerts reject lifecycle mutation", () => {
   }, { storePath }), /Parked alerts are excluded/);
 });
 
+test("legacy-derived historical alerts stay preserved but are excluded from views and mutation", () => {
+  const storePath = tempStorePath();
+  writeStore({
+    ...createEmptyStore(),
+    alertEvents: [
+      {
+        id: "legacy-alert",
+        alertId: "legacy-alert",
+        importId: "import-test",
+        category: "Imported outcome mismatch",
+        message: "Historical legacy-derived finding.",
+        status: "new"
+      }
+    ]
+  }, { storePath });
+
+  const stored = readStore({ storePath });
+  assert.equal(stored.alertEvents.length, 1);
+  assert.equal(dashboardPersistence(stored, "import-test").counts.currentAlertEvents, 0);
+  assert.throws(() => updateAlertLifecycle("legacy-alert", {
+    action: "acknowledge",
+    importId: "import-test"
+  }, { storePath }), /Alert not found/);
+  assert.throws(() => bulkUpdateAlertLifecycle(["legacy-alert"], {
+    action: "resolve",
+    importId: "import-test"
+  }, { storePath }), /No matching alerts were updated/);
+  assert.equal(readStore({ storePath }).alertEvents[0].status, "new");
+});
+
+test("legacy manager reviews stay preserved but do not affect normal review counts", () => {
+  const storePath = tempStorePath();
+  writeStore({
+    ...createEmptyStore(),
+    managerReviews: [{
+      id: "legacy-review",
+      reviewId: "legacy-review",
+      importId: "import-test",
+      callId: "call-legacy",
+      reviewStatus: "reviewed_corrected",
+      corrections: [{ fieldName: "local_outcome_category", rawValue: "Did Not Answer", managerCorrectedValue: "callback_requested" }]
+    }]
+  }, { storePath });
+
+  const stored = readStore({ storePath });
+  const persistence = dashboardPersistence(stored, "import-test");
+  assert.equal(stored.managerReviews.length, 1);
+  assert.equal(persistence.counts.managerReviews, 0);
+  assert.equal(persistence.counts.currentManagerReviews, 0);
+  assert.throws(() => updateManagerReview("legacy-review", { action: "confirm", importId: "import-test" }, { storePath }), /not found/);
+});
+
 test("saveManagerReview persists review state by call ID", () => {
   const storePath = tempStorePath();
   const saved = saveManagerReview({
@@ -467,12 +519,13 @@ test("manager review corrections are auditable and do not overwrite raw or deriv
   const artifact = JSON.parse(fs.readFileSync(path.join(path.dirname(storePath), persisted.importRecord.artifactPath), "utf8"));
   const evaluation = artifact.evaluationRows.find((row) => row.callId === "48500001");
   assert.equal(evaluation.localOutcome, "callback_requested");
-  assert.equal(evaluation.importedNoSaleRaw, "");
-  assert.equal(saved.review.corrections[0].rawValue, "NULL");
+  assert.equal(evaluation.importedNoSaleRaw, undefined);
+  assert.equal(saved.review.corrections[0].rawValue, "");
 
   const persistence = dashboardPersistence(saved.store, persisted.importRecord.id);
   assert.equal(persistence.counts.currentManagerCorrectedCalls, 1);
   assert.equal(persistence.managerReviewSummaries[0].latestCorrection.managerCorrectedValue, "information_requested");
+  assert.equal(persistence.managerReviewSummaries[0].latestCorrection.rawValue, undefined);
 });
 
 test("manager review suggested corrections persist separately from confirmed corrections", () => {

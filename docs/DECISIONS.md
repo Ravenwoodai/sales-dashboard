@@ -166,3 +166,118 @@ Consequences:
 - Evaluation Studio run quarantine/resume/harvest state is governance metadata only; it does not delete jobs, raw calls, result records, or manager review history.
 - Evaluation Studio must not silently overwrite raw imported fields, deterministic outputs, LLM outputs, alert evidence, or manager review history.
 - Parked campaign/allocation imports remain excluded from active evaluation, reporting, filters, and performance claims.
+
+## ADR-015 - Manager Reporting Uses Focused Workspaces
+Date: 2026-07-11
+Status: Accepted
+Decision: The Sales Dashboard is presented as seven focused manager workspaces selected with the `view` query parameter, while Evaluation Studio remains a separate `/evaluation-studio` workspace.
+Context: Rendering every scorecard, queue, confidence panel, alert, report, and raw record on one page created excessive scrolling and made operational priorities hard to find. The redesign must improve navigation without creating inconsistent analytics or separate filter implementations.
+Consequences:
+- workspace views are `overview`, `harvest`, `follow_up`, `reviews`, `team`, `intelligence`, and `records`
+- global filter query state is preserved when moving between workspaces
+- server analysis, denominators, allocation parking, alert lifecycle, and manager review governance remain unchanged
+- Evaluation Studio prompt, knowledgebase, and run controls stay outside the reporting workspace
+- operational tables may use bounded previews, but their full evidence and drilldown routes remain available
+
+## ADR-016 - Historical Evaluation Knowledge Requires Explicit Approval
+Date: 2026-07-11
+Status: Accepted
+Decision: Historical Neuron and LatentPulse knowledge is stored as active, visible Evaluation Studio records with `pending_manager_approval`, but is excluded from evaluation runs and local model input until a manager changes it to `approved_current`.
+Context: The source projects contain useful company procedure, language, scoring, examples, historic pricing, programme variants, outcome-linked analysis, and review-governance material. Some content may no longer match the current offer, policy, legal wording, or data-confidence rules.
+Consequences:
+- visible knowledge is distinct from knowledge eligible for evaluation context
+- every imported entry stores source project, source reference, version, historical flag, approval status, and approval note
+- historical pricing, dates, legal statements, programme wording, and examples cannot silently become current operational policy
+- de-identified LatentPulse calibration entries support manager review and prompt calibration but are not raw transcript imports
+- managers approve current material per entry through Evaluation Studio before new runs can use it
+
+## ADR-017 - Exclude Untrusted Legacy Disposition And Note Fields
+Date: 2026-07-11
+Status: Accepted
+Decision: `NoSaleType` and `Baz_DetailedNotes` remain preserved unchanged in raw source files but are optional and excluded from active analytics, alerts, filters, reports, scorecards, normal UI/APIs, manager-review prefill, and AI/evaluator context.
+Context: `NoSaleType` is a human-entered legacy disposition known to be inaccurate, while `Baz_DetailedNotes` is output from an unknown legacy model with unverified prompt, version, provenance, and accuracy. Neither is reliable enough to support management conclusions or model evaluation context.
+Consequences:
+- changing, blanking, or omitting either field cannot change active dashboard results
+- imported-disposition mismatch metrics and alerts are retired
+- old reports and alerts that depend on either field remain preserved but are hidden from normal active views
+- Evaluation Studio records that contain legacy dependencies remain preserved and are classified out of active lists; new knowledge, templates, and results reject those dependencies
+- local LLM intelligence created before the policy cutoff is preserved but quarantined from active intelligence until rerun under the current field-exclusion policy
+- raw source records are not rewritten or deleted
+- future integrations must provide separately governed, provenance-labelled evidence rather than reusing these fields
+
+## ADR-018 - Bad-Lead Claims Are Auditable Allegations, Not Lead Decisions
+Date: 2026-07-11
+Status: Accepted
+Decision: Introduce an internal versioned `bad_lead_claim.v1` record that stores a submitted allegation separately from future system evidence and manager decisions. Original allegation fields are immutable, status changes are controlled, manager decisions use trusted service context, and every action appends audit history.
+Context: The dashboard can derive transcript signals and store manager corrections, but it has no authenticated salesperson claim, lead-suppression, or CRM writeback workflow. Treating deterministic, LLM, `NoSaleType`, or `Baz_DetailedNotes` values as a salesperson claim would be inaccurate.
+Consequences:
+- the initial implementation is a service and local JSON-store foundation only, with no normal API, UI, Evaluation Studio, report, alert, metric, or suppression integration
+- submitter and manager identity must be supplied by trusted service context, never accepted from the claim payload
+- `NoSaleType`, `Baz_DetailedNotes`, aliases, and historical dependent outputs cannot create, populate, infer, or alter claims
+- a claim records what was alleged; confirmation or rejection is a separate manager decision and does not itself deactivate or suppress a lead
+- a future salesperson-facing API requires an authenticated identity source before it can be considered trustworthy
+
+## ADR-019 - Evaluation Studio May Inspect Active Trusted Claims As Allegations
+Date: 2026-07-11
+Status: Accepted
+Decision: Local Evaluation Studio task inputs may include active `submitted` or `under_review` `bad_lead_claim.v1` records as read-only salesperson allegations. Exact `call_id` claims take precedence; only when none exist may a claim with no call ID match the call's exact canonical `AllocatedLeadID`.
+Context: The evaluator needs to inspect what a salesperson alleged without treating deterministic outcomes, historical AI output, alerts, manager reviews, phone/name similarity, or excluded legacy fields as claims.
+Consequences:
+- claim context is labelled `salesperson_allegation` and is not factual proof, a manager decision, or an instruction
+- inactive `confirmed`, `rejected`, and `withdrawn` claims are excluded from evaluator context
+- customer/contact IDs, phone text, salesperson names, transcript wording, business names, alerts, reviews, deterministic outcomes, and historical AI results cannot match or create claim context
+- claim history and manager-decision metadata are not sent to the evaluator
+- internal claim context is sent only in the local model task payload and is removed from normal prompt-test API task-input responses
+- the project-authenticated local AI Execution Layer may durably retain the full submitted task payload under its own retention policy; Sales Dashboard job references and job-status proxy responses do not expose the claim block
+- evaluator instructions, output schema, result normalisation, metrics, reports, alerts, lead status, allocation, and CRM data remain unchanged
+
+## ADR-020 - Replace Broad Lead-Validity Evaluation With A Conservative Evidence Audit
+Date: 2026-07-11
+Status: Accepted
+Decision: Archive the seeded Lead Validity And Utilisation template and replace it with the versioned Lead Record & Disposition Evidence Audit (`lead_record_disposition_evidence_audit`, schema `lead_record_disposition_evidence_audit.v1`).
+Context: A broad lead-validity prompt could blur call evidence, salesperson allegation, operational usability, and final lead disposition. The local Qwen3 route has an 8,192-token context and 1,024-token output cap, so the replacement uses a compact fixed schema with semantic validation.
+Consequences:
+- the evaluator distinguishes record evidence from allegation assessment and treats allegation absence explicitly
+- supported or contradictory conclusions require direct transcript/system evidence; missing evidence produces untestable or insufficient-evidence output
+- the model returns no trusted findings directly; a required empty `findings` array satisfies the shared execution contract and normalized findings are generated locally only after validation
+- historical generic v1 results and runs remain readable, while the old seeded template is archived non-destructively
+- audit results are excluded from report rollups and cannot confirm/reject claims, change workflow status, alter leads, change operational systems, or write to a CRM
+- excluded legacy fields and parked data remain unavailable
+
+## ADR-021 - Enforce Lead Evidence Decision Consistency Locally
+Date: 2026-07-12
+Status: Accepted
+Decision: Version the Lead Record & Disposition Evidence Audit template to v3 while retaining output schema `lead_record_disposition_evidence_audit.v1`, and enforce recommendation, review, evidence, confidence, and contact-state relationships in the local Sales Dashboard semantic layer.
+Context: A controlled five-call run showed that valid schema output could still pair supported invalidity with normal workflow, confuse absent allegations with absent transcript evidence, or assign high confidence to unavailable evidence.
+Consequences:
+- explicit verified wrong-number evidence is normalized to supported invalidity, `correct_or_remove_record`, and manager review without changing a lead or claim
+- absent allegations affect only allegation assessment; normal rejection evidence remains usable and available
+- unavailable evidence caps confidence at 0.35, partial evidence at 0.75, and confidence of 0.90 or more requires available verified transcript evidence
+- voicemail and no-answer evidence remain non-invalidity contact states with advisory `retry_contact`
+- normalized findings separately expose contact evidence, record evidence, allegation availability/assessment, and recommended manager action
+- deterministic semantic adjustments are stored with the normalized audit assessment while the raw model response remains preserved by the Execution Layer
+- prior template versions, runs, and stored results remain preserved and readable
+
+## ADR-022 - Make Safety-Critical Disposition Mappings Deterministic
+Date: 2026-07-12
+Status: Accepted
+Decision: Version the Lead Record & Disposition Evidence Audit template to v4, retain schema `lead_record_disposition_evidence_audit.v1`, and deterministically reconcile verified do-not-contact, serious threat, explicit permanent-closure, and hedged-closure evidence before accepting a stored result.
+Context: The preserved 25-call calibration showed that schema-valid model output could ignore an explicit opt-out or serious threat, treat a direct permanent closure as ordinary operational unusability, or overstate uncertain closure wording.
+Consequences:
+- direct do-not-contact and serious threat evidence becomes `supported_operational_unusability`, `manager_review_recommended`, and manager review true
+- explicit permanent business closure becomes `supported_invalidity`, `correct_or_remove_record`, and manager review true
+- hedged closure wording cannot prove permanent closure; it remains untestable, uses partial evidence, caps confidence at 0.75, and recommends independent verification
+- locally generated findings expose the operational issue separately and agree with the top-level recommendation and review flag
+- every recommendation remains advisory; no claim, lead, allocation, CRM, alert, report, or manager-review state is changed
+- historical templates, stored results, and calibration artifacts remain preserved
+
+## ADR-023 - Evaluation Studio Is A Direct Local Workflow
+Date: 2026-07-13
+Status: Accepted
+Decision: Ordinary Evaluation Studio use requires no manager identity or approval. Local users select transcripts, preview and run batches, and browse evidence-backed results. Knowledge entries are Draft or Included. Accuracy calibration is optional and uses frozen local reference labels rather than an approval gate.
+Context: The application is operated locally by one user; manager-approval ceremony obscured the primary transcript-evaluation workflow without adding meaningful authentication.
+Consequences:
+- new Evaluation Studio artifacts use `local_user` attribution
+- stored compatibility enums remain readable, but the UI uses Draft, Included, and Manual check suggested
+- optional Manager Review remains separate and does not gate evaluation
+- schema, evidence, worker, idempotency, and no-operational-write protections remain mandatory

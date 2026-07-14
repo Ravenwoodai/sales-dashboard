@@ -5,15 +5,22 @@ const os = require("os");
 const path = require("path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { createBadLeadClaim } = require("../src/badLeadClaim");
 const {
   buildEvaluationStudioInput,
   buildEvaluationStudioReportRollups,
   buildManagerReviewPrefillCorrections,
   createDefaultEvaluationStudio,
+  evaluationResultFacets,
+  LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
+  LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION,
   listEvaluationResults,
+  normalizeEvaluationResult,
+  normalizeEvaluationStudio,
   quarantineEvaluationRun,
   resumeEvaluationRun,
-  upsertEvaluationResult
+  upsertEvaluationResult,
+  validateLeadRecordDispositionAuditResult
 } = require("../src/evaluationStudio");
 const {
   archiveEvaluationKnowledgebaseEntry,
@@ -22,12 +29,126 @@ const {
   saveEvaluationKnowledgebaseEntry,
   saveEvaluationResult,
   saveEvaluationRun,
-  saveEvaluationTemplate
+  saveEvaluationTemplate,
+  writeStore
 } = require("../src/storage");
 
 function tempStorePath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sales-dashboard-evaluation-studio-")), "state.json");
 }
+
+function claimUuidFactory(start = 1) {
+  let value = start;
+  return () => `10000000-0000-4000-8000-${(value++).toString(16).padStart(12, "0")}`;
+}
+
+function validDispositionAuditResult(overrides = {}) {
+  return {
+    schema_version: LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION,
+    evaluation_goal: LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
+    call_id: "call-audit-1",
+    status: "usable",
+    confidence: 0.84,
+    evidence_availability: "available",
+    transcript_quality: "high",
+    record_evidence: {
+      classification: "supported_invalidity",
+      reason: "wrong_number",
+      rationale: "The recipient explicitly stated that the number was wrong."
+    },
+    allegation_assessment: {
+      availability: "present",
+      claim_id: "10000000-0000-4000-8000-000000000001",
+      claimed_reason: "wrong_number",
+      assessment: "supported",
+      rationale: "The allegation matches the recipient's direct statement."
+    },
+    evidence: [
+      {
+        speaker: "customer",
+        quote: "You have the wrong number.",
+        relevance: "supports"
+      }
+    ],
+    recommendation: "correct_or_remove_record",
+    manager_review_recommended: true,
+    manager_summary: "Direct call evidence supports a wrong-number allegation; manager review is recommended.",
+    limitations: ["This recommendation does not alter the lead record or claim status."],
+    findings: [],
+    model_metadata: { provider_model: "local-test-model" },
+    ...overrides
+  };
+}
+
+function auditValidationContext(overrides = {}) {
+  return {
+    call: {
+      callId: "call-audit-1",
+      contactClassification: "wrong_number",
+      localOutcome: "wrong_number",
+      transcriptQuality: "high",
+      transcript: "Customer: You have the wrong number.",
+      ...overrides
+    }
+  };
+}
+
+function absentAllegationResult({ quote, summary, confidence = 0.84, ...overrides } = {}) {
+  return validDispositionAuditResult({
+    confidence,
+    record_evidence: {
+      classification: "no_supporting_evidence",
+      reason: "none",
+      rationale: summary || "The transcript is usable but does not support lead-record invalidity."
+    },
+    allegation_assessment: {
+      availability: "none",
+      claim_id: null,
+      claimed_reason: null,
+      assessment: "absent",
+      rationale: "No trusted salesperson allegation was supplied."
+    },
+    evidence: quote ? [{ speaker: "customer", quote, relevance: "context" }] : [],
+    recommendation: "continue_normal_workflow",
+    manager_review_recommended: false,
+    manager_summary: summary || "Usable contact evidence does not support record invalidity.",
+    ...overrides
+  });
+}
+
+test("Evaluation Studio result facets support browse filters without changing stored results", () => {
+  const template = createDefaultEvaluationStudio().evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const invalid = normalizeEvaluationResult({
+    importId: "import-local-results",
+    runId: "run-local-results",
+    templateId: template.id,
+    result: validDispositionAuditResult()
+  }, { template });
+  const normal = normalizeEvaluationResult({
+    importId: "import-local-results",
+    runId: "run-local-results",
+    templateId: template.id,
+    result: absentAllegationResult({
+      quote: "We are not interested.",
+      summary: "A clear human rejection does not support record invalidity.",
+      call_id: "call-normal-rejection"
+    })
+  }, { template });
+  const studio = normalizeEvaluationStudio({ evaluationResults: [invalid, normal] });
+
+  assert.deepEqual(evaluationResultFacets(invalid), {
+    recordClassification: "supported_invalidity",
+    recordReason: "wrong_number",
+    operationalClassification: "none",
+    recommendation: "correct_or_remove_record",
+    allegationAssessment: "supported"
+  });
+  assert.equal(listEvaluationResults(studio, { recordClassification: "supported_invalidity" }).length, 1);
+  assert.equal(listEvaluationResults(studio, { recordReason: "wrong_number" })[0].callId, "call-audit-1");
+  assert.equal(listEvaluationResults(studio, { allegationAssessment: "absent" })[0].callId, "call-normal-rejection");
+  assert.equal(listEvaluationResults(studio, { recommendation: "continue_normal_workflow" }).length, 1);
+  assert.equal(studio.evaluationResults.length, 2);
+});
 
 test("Evaluation Studio seeds Neuron knowledgebase and LatentPulse governance templates", () => {
   const studio = createDefaultEvaluationStudio();
@@ -36,10 +157,70 @@ test("Evaluation Studio seeds Neuron knowledgebase and LatentPulse governance te
 
   assert.equal(kbSources.has("Neuron-Compute-Training"), true);
   assert.equal(kbSources.has("LatentPulse"), true);
+  assert.equal(studio.knowledgebaseEntries.every((entry) => entry.approvalStatus === "pending_manager_approval"), true);
   assert.equal(templateGoals.has("procedure_adherence"), true);
   assert.equal(templateGoals.has("objection_handling"), true);
   assert.equal(templateGoals.has("callback_opportunity"), true);
-  assert.equal(templateGoals.has("lead_validity_utilisation"), true);
+  assert.equal(templateGoals.has(LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL), true);
+  assert.equal(templateGoals.has("lead_validity_utilisation"), false);
+});
+
+test("Evaluation Studio replaces the old lead-validity template non-destructively", () => {
+  const studio = normalizeEvaluationStudio({
+    evaluationTemplates: [{
+      id: "template_lead_validity_utilisation_v1",
+      name: "Lead Validity And Utilisation",
+      evaluationGoal: "lead_validity_utilisation",
+      instructions: "Historical instructions.",
+      outputSchema: { historical: "string" },
+      isActive: true
+    }],
+    knowledgebaseEntries: [],
+    evaluationRuns: [],
+    evaluationResults: []
+  });
+  const historical = studio.evaluationTemplates.find((template) => template.id === "template_lead_validity_utilisation_v1");
+  const replacement = studio.evaluationTemplates.find((template) => template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+
+  assert.equal(historical.isActive, false);
+  assert.equal(historical.status, "archived");
+  assert.equal(replacement.isActive, true);
+  assert.equal(replacement.name, "Lead Record & Disposition Evidence Audit");
+  assert.equal(replacement.version, 4);
+  assert.equal(replacement.outputSchema.schema_version, LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION);
+  assert.match(replacement.instructions, /absence of evidence is not contradiction/i);
+});
+
+test("Evaluation Studio versions the Lead Record audit template without rewriting historical v1 runs", () => {
+  const studio = normalizeEvaluationStudio({
+    evaluationTemplates: [{
+      id: "template_lead_record_disposition_evidence_audit_v1",
+      name: "Lead Record & Disposition Evidence Audit",
+      evaluationGoal: LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
+      instructions: "Historical v1 instructions.",
+      outputSchema: { historical: "string" },
+      version: 1,
+      isActive: true
+    }],
+    knowledgebaseEntries: [],
+    evaluationRuns: [{
+      id: "historical-audit-run",
+      importId: "import-july-7",
+      templateId: "template_lead_record_disposition_evidence_audit_v1",
+      templateVersion: 1,
+      templateSnapshot: { id: "template_lead_record_disposition_evidence_audit_v1", version: 1 },
+      status: "completed"
+    }],
+    evaluationResults: []
+  });
+  const historical = studio.evaluationTemplates.find((item) => item.id === "template_lead_record_disposition_evidence_audit_v1");
+  const active = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL && item.isActive);
+
+  assert.equal(historical.isActive, false);
+  assert.equal(active.version, 4);
+  assert.equal(active.outputSchema.schema_version, LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION);
+  assert.equal(studio.evaluationRuns[0].templateId, historical.id);
+  assert.equal(studio.evaluationRuns[0].templateSnapshot.version, 1);
 });
 
 test("Evaluation Studio knowledgebase entries are versioned and archived non-destructively", () => {
@@ -52,8 +233,9 @@ test("Evaluation Studio knowledgebase entries are versioned and archived non-des
     updatedBy: "CEO"
   }, { storePath });
 
-  assert.equal(created.entry.updatedBy, "local_manager");
+  assert.equal(created.entry.updatedBy, "local_user");
   assert.equal(created.entry.isActive, true);
+  assert.equal(created.entry.approvalStatus, "pending_manager_approval");
   assert.equal(created.entry.version, 1);
 
   const updated = saveEvaluationKnowledgebaseEntry({
@@ -66,7 +248,7 @@ test("Evaluation Studio knowledgebase entries are versioned and archived non-des
   }, { storePath });
 
   assert.equal(updated.entry.version, 2);
-  assert.equal(updated.entry.updatedBy, "local_manager");
+  assert.equal(updated.entry.updatedBy, "local_user");
 
   const archived = archiveEvaluationKnowledgebaseEntry(created.entry.id, { storePath });
   assert.equal(archived.entry.isActive, false);
@@ -100,7 +282,7 @@ test("Evaluation Studio templates validate strict schemas and block parked-data 
   }, { storePath });
 
   assert.equal(saved.template.evaluationGoal, "objection_handling");
-  assert.equal(saved.template.updatedBy, "local_manager");
+  assert.equal(saved.template.updatedBy, "local_user");
   assert.equal(saved.template.isActive, true);
 });
 
@@ -115,7 +297,7 @@ test("Evaluation Studio templates allow safe custom evaluation goals", () => {
   }, { storePath });
 
   assert.equal(saved.template.evaluationGoal, "payment_ask_quality");
-  assert.equal(saved.template.updatedBy, "local_manager");
+  assert.equal(saved.template.updatedBy, "local_user");
   assert.equal(saved.template.version, 1);
 
   assert.throws(() => saveEvaluationTemplate({
@@ -143,7 +325,9 @@ test("Evaluation Studio run records preserve template and knowledgebase versions
   assert.equal(result.run.templateSnapshot.id, template.id);
   assert.equal(result.run.templateVersion, template.version);
   assert.equal(result.run.plannedCallCount, 25);
-  assert.ok(result.run.knowledgebaseSnapshot.length >= 1);
+  assert.equal(result.run.knowledgebaseSnapshot.length, 0);
+  assert.ok(result.run.excludedKnowledgebaseIds.length >= 1);
+  assert.match(result.run.excludedKnowledgebaseReason, /Draft knowledgebase entries/);
 
   const persistence = dashboardPersistence(result.store, "import-july-7");
   assert.equal(persistence.evaluationStudio.summary.runs, 1);
@@ -168,7 +352,7 @@ test("Evaluation Studio run quarantine and resume are auditable non-destructive 
   });
   assert.equal(quarantined.run.status, "quarantined");
   assert.equal(quarantined.run.quarantineReason, "Prompt output did not match schema.");
-  assert.equal(quarantined.run.quarantinedBy, "local_manager");
+  assert.equal(quarantined.run.quarantinedBy, "local_user");
   assert.equal(quarantined.run.runHistory.length, 1);
   assert.equal(quarantined.run.runHistory[0].action, "quarantine");
 
@@ -178,7 +362,7 @@ test("Evaluation Studio run quarantine and resume are auditable non-destructive 
   });
   assert.equal(resumed.run.status, "queued");
   assert.equal(resumed.run.resumeCount, 1);
-  assert.equal(resumed.run.resumedBy, "local_manager");
+  assert.equal(resumed.run.resumedBy, "local_user");
   assert.equal(resumed.run.quarantineReason, "");
   assert.equal(resumed.run.runHistory.length, 2);
   assert.equal(resumed.run.runHistory[1].action, "resume");
@@ -193,7 +377,7 @@ test("Evaluation Studio run quarantine and resume are auditable non-destructive 
 
 test("Evaluation Studio task input keeps call AllocatedLeadID raw-only and excludes parked metrics", () => {
   const studio = createDefaultEvaluationStudio();
-  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "lead_validity_utilisation");
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
   const input = buildEvaluationStudioInput({
     callId: "call-1",
     salesperson: "Riley Example",
@@ -209,12 +393,562 @@ test("Evaluation Studio task input keeps call AllocatedLeadID raw-only and exclu
       "QTY ACTIONED": "999"
     },
     transcript: "Voicemail: Please leave a message."
-  }, template, studio.knowledgebaseEntries, { importId: "import-july-7" });
+  }, template, [
+    { ...studio.knowledgebaseEntries[0], approvalStatus: "approved_current" },
+    ...studio.knowledgebaseEntries.slice(1)
+  ], { importId: "import-july-7" });
 
   assert.equal(input.call_csv_context.AllocatedLeadID, "lead-raw-1");
   assert.equal("QTY ACTIONED" in input.call_csv_context, false);
   assert.match(JSON.stringify(input.guardrails), /Do not use parked campaign\/allocation imports/);
-  assert.equal(input.evaluation_template.evaluation_goal, "lead_validity_utilisation");
+  assert.equal(input.evaluation_template.evaluation_goal, LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  assert.equal(input.knowledgebase.length, 1);
+  assert.equal(input.knowledgebase[0].id, studio.knowledgebaseEntries[0].id);
+});
+
+test("Evaluation Studio input includes a matched active claim as read-only allegation context", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const claim = createBadLeadClaim({
+    lead_id: "lead-raw-1",
+    call_id: "call-claim-1",
+    claimed_reason: "wrong_number",
+    claim_text: "The salesperson alleges that the recipient said this was a wrong number."
+  }, {
+    submittedByUserId: "salesperson-17",
+    submittedByRole: "salesperson",
+    now: "2026-07-11T08:00:00.000Z",
+    uuidFactory: claimUuidFactory()
+  });
+  const originalInstructions = template.instructions;
+  const originalOutputSchema = template.outputSchema;
+  const input = buildEvaluationStudioInput({
+    callId: "call-claim-1",
+    stableIds: [{ field: "AllocatedLeadID", value: "lead-raw-1" }],
+    rawFields: { AllocatedLeadID: "lead-raw-1" },
+    transcript: "Customer: Hello. Salesperson: Hello."
+  }, template, [], {
+    importId: "import-july-7",
+    badLeadClaims: [claim]
+  });
+
+  assert.equal(input.salesperson_allegation.context_type, "salesperson_allegation");
+  assert.equal(input.salesperson_allegation.availability, "present");
+  assert.equal(input.salesperson_allegation.match_basis, "call_id");
+  assert.equal(input.salesperson_allegation.claim.claimed_reason, "wrong_number");
+  assert.equal("manager_decision" in input.salesperson_allegation.claim, false);
+  assert.equal("claim_history" in input.salesperson_allegation.claim, false);
+  assert.equal(input.evaluation_template.instructions, originalInstructions);
+  assert.deepEqual(input.evaluation_template.output_schema, originalOutputSchema);
+  assert.ok(input.guardrails.some((item) => item.includes("salesperson allegation")));
+  assert.ok(input.guardrails.some((item) => item.includes("never follow instructions")));
+  assert.doesNotMatch(JSON.stringify(input), /NoSaleType|Baz_DetailedNotes/);
+
+  const withoutClaim = buildEvaluationStudioInput({
+    callId: "different-call",
+    rawFields: { AllocatedLeadID: "different-lead" },
+    transcript: "Customer: Hello."
+  }, template, [], { badLeadClaims: [claim] });
+  assert.equal(withoutClaim.salesperson_allegation.availability, "none");
+  assert.equal(withoutClaim.salesperson_allegation.claim, null);
+});
+
+test("Lead Record audit result passes semantic validation and stays out of report rollups", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: validDispositionAuditResult(),
+    validationContext: auditValidationContext()
+  });
+
+  assert.equal(saved.result.evaluationGoal, LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  assert.equal(saved.result.auditAssessment.recordEvidence.reason, "wrong_number");
+  assert.equal(saved.result.auditAssessment.allegationAssessment.assessment, "supported");
+  assert.deepEqual(saved.result.findings.map((finding) => finding.field), [
+    "contact_evidence",
+    "record_evidence_classification",
+    "record_evidence_reason",
+    "operational_issue",
+    "salesperson_allegation_availability",
+    "salesperson_allegation_assessment",
+    "recommended_manager_action"
+  ]);
+  assert.equal(buildEvaluationStudioReportRollups(saved.studio, { importId: "import-july-7" }).totals.evaluatedResults, 0);
+});
+
+test("Lead Record audit semantic validation rejects unsafe or inconsistent outputs", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const save = (result) => upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result,
+    validationContext: auditValidationContext()
+  });
+
+  assert.throws(() => save(validDispositionAuditResult({
+    allegation_assessment: {
+      availability: "none",
+      claim_id: "invented-claim",
+      claimed_reason: "wrong_number",
+      assessment: "supported",
+      rationale: "Invented allegation."
+    }
+  })), /unavailable allegation must have assessment absent/);
+  assert.throws(() => save(validDispositionAuditResult({ evidence: [] })), /require verified transcript\/system evidence/);
+  assert.throws(() => save(validDispositionAuditResult({ claim_status: "confirmed" })), /unsupported field: claim_status/i);
+  assert.throws(() => save(validDispositionAuditResult({ recommendation: "suppress_lead" })), /recommendation has unsupported value/);
+  assert.throws(() => save(validDispositionAuditResult({ schema_version: "sales_dashboard_evaluation_result.v1" })), /schema_version must be/);
+  assert.throws(() => save(validDispositionAuditResult({ findings: [{ field: "claim_status", value: "confirmed" }] })), /findings must be an empty array/);
+});
+
+test("Lead Record audit enforces invalidity recommendation and manager-review mappings", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const save = (result) => upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result,
+    validationContext: auditValidationContext()
+  });
+
+  const accepted = save(validDispositionAuditResult({ confidence: 0.95 }));
+  assert.equal(accepted.result.managerReviewRecommended, true);
+  assert.equal(accepted.result.auditAssessment.recommendation, "correct_or_remove_record");
+  assert.equal(accepted.result.findings.every((finding) => finding.managerReviewRecommended), true);
+  assert.throws(() => validateLeadRecordDispositionAuditResult({
+    result: validDispositionAuditResult({ recommendation: "continue_normal_workflow" }),
+    validationContext: auditValidationContext()
+  }), /requires recommendation correct_or_remove_record/);
+  assert.throws(() => validateLeadRecordDispositionAuditResult({
+    result: validDispositionAuditResult({ manager_review_recommended: false }),
+    validationContext: auditValidationContext()
+  }), /requires manager review/);
+  const corrected = save(validDispositionAuditResult({
+    recommendation: "continue_normal_workflow",
+    manager_review_recommended: false
+  }));
+  assert.equal(corrected.result.auditAssessment.recommendation, "correct_or_remove_record");
+  assert.equal(corrected.result.managerReviewRecommended, true);
+  assert.equal(corrected.result.auditAssessment.semanticAdjustments.some((item) => item.field === "recommendation"), true);
+  assert.equal(corrected.result.auditAssessment.semanticAdjustments.some((item) => item.field === "manager_review_recommended"), true);
+  const correctedLivePattern = save(absentAllegationResult({
+    quote: "You have the wrong number.",
+    confidence: 0.95
+  }));
+  assert.equal(correctedLivePattern.result.auditAssessment.recordEvidence.classification, "supported_invalidity");
+  assert.equal(correctedLivePattern.result.auditAssessment.recordEvidence.reason, "wrong_number");
+  assert.equal(correctedLivePattern.result.auditAssessment.recommendation, "correct_or_remove_record");
+  assert.equal(correctedLivePattern.result.managerReviewRecommended, true);
+  assert.throws(() => upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: absentAllegationResult({
+      quote: "I am not interested.",
+      recommendation: "correct_or_remove_record"
+    }),
+    validationContext: auditValidationContext({
+      contactClassification: "customer",
+      localOutcome: "not_interested",
+      transcript: "Customer: I am not interested."
+    })
+  }), /requires supported invalidity/);
+});
+
+test("Lead Record audit maps explicit do-not-contact evidence to advisory operational review", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const quote = "Can you take me off your list, please?";
+  const context = auditValidationContext({
+    contactClassification: "customer",
+    localOutcome: "opt_out",
+    transcript: `Customer: ${quote}`
+  });
+  const raw = absentAllegationResult({ quote, confidence: 0.9 });
+
+  assert.throws(() => validateLeadRecordDispositionAuditResult({ result: raw, validationContext: context }), /explicit do-not-contact evidence requires operational unusability/);
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: raw,
+    validationContext: context
+  });
+
+  assert.equal(saved.result.auditAssessment.recordEvidence.classification, "supported_operational_unusability");
+  assert.equal(saved.result.auditAssessment.recordEvidence.reason, "do_not_contact");
+  assert.equal(saved.result.auditAssessment.recommendation, "manager_review_recommended");
+  assert.equal(saved.result.managerReviewRecommended, true);
+  assert.match(saved.result.managerSummary, /do-not-contact evidence requires manager review/i);
+  assert.equal(saved.result.findings.find((item) => item.field === "operational_issue")?.value, "do_not_contact");
+});
+
+test("Lead Record audit maps direct serious threats to advisory operational review", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const quote = "I wish I could see them face to face. I would love to have a crack at them.";
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: absentAllegationResult({ quote, confidence: 0.9 }),
+    validationContext: auditValidationContext({
+      contactClassification: "customer",
+      localOutcome: "complaint",
+      transcript: `Customer: ${quote}`
+    })
+  });
+
+  assert.equal(saved.result.auditAssessment.recordEvidence.classification, "supported_operational_unusability");
+  assert.equal(saved.result.auditAssessment.recordEvidence.reason, "unsafe_abusive");
+  assert.equal(saved.result.auditAssessment.recommendation, "manager_review_recommended");
+  assert.equal(saved.result.managerReviewRecommended, true);
+  assert.equal(saved.result.confidence, 0.75);
+  assert.match(saved.result.managerSummary, /serious threat or abuse evidence requires manager review/i);
+  assert.equal(saved.result.findings.find((item) => item.field === "operational_issue")?.value, "unsafe_abusive");
+});
+
+test("Lead Record audit maps explicit permanent closure to advisory record correction review", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const quote = "That business is closed down.";
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: absentAllegationResult({
+      quote,
+      confidence: 0.9,
+      record_evidence: {
+        classification: "supported_operational_unusability",
+        reason: "business_closed_permanently",
+        rationale: "The business is closed."
+      }
+    }),
+    validationContext: auditValidationContext({
+      contactClassification: "customer",
+      localOutcome: "other",
+      transcript: `Customer: ${quote}`
+    })
+  });
+
+  assert.equal(saved.result.auditAssessment.recordEvidence.classification, "supported_invalidity");
+  assert.equal(saved.result.auditAssessment.recordEvidence.reason, "business_closed_permanently");
+  assert.equal(saved.result.auditAssessment.recommendation, "correct_or_remove_record");
+  assert.equal(saved.result.managerReviewRecommended, true);
+  assert.match(saved.result.managerSummary, /advisory record correction or removal review/i);
+});
+
+test("Lead Record audit does not treat hedged closure wording as permanent closure proof", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const quote = "I don't think they're currently operating.";
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: validDispositionAuditResult({
+      confidence: 0.92,
+      record_evidence: {
+        classification: "supported_invalidity",
+        reason: "business_closed_permanently",
+        rationale: "The business appears closed."
+      },
+      allegation_assessment: {
+        availability: "present",
+        claim_id: "10000000-0000-4000-8000-000000000004",
+        claimed_reason: "business_closed_permanently",
+        assessment: "supported",
+        rationale: "The statement appears to support the allegation."
+      },
+      evidence: [{ speaker: "customer", quote, relevance: "supports" }],
+      recommendation: "correct_or_remove_record",
+      manager_review_recommended: true
+    }),
+    validationContext: auditValidationContext({
+      contactClassification: "customer",
+      localOutcome: "other",
+      transcript: `Customer: ${quote}`
+    })
+  });
+
+  assert.equal(saved.result.auditAssessment.recordEvidence.classification, "untestable");
+  assert.equal(saved.result.auditAssessment.recordEvidence.reason, "unknown");
+  assert.equal(saved.result.auditAssessment.allegationAssessment.assessment, "untestable");
+  assert.equal(saved.result.auditAssessment.recommendation, "independent_record_verification_recommended");
+  assert.equal(saved.result.managerReviewRecommended, true);
+  assert.equal(saved.result.evidenceAvailability, "partial");
+  assert.equal(saved.result.confidence, 0.75);
+  assert.match(saved.result.managerSummary, /independently verify/i);
+});
+
+test("Lead Record audit treats clear human rejections as usable evidence without an allegation", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const cases = [
+    "I am not interested.",
+    "I cannot afford it right now.",
+    "We already have a supplier."
+  ];
+
+  for (const quote of cases) {
+    const saved = upsertEvaluationResult(studio, {
+      importId: "import-july-7",
+      templateId: template.id,
+      result: absentAllegationResult({ quote, confidence: 0.9 }),
+      validationContext: auditValidationContext({
+        contactClassification: "customer",
+        localOutcome: "not_interested",
+        transcriptQuality: "high",
+        transcript: `Customer: ${quote}`
+      })
+    });
+    assert.equal(saved.result.status, "usable");
+    assert.equal(saved.result.evidenceAvailability, "available");
+    assert.equal(saved.result.auditAssessment.recordEvidence.classification, "no_supporting_evidence");
+    assert.equal(saved.result.auditAssessment.allegationAssessment.assessment, "absent");
+    assert.equal(saved.result.managerReviewRecommended, false);
+  }
+
+  assert.throws(() => upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: absentAllegationResult({
+      quote: null,
+      status: "insufficient_evidence",
+      confidence: 0.25,
+      evidence_availability: "unavailable",
+      record_evidence: { classification: "untestable", reason: "unknown", rationale: "No allegation was supplied." },
+      recommendation: "insufficient_evidence"
+    }),
+    validationContext: auditValidationContext({
+      contactClassification: "customer",
+      localOutcome: "not_interested",
+      transcriptQuality: "high",
+      transcript: "Customer: I am not interested."
+    })
+  }), /clear human rejection must be usable available evidence/);
+});
+
+test("Lead Record audit keeps voicemail and no-answer evidence separate from invalidity", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  for (const contactClassification of ["voicemail", "no_answer"]) {
+    const quote = contactClassification === "voicemail" ? "Please leave a message." : "The call was not answered.";
+    const result = absentAllegationResult({
+      quote,
+      status: "usable",
+      confidence: 0.65,
+      evidence_availability: "available",
+      transcript_quality: "medium",
+      record_evidence: { classification: "untestable", reason: "unknown", rationale: "One attempt cannot establish record invalidity." },
+      recommendation: "retry_contact"
+    });
+    const saved = upsertEvaluationResult(studio, {
+      importId: "import-july-7",
+      templateId: template.id,
+      result,
+      validationContext: auditValidationContext({
+        contactClassification,
+        localOutcome: contactClassification,
+        transcriptQuality: "medium",
+        transcript: `System: ${quote}`
+      })
+    });
+    assert.equal(saved.result.auditAssessment.recommendation, "retry_contact");
+    assert.equal(saved.result.managerReviewRecommended, false);
+  }
+});
+
+test("Lead Record audit enforces evidence, confidence, and quote-verification relationships", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const save = (result, validationContext = auditValidationContext()) => upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result,
+    validationContext
+  });
+
+  assert.throws(() => save(absentAllegationResult({
+    quote: null,
+    status: "insufficient_evidence",
+    confidence: 0.95,
+    evidence_availability: "unavailable",
+    transcript_quality: "unusable",
+    record_evidence: { classification: "untestable", reason: "unknown", rationale: "Nothing usable was supplied." },
+    recommendation: "insufficient_evidence"
+  }), auditValidationContext({ transcript: "", transcriptQuality: "unusable", contactClassification: "unknown", localOutcome: "unknown" })), /caps confidence at 0.35/);
+  assert.throws(() => save(
+    validDispositionAuditResult({ confidence: 0.8, evidence_availability: "partial" }),
+    auditValidationContext({ contactClassification: "customer", localOutcome: "other" })
+  ), /partial evidence caps confidence at 0.75/);
+  assert.throws(() => save(validDispositionAuditResult({ confidence: 0.95, evidence: [] })), /require verified transcript\/system evidence/);
+  assert.throws(() => save(validDispositionAuditResult({ evidence: [{ speaker: "customer", quote: "A quote not in the transcript.", relevance: "supports" }] })), /was not found in the supplied transcript/);
+});
+
+test("Lead Record audit enforces contradicted-allegation review mappings", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const contradicted = validDispositionAuditResult({
+    record_evidence: { classification: "contradictory_evidence", reason: "wrong_number", rationale: "The recipient confirmed the intended business." },
+    allegation_assessment: {
+      availability: "present",
+      claim_id: "10000000-0000-4000-8000-000000000001",
+      claimed_reason: "wrong_number",
+      assessment: "contradicted",
+      rationale: "The transcript directly contradicts the allegation."
+    },
+    evidence: [{ speaker: "customer", quote: "Yes, this is the correct business.", relevance: "contradicts" }],
+    recommendation: "review_salesperson_allegation",
+    manager_review_recommended: true
+  });
+  const context = auditValidationContext({
+    contactClassification: "customer",
+    localOutcome: "other",
+    transcript: "Customer: Yes, this is the correct business."
+  });
+  const saved = upsertEvaluationResult(studio, { importId: "import-july-7", templateId: template.id, result: contradicted, validationContext: context });
+  assert.equal(saved.result.managerReviewRecommended, true);
+  assert.equal(saved.result.auditAssessment.recommendation, "review_salesperson_allegation");
+  assert.throws(() => validateLeadRecordDispositionAuditResult({
+    result: { ...contradicted, recommendation: "continue_normal_workflow" },
+    validationContext: context
+  }), /requires recommendation review_salesperson_allegation/);
+  const corrected = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    result: { ...contradicted, recommendation: "continue_normal_workflow", manager_review_recommended: false },
+    validationContext: context
+  });
+  assert.equal(corrected.result.auditAssessment.recommendation, "review_salesperson_allegation");
+  assert.equal(corrected.result.managerReviewRecommended, true);
+});
+
+test("Lead Record audit persistence does not mutate trusted claims or operational records", () => {
+  const storePath = tempStorePath();
+  const store = readStore({ storePath });
+  const template = store.evaluationStudio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  store.badLeadClaims = [createBadLeadClaim({
+    lead_id: "lead-preserved",
+    call_id: "call-audit-1",
+    claimed_reason: "wrong_number",
+    claim_text: "Recipient said the number was wrong."
+  }, {
+    submittedByUserId: "salesperson-17",
+    submittedByRole: "salesperson",
+    now: "2026-07-11T08:00:00.000Z",
+    uuidFactory: claimUuidFactory()
+  })];
+  writeStore(store, { storePath });
+  const beforeClaims = JSON.stringify(readStore({ storePath }).badLeadClaims);
+
+  saveEvaluationResult({
+    importId: "import-july-7",
+    templateId: template.id,
+    result: validDispositionAuditResult(),
+    validationContext: auditValidationContext()
+  }, { storePath });
+
+  const after = readStore({ storePath });
+  assert.equal(JSON.stringify(after.badLeadClaims), beforeClaims);
+  assert.equal(after.badLeadClaims[0].claim_status, "submitted");
+  assert.equal(after.evaluationStudio.evaluationResults.length, 1);
+});
+
+test("Lead Record audit permits explicit absent allegations without inventing claim data", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    templateId: template.id,
+    validationContext: auditValidationContext({
+      contactClassification: "unknown",
+      localOutcome: "unknown",
+      transcriptQuality: "unusable",
+      transcript: ""
+    }),
+    result: validDispositionAuditResult({
+      status: "insufficient_evidence",
+      confidence: 0.25,
+      evidence_availability: "unavailable",
+      transcript_quality: "unusable",
+      record_evidence: {
+        classification: "untestable",
+        reason: "unknown",
+        rationale: "The available call contains no usable evidence."
+      },
+      allegation_assessment: {
+        availability: "none",
+        claim_id: null,
+        claimed_reason: null,
+        assessment: "absent",
+        rationale: "No trusted salesperson allegation was supplied."
+      },
+      evidence: [],
+      recommendation: "insufficient_evidence",
+      manager_review_recommended: false,
+      manager_summary: "No allegation or usable call evidence is available."
+    })
+  });
+  assert.equal(saved.result.auditAssessment.allegationAssessment.assessment, "absent");
+});
+
+test("historical generic v1 Evaluation Studio results remain compatible", () => {
+  const historical = normalizeEvaluationResult({
+    callId: "historical-call",
+    evaluationGoal: "callback_opportunity",
+    status: "usable",
+    confidence: 0.72,
+    evidenceAvailability: "available",
+    transcriptQuality: "medium",
+    findings: [{
+      field: "callback_requested",
+      value: true,
+      evidence: "Customer: Please call tomorrow.",
+      confidence: 0.72
+    }]
+  });
+  assert.equal(historical.evaluationGoal, "callback_opportunity");
+  assert.equal(historical.findings.length, 1);
+  assert.equal("auditAssessment" in historical, false);
+});
+
+test("Evaluation Studio keeps pending historical knowledge visible but out of evaluation context", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "procedure_adherence");
+  const pending = studio.knowledgebaseEntries[0];
+  const approved = {
+    ...studio.knowledgebaseEntries[1],
+    id: "approved-current-procedure",
+    approvalStatus: "approved_current",
+    approvalNote: "Manager verified this as the current approved procedure."
+  };
+
+  const input = buildEvaluationStudioInput({ callId: "call-approval", transcript: "Customer: Hello." }, template, [pending, approved]);
+  assert.equal(input.knowledgebase.length, 1);
+  assert.equal(input.knowledgebase[0].id, "approved-current-procedure");
+});
+
+test("Evaluation Studio includes only manager-approved knowledge in a new run snapshot", () => {
+  const storePath = tempStorePath();
+  const store = readStore({ storePath });
+  const template = store.evaluationStudio.evaluationTemplates.find((item) => item.evaluationGoal === "procedure_adherence");
+  const approved = saveEvaluationKnowledgebaseEntry({
+    title: "Current Approved Procedure",
+    category: "procedure",
+    tags: "current, approved",
+    content: "Use the manager-approved current procedure only.",
+    approvalStatus: "approved_current",
+    approvalNote: "Manager approved for the current offer."
+  }, { storePath });
+
+  const run = saveEvaluationRun({ templateId: template.id }, {
+    importId: "import-approval-test",
+    plannedCallCount: 1
+  }, { storePath }).run;
+
+  assert.deepEqual(run.knowledgebaseIds, [approved.entry.id]);
+  assert.equal(run.knowledgebaseSnapshot[0].title, "Current Approved Procedure");
+  assert.ok(run.excludedKnowledgebaseIds.length >= 1);
 });
 
 test("Evaluation Studio stores versioned evidence-backed model results", () => {
@@ -326,7 +1060,7 @@ test("Evaluation Studio builds safe manager-review correction prefill from allow
 
 test("Evaluation Studio result validation blocks parked allocation report concepts", () => {
   const studio = createDefaultEvaluationStudio();
-  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "lead_validity_utilisation");
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
 
   assert.throws(() => upsertEvaluationResult(studio, {
     importId: "import-july-7",
@@ -334,7 +1068,7 @@ test("Evaluation Studio result validation blocks parked allocation report concep
     templateId: template.id,
     result: {
       call_id: "call-1",
-      evaluation_goal: "lead_validity_utilisation",
+      evaluation_goal: LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
       status: "usable",
       confidence: 0.7,
       evidence_availability: "available",
@@ -342,6 +1076,76 @@ test("Evaluation Studio result validation blocks parked allocation report concep
       findings: [{ field: "allocation_coverage", value: "bad", evidence: "Old allocation coverage wording." }]
     }
   }), /parked campaign\/allocation/);
+
+  assert.throws(() => upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    runId: "run-legacy",
+    templateId: template.id,
+    result: {
+      call_id: "call-legacy",
+      evaluation_goal: LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
+      status: "usable",
+      confidence: 0.7,
+      evidence_availability: "available",
+      transcript_quality: "medium",
+      findings: [{ field: "outcome_mismatch", value: true, evidence: "Legacy imported disposition differs." }]
+    }
+  }), /parked campaign\/allocation/);
+});
+
+test("historical legacy Evaluation Studio records remain readable and preserved but inactive", () => {
+  const storePath = tempStorePath();
+  const store = readStore({ storePath });
+  store.evaluationStudio.evaluationResults = [{
+    id: "legacy-result",
+    importId: "import-july-7",
+    callId: "call-legacy",
+    evaluationGoal: "outcome_mismatch_review",
+    status: "usable",
+    findings: [{ field: "outcome_mismatch", value: true, rawValue: "Did Not Answer" }]
+  }];
+  store.evaluationStudio.evaluationRuns = [{
+    id: "legacy-run",
+    importId: "import-july-7",
+    status: "completed",
+    guardrails: ["Use NoSaleType as context."],
+    updatedAt: "2026-07-10T00:00:00.000Z"
+  }];
+  writeStore(store, { storePath });
+
+  const loaded = readStore({ storePath });
+  const normalized = normalizeEvaluationStudio(loaded.evaluationStudio);
+  assert.equal(normalized.evaluationResults.length, 1);
+  assert.equal(normalized.evaluationResults[0].containsUntrustedLegacyData, true);
+  assert.equal(listEvaluationResults(normalized).length, 0);
+  const persistence = dashboardPersistence(loaded, "import-july-7");
+  assert.equal(persistence.evaluationStudio.evaluationResults.length, 0);
+  assert.equal(persistence.evaluationStudio.evaluationRuns.length, 0);
+  assert.equal(persistence.evaluationStudio.summary.runs, 0);
+  assert.equal(persistence.evaluationStudio.summary.lastRun, null);
+
+  saveEvaluationKnowledgebaseEntry({ title: "Current call procedure", content: "Use transcript evidence only." }, { storePath });
+  assert.equal(readStore({ storePath }).evaluationStudio.evaluationResults.length, 1);
+  assert.equal(readStore({ storePath }).evaluationStudio.evaluationRuns.length, 1);
+});
+
+test("approved knowledge and template writes reject excluded legacy context", () => {
+  const storePath = tempStorePath();
+  assert.throws(() => saveEvaluationKnowledgebaseEntry({
+    title: "Legacy disposition guide",
+    content: "Use NoSaleType as the source of truth.",
+    approvalStatus: "approved_current"
+  }, { storePath }), /excluded legacy-data/);
+  assert.throws(() => saveEvaluationTemplate({
+    name: "Legacy prompt",
+    evaluationGoal: "procedure_adherence",
+    instructions: "Compare the transcript to Baz_DetailedNotes."
+  }, { storePath }), /excluded legacy-data/);
+  assert.throws(() => buildEvaluationStudioInput(
+    { callId: "call-1", transcript: "Customer: hello" },
+    { id: "legacy-template", evaluationGoal: "procedure_adherence", instructions: "Use NoSaleType." },
+    []
+  ), /excluded legacy-data/);
 });
 
 test("Evaluation Studio result persistence updates run counts and evidence queues", () => {
@@ -374,8 +1178,8 @@ test("Evaluation Studio result persistence updates run counts and evidence queue
   }, { storePath });
 
   assert.equal(saved.result.provenance, "evaluation_studio_local_model");
-  assert.equal(saved.result.updatedBy, "local_manager");
-  assert.equal(saved.result.knowledgebaseIds.length >= 1, true);
+  assert.equal(saved.result.updatedBy, "local_user");
+  assert.equal(saved.result.knowledgebaseIds.length, 0);
   assert.equal(saved.result.knowledgebaseVersions.length, saved.result.knowledgebaseIds.length);
   assert.equal(saved.result.knowledgebaseVersions.every((entry) => entry.id && entry.version >= 1), true);
 

@@ -629,22 +629,7 @@ function evaluateCall(row) {
 
   const followUpRequired = callback || emailOrSms || quote || appointment || currentPositiveInterest;
   const followUpChannel = quote ? "quote" : emailOrSms ? "email_or_sms" : appointment ? "meeting" : callback ? "call" : followUpRequired ? "other" : "none";
-  const importedNoSale = isMissing(row.NoSaleType) ? "" : clean(row.NoSaleType);
-  const importedNoSaleLabel = importedNoSale || "Unprocessed By Salesperson";
-  const importedLower = importedNoSale.toLowerCase();
-
-  let outcomeMismatch = false;
-  if (importedLower === "did not answer" && !["no_answer", "system_audio", "voicemail"].includes(localOutcomeCategory)) {
-    outcomeMismatch = true;
-  }
-  if (importedLower === "not interested" && ["positive_interest", "callback_requested", "send_information", "quote_requested", "appointment_or_meeting"].includes(localOutcomeCategory)) {
-    outcomeMismatch = true;
-  }
-  if (!importedNoSale && (followUpRequired || actionableConversation || meaningfulConversation)) {
-    outcomeMismatch = true;
-  }
-
-  const reviewRequired = outcomeMismatch || complaint || optOut || (transcriptAvailable && transcriptQualityBand === "low" && durationSeconds >= 30);
+  const reviewRequired = complaint || optOut || (transcriptAvailable && transcriptQualityBand === "low" && durationSeconds >= 30);
   const confidence = transcriptQualityBand === "high" ? 0.86 : transcriptQualityBand === "medium" ? 0.68 : transcriptQualityBand === "low" ? 0.42 : 0.12;
 
   const evidence = [];
@@ -661,14 +646,6 @@ function evaluateCall(row) {
       "long_term_deferral",
       followUpSummary("future_nurture"),
       evidenceFor(transcript, PATTERNS.longTermDeferral),
-      confidence
-    ));
-  }
-  if (outcomeMismatch) {
-    evidence.push(evidenceItem(
-      "outcome_mismatch",
-      "Imported outcome may not match the transcript",
-      evidenceFor(transcript, [...PATTERNS.callback, ...PATTERNS.longTermDeferral, ...PATTERNS.notInterested, ...PATTERNS.positiveInterest], "Local outcome differs from imported disposition."),
       confidence
     ));
   }
@@ -746,12 +723,7 @@ function evaluateCall(row) {
       confidence: complaint || optOut ? confidence : 0
     },
     outcome: {
-      importedNoSale,
-      importedNoSaleLabel,
-      importedNoSaleReliability: "low_manual_process",
-      importedNoSalePriority: "secondary_to_local_ai",
       localCategory: localOutcomeCategory,
-      mismatch: outcomeMismatch,
       reviewRequired,
       confidence
     },

@@ -45,7 +45,9 @@ function fakeCall() {
     transcript: "Customer: Please call me back later today.",
     rawFields: {
       call_id: "48500001",
-      Salesperson: "Riley Example"
+      Salesperson: "Riley Example",
+      NoSaleType: "LEGACY_DISPOSITION_SENTINEL",
+      Baz_DetailedNotes: "LEGACY_NOTE_SENTINEL"
     }
   };
 }
@@ -74,6 +76,10 @@ test("transcript evaluation input includes guardrails and sanitized call evidenc
   assert.equal(input.deterministic_baseline.ai_voice_assistant.response_classification, "handled_well");
   assert.ok(input.guardrails.some((guardrail) => guardrail.includes("Redacted phone")));
   assert.equal(input.sanitized_raw_fields.call_id, "48500001");
+  assert.equal(input.sanitized_raw_fields.NoSaleType, undefined);
+  assert.equal(input.sanitized_raw_fields.Baz_DetailedNotes, undefined);
+  assert.doesNotMatch(JSON.stringify(input), /LEGACY_DISPOSITION_SENTINEL|LEGACY_NOTE_SENTINEL/);
+  assert.doesNotMatch(JSON.stringify(input), /dispositionMatchesTranscript|imported_no_sale|outcome_mismatch/i);
 });
 
 test("transcript intelligence input asks local LLM for structured extraction", () => {
@@ -106,6 +112,10 @@ test("transcript intelligence input asks local LLM for structured extraction", (
   assert.ok(input.instructions.some((item) => item.includes("mortgage")));
   assert.ok(input.output_contract.events);
   assert.ok(input.guardrails.some((item) => item.includes("OrderCount")));
+  assert.equal(input.sanitized_raw_fields.NoSaleType, undefined);
+  assert.equal(input.sanitized_raw_fields.Baz_DetailedNotes, undefined);
+  assert.doesNotMatch(JSON.stringify(input), /LEGACY_DISPOSITION_SENTINEL|LEGACY_NOTE_SENTINEL/);
+  assert.doesNotMatch(JSON.stringify(input), /dispositionMatchesTranscript|imported_no_sale|outcome_mismatch/i);
 });
 
 test("AI inputs exclude parked allocation import fields but keep call AllocatedLeadID", () => {

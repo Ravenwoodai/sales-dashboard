@@ -20,6 +20,11 @@ const {
   summarizeAlerts
 } = require("./alertLifecycle");
 const {
+  applyBadLeadClaimTransition,
+  createBadLeadClaim,
+  validateStoredClaim
+} = require("./badLeadClaim");
+const {
   applyManagerReviewAction,
   latestReviewByCallId,
   normalizeManagerReview,
@@ -45,6 +50,14 @@ const {
   upsertKnowledgebaseEntry
 } = require("./evaluationStudio");
 const { buildLeadUtilizationReport } = require("./leadUtilizationReport");
+const {
+  UNTRUSTED_LEGACY_POLICY,
+  alertContainsUntrustedLegacyData,
+  managerReviewContainsUntrustedLegacyData,
+  sanitizeImportSummary,
+  sanitizeManagerReviewForPublic,
+  sanitizeUntrustedLegacyDataForPublic
+} = require("./untrustedLegacyFields");
 
 const STORE_SCHEMA_VERSION = "sales_dashboard_store.v1";
 
@@ -63,6 +76,7 @@ function createEmptyStore() {
     updatedAt: new Date().toISOString(),
     imports: [],
     alertEvents: [],
+    badLeadClaims: [],
     managerReviews: [],
     aiJobs: [],
     evaluationStudio: createDefaultEvaluationStudio(),
@@ -87,6 +101,7 @@ function readStore(options = {}) {
       ...parsed,
       imports: Array.isArray(parsed.imports) ? parsed.imports : [],
       alertEvents: Array.isArray(parsed.alertEvents) ? parsed.alertEvents : [],
+      badLeadClaims: Array.isArray(parsed.badLeadClaims) ? parsed.badLeadClaims : [],
       managerReviews: Array.isArray(parsed.managerReviews) ? parsed.managerReviews.map(normalizeManagerReview) : [],
       aiJobs: Array.isArray(parsed.aiJobs) ? parsed.aiJobs : [],
       evaluationStudio: normalizeEvaluationStudio(parsed.evaluationStudio),
@@ -155,6 +170,7 @@ function buildImportRecord(analysis, options = {}) {
     rates: analysis.rates,
     ignoredFields: analysis.ignoredFields,
     unsupportedMetrics: analysis.unsupportedMetrics,
+    untrustedLegacyFields: UNTRUSTED_LEGACY_POLICY,
     parkedAllocation,
     containsParkedAllocationData: Boolean(parkedAllocation || analysis.allocationCoverage),
     artifactPath: path.join("imports", `${importId}.json`),
@@ -181,6 +197,7 @@ function writeImportArtifact(analysis, importRecord, options = {}) {
     rates: analysis.rates,
     ignoredFields: analysis.ignoredFields,
     unsupportedMetrics: analysis.unsupportedMetrics,
+    untrustedLegacyFields: UNTRUSTED_LEGACY_POLICY,
     evaluationRows: analysis.evaluationRows || [],
     alerts: analysis.alerts || [],
     reviewQueue: analysis.reviewQueue || [],
@@ -279,7 +296,6 @@ function buildAutomaticReport(analysis, importRecord) {
     `- Potential lead under-utilisation: ${analysis.leadReattempt?.totals?.oneDialNoContactNoLaterLeads || 0} one-dial no-contact records with no later matching call observed`,
     `- One-dial no-contact records: ${analysis.leadReattempt?.totals?.riskyOneDialNoContactLeads || 0} (${analysis.leadReattempt?.totals?.riskyOneDialNoContactRate || 0}% of one-dial records)`,
     `- Ambiguous one-dial records excluded from utilisation-risk scoring: ${analysis.leadReattempt?.totals?.oneDialNeedsReviewLeads || 0}`,
-    `- Outcome mismatches: ${analysis.totals.outcomeMismatches}`,
     `- Risk reviews: ${analysis.totals.riskReviews}`,
     `- Manager-reviewed calls: ${analysis.managerReviewGovernance?.reviewedCalls || 0}`,
     `- Manager-corrected calls: ${analysis.managerReviewGovernance?.correctedCalls || 0}`,
@@ -290,6 +306,7 @@ function buildAutomaticReport(analysis, importRecord) {
     "",
     "## Guardrails",
     "- Redacted phone values were not used for matching, attribution, or display.",
+    "- Untrusted legacy disposition and note fields were preserved in the raw source only and excluded from active analytics, AI context, alerts, filters, reports, and normal UI.",
     "- Valid CustomerImportDate and CustomerCreateDate values were parsed for source-quality analytics; malformed date fragments were treated as missing.",
     "- Confirmed sales, revenue, order value, close date, and won/lost outcome are unsupported by the current CSV."
   ].join("\n");
@@ -300,7 +317,7 @@ function buildAutomaticReport(analysis, importRecord) {
     type: "executive_summary",
     source: "system",
     format: "markdown",
-    summary: `${analysis.totals.uniqueCalls} unique calls, ${analysis.totals.followUpRequired} follow-up signals, ${analysis.totals.outcomeMismatches} outcome mismatches, ${analysis.managerReviewGovernance?.reviewedCalls || 0} manager-reviewed calls.`,
+    summary: `${analysis.totals.uniqueCalls} unique calls, ${analysis.totals.followUpRequired} follow-up signals, ${analysis.totals.riskReviews} transcript risk reviews, ${analysis.managerReviewGovernance?.reviewedCalls || 0} manager-reviewed calls.`,
     content,
     metadata: {
       importId: importRecord.id,
@@ -389,6 +406,67 @@ function saveGeneratedReport(report, options = {}) {
   };
 }
 
+function findBadLeadClaim(claims = [], claimId) {
+  const id = String(claimId || "").trim();
+  if (!id) return null;
+  const claim = claims.find((item) => item?.claim_id === id);
+  return claim ? validateStoredClaim(claim) : null;
+}
+
+function listBadLeadClaims(filters = {}, options = {}) {
+  const store = readStore(options);
+  const leadId = String(filters.leadId || filters.lead_id || "").trim();
+  const callId = String(filters.callId || filters.call_id || "").trim();
+  const status = String(filters.status || filters.claim_status || "").trim();
+  return (store.badLeadClaims || [])
+    .map(validateStoredClaim)
+    .filter((claim) => !leadId || claim.lead_id === leadId)
+    .filter((claim) => !callId || claim.call_id === callId)
+    .filter((claim) => !status || claim.claim_status === status)
+    .slice()
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+}
+
+function saveBadLeadClaim(input = {}, trustedContext = {}, options = {}) {
+  const claim = createBadLeadClaim(input, trustedContext);
+  const store = updateStore((currentStore) => {
+    if (findBadLeadClaim(currentStore.badLeadClaims || [], claim.claim_id)) {
+      const error = new Error("Bad-lead claim ID already exists.");
+      error.statusCode = 409;
+      throw error;
+    }
+    return {
+      ...currentStore,
+      badLeadClaims: [claim, ...(currentStore.badLeadClaims || [])]
+    };
+  }, options);
+  return { claim, store };
+}
+
+function updateBadLeadClaim(claimId, input = {}, trustedContext = {}, options = {}) {
+  const id = String(claimId || "").trim();
+  if (!id) {
+    const error = new Error("Bad-lead claim ID is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  let updatedClaim = null;
+  const store = updateStore((currentStore) => {
+    const existing = findBadLeadClaim(currentStore.badLeadClaims || [], id);
+    if (!existing) {
+      const error = new Error("Bad-lead claim not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+    updatedClaim = applyBadLeadClaimTransition(existing, input, trustedContext);
+    return {
+      ...currentStore,
+      badLeadClaims: (currentStore.badLeadClaims || []).map((claim) => claim.claim_id === id ? updatedClaim : claim)
+    };
+  }, options);
+  return { claim: updatedClaim, store };
+}
+
 function findManagerReview(reviews = [], reviewId, importId = null) {
   const id = String(reviewId || "").trim();
   if (!id) return null;
@@ -405,18 +483,20 @@ function saveManagerReview(review, options = {}) {
   const id = reviewInput.id || reviewInput.reviewId || reviewIdFor(reviewInput);
   let savedReview = null;
   const store = updateStore((currentStore) => {
-    const existing = findManagerReview(currentStore.managerReviews, id, importId);
+    const historical = findManagerReview(currentStore.managerReviews, id, importId);
+    const targetId = historical && managerReviewContainsUntrustedLegacyData(historical) ? `${id}_current` : id;
+    const existing = findManagerReview(currentStore.managerReviews, targetId, importId);
     savedReview = applyManagerReviewAction(existing, {
       action: reviewInput.action || reviewInput.reviewAction || (reviewInput.corrections?.length ? "correct" : ""),
       ...reviewInput,
-      id,
-      reviewId: id
+      id: targetId,
+      reviewId: targetId
     });
     return {
       ...currentStore,
       managerReviews: [
         savedReview,
-        ...currentStore.managerReviews.map(normalizeManagerReview).filter((item) => item.id !== id && item.reviewId !== id)
+        ...currentStore.managerReviews.map(normalizeManagerReview).filter((item) => item.id !== targetId && item.reviewId !== targetId)
       ].slice(0, 10000)
     };
   }, options);
@@ -433,6 +513,11 @@ function updateManagerReview(reviewId, input = {}, options = {}) {
   const store = updateStore((currentStore) => {
     const existing = findManagerReview(currentStore.managerReviews, reviewId, importId);
     if (!existing) {
+      const error = new Error("Manager review not found");
+      error.statusCode = 404;
+      throw error;
+    }
+    if (managerReviewContainsUntrustedLegacyData(existing)) {
       const error = new Error("Manager review not found");
       error.statusCode = 404;
       throw error;
@@ -466,6 +551,7 @@ function bulkUpdateManagerReviews(reviewIds = [], input = {}, options = {}) {
     const reviews = (currentStore.managerReviews || []).map(normalizeManagerReview).map((review) => {
       if (!idSet.has(review.id) && !idSet.has(review.reviewId)) return review;
       if (importId && review.importId !== importId) return review;
+      if (managerReviewContainsUntrustedLegacyData(review)) return review;
       const next = applyManagerReviewAction(review, input);
       updated.push(next);
       return next;
@@ -676,6 +762,7 @@ function findActiveAlertIndex(events = [], alertId, importId = null) {
   return events.findIndex((event) => {
     if (event.id !== id && event.alertId !== id) return false;
     if (importId && event.importId !== importId) return false;
+    if (alertContainsUntrustedLegacyData(event)) return false;
     return true;
   });
 }
@@ -723,6 +810,7 @@ function bulkUpdateAlertLifecycle(alertIds = [], input = {}, options = {}) {
     const alertEvents = (currentStore.alertEvents || []).map((event) => {
       const eventId = event.id || event.alertId;
       if (!idSet.has(eventId) || (importId && event.importId !== importId)) return event;
+      if (alertContainsUntrustedLegacyData(event)) return event;
       updatedIds.push(eventId);
       return applyAlertLifecycleAction(event, input);
     });
@@ -753,17 +841,20 @@ function dashboardPersistence(store, currentImportId = null, options = {}) {
     ...report,
     reportVisibility: classifyReportVisibility(report)
   }));
-  const imports = [...store.imports].sort((a, b) => String(b.lastImportedAt).localeCompare(String(a.lastImportedAt)));
+  const imports = [...store.imports]
+    .map(sanitizeImportSummary)
+    .sort((a, b) => String(b.lastImportedAt).localeCompare(String(a.lastImportedAt)));
   const rawCurrentAlerts = currentImportId
     ? store.alertEvents.filter((event) => event.importId === currentImportId)
     : store.alertEvents;
-  const currentAlerts = rawCurrentAlerts.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated);
+  const currentAlerts = rawCurrentAlerts.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && !alertContainsUntrustedLegacyData(event));
   const currentAlertSummary = summarizeAlerts(currentAlerts);
+  const allSafeReviews = (store.managerReviews || []).map(normalizeManagerReview).filter((review) => !managerReviewContainsUntrustedLegacyData(review));
   const currentReviews = (currentImportId
     ? store.managerReviews.filter((review) => review.importId === currentImportId)
-    : store.managerReviews).map(normalizeManagerReview);
+    : store.managerReviews).map(normalizeManagerReview).filter((review) => !managerReviewContainsUntrustedLegacyData(review));
   const latestReviews = latestReviewByCallId(currentReviews);
-  const managerReviewSummaries = Array.from(latestReviews.values()).map((review) => ({
+  const managerReviewSummaries = Array.from(latestReviews.values()).map(sanitizeManagerReviewForPublic).map((review) => ({
     reviewId: review.reviewId,
     callId: review.callId,
     alertId: review.alertId,
@@ -794,10 +885,11 @@ function dashboardPersistence(store, currentImportId = null, options = {}) {
     knowledgebaseEntries: listKnowledgebaseEntries(evaluationStudio).slice(0, 50),
     evaluationTemplates: listEvaluationTemplates(evaluationStudio).slice(0, 50),
     evaluationRuns: (evaluationStudio.evaluationRuns || [])
-      .filter((run) => !currentImportId || run.importId === currentImportId)
+      .filter((run) => !run.containsUntrustedLegacyData && (!currentImportId || run.importId === currentImportId))
       .slice()
       .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
-      .slice(0, 30),
+      .slice(0, 30)
+      .map(sanitizeUntrustedLegacyDataForPublic),
     evaluationResults: listEvaluationResults(evaluationStudio, {
       importId: currentImportId || "",
       callIds: evaluationCallIds,
@@ -824,11 +916,11 @@ function dashboardPersistence(store, currentImportId = null, options = {}) {
       imports: store.imports.length,
       reports: reports.length,
       hiddenParkedReports: allReports.length - reports.length,
-      alertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && isActiveAlertStatus(event.status)).length,
-      closedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && isClosedAlertStatus(event.status)).length,
-      totalUnparkedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated).length,
+      alertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && !alertContainsUntrustedLegacyData(event) && isActiveAlertStatus(event.status)).length,
+      closedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && !alertContainsUntrustedLegacyData(event) && isClosedAlertStatus(event.status)).length,
+      totalUnparkedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => !event.parkedDataRelated && !alertContainsUntrustedLegacyData(event)).length,
       parkedAlertEvents: store.alertEvents.map(normalizeAlertEvent).filter((event) => event.parkedDataRelated).length,
-      managerReviews: store.managerReviews.length,
+      managerReviews: allSafeReviews.length,
       aiJobs: store.aiJobs.length,
       currentAlertEvents: currentAlertSummary.active,
       currentTotalAlertEvents: currentAlertSummary.total,
@@ -865,6 +957,10 @@ module.exports = {
   updateStore,
   persistAnalysis,
   saveGeneratedReport,
+  findBadLeadClaim,
+  listBadLeadClaims,
+  saveBadLeadClaim,
+  updateBadLeadClaim,
   saveAiJobReference,
   saveEvaluationKnowledgebaseEntry,
   archiveEvaluationKnowledgebaseEntry,

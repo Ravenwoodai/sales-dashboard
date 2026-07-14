@@ -34,8 +34,6 @@ const VALUE_FILTERS = [
   { key: "managerReviewStatus", label: "Manager review", multi: true },
   { key: "alertSeverity", label: "Alert severity", multi: true },
   { key: "alertStatus", label: "Alert status", multi: true },
-  { key: "rawNoSaleType", label: "Raw imported NoSaleType", multi: true },
-  { key: "bazNotes", label: "Baz notes", multi: true },
   { key: "sourceQualityBucket", label: "Source data quality", multi: true }
 ];
 
@@ -275,16 +273,6 @@ function sourceQualityBucketsFor(subject) {
   return buckets;
 }
 
-function rawNoSaleTypeFor(subject) {
-  const row = subject?.row || subject || {};
-  return valueOrBucket(row.NoSaleType ?? row.importedNoSaleRaw ?? row.rawFields?.NoSaleType, "Raw NoSaleType missing");
-}
-
-function bazNotesFor(subject) {
-  const row = subject?.row || subject || {};
-  return isMissing(row.Baz_DetailedNotes ?? row.rawFields?.Baz_DetailedNotes) ? "missing" : "present";
-}
-
 function subjectValue(subject, key, context = {}) {
   const row = subject?.row || subject || {};
   if (key === "salesperson") return valueOrBucket(row.Salesperson ?? subject.salesperson, "Unknown");
@@ -301,8 +289,6 @@ function subjectValue(subject, key, context = {}) {
   if (key === "confidenceBand") return valueOrBucket(subject.confidenceBand || subject.evaluation?.transcript?.qualityBand, "unknown");
   if (key === "llmStatus") return llmStatusFor(subject, context);
   if (key === "managerReviewStatus") return managerReviewStatusFor(subject, context);
-  if (key === "rawNoSaleType") return rawNoSaleTypeFor(subject);
-  if (key === "bazNotes") return bazNotesFor(subject);
   return "";
 }
 

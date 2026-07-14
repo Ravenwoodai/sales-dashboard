@@ -38,7 +38,6 @@ const CORRECTION_FIELDS = [
   "wrong_number_flag",
   "local_outcome_category",
   "local_outcome_detail",
-  "outcome_mismatch_confirmed",
   "follow_up_required",
   "follow_up_status",
   "follow_up_channel",
@@ -319,7 +318,7 @@ function correctionInputsFrom(input = {}) {
   if (fieldName && value !== undefined && value !== null && clean(value) !== "") {
     corrections.push({
       fieldName,
-      rawValue: input.rawValue ?? input.raw_value,
+      rawValue: "",
       deterministicValue: input.deterministicValue ?? input.deterministic_value,
       llmValue: input.llmValue ?? input.llm_value,
       previousDisplayValue: input.previousDisplayValue ?? input.previous_display_value,
@@ -334,7 +333,7 @@ function correctionInputsFrom(input = {}) {
       fieldName: "local_outcome_category",
       previousDisplayValue: input.previousDisplayValue || input.localOutcome || "",
       deterministicValue: input.deterministicValue || input.localOutcome || "",
-      rawValue: input.rawValue || input.rawNoSaleType || "",
+      rawValue: "",
       managerCorrectedValue: input.confirmedOutcome,
       correctionReason: input.correctionReason || input.reason || "Manager confirmed or corrected outcome.",
       note: input.note || input.notes || input.managerNotes || ""

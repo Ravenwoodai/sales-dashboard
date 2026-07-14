@@ -1,5 +1,7 @@
 "use strict";
 
+const { reportContainsUntrustedLegacyData } = require("./untrustedLegacyFields");
+
 const PARKED_ALLOCATION_REASON = "Campaign/allocation data has been parked by product decision.";
 
 function cleanText(value) {
@@ -81,14 +83,24 @@ function reportContainsParkedAllocationData(report = {}) {
 }
 
 function classifyReportVisibility(report = {}) {
-  const hiddenFromActiveReports = reportContainsParkedAllocationData(report);
+  const parkedAllocationRelated = reportContainsParkedAllocationData(report);
+  const untrustedLegacyRelated = reportContainsUntrustedLegacyData(report);
+  const hiddenFromActiveReports = parkedAllocationRelated || untrustedLegacyRelated;
   return {
     schemaVersion: "sales_dashboard_report_visibility.v1",
-    status: hiddenFromActiveReports ? "parked_data_related" : "active",
+    status: parkedAllocationRelated
+      ? "parked_data_related"
+      : untrustedLegacyRelated
+        ? "untrusted_legacy_data_related"
+        : "active",
     hiddenFromActiveReports,
     activeReportVisible: !hiddenFromActiveReports,
+    parkedAllocationRelated,
+    untrustedLegacyRelated,
     reason: hiddenFromActiveReports
-      ? "Report contains parked allocation or superseded stable-target terminology."
+      ? parkedAllocationRelated
+        ? "Report contains parked allocation or superseded stable-target terminology."
+        : "Report relies on untrusted legacy disposition or note fields and is superseded."
       : ""
   };
 }

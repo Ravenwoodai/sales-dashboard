@@ -1,6 +1,8 @@
 "use strict";
 
 const path = require("path");
+
+const UNTRUSTED_LEGACY_AI_CUTOFF = "2026-07-11T06:30:00.000Z";
 const { DatabaseSync } = require("node:sqlite");
 const { resolveStorePath } = require("./storage");
 const { buildCallIntelligence } = require("./transcriptIntelligence");
@@ -230,7 +232,7 @@ function insertCallRecord(stmt, record, now) {
     record.leadUtilizationScore,
     record.salespersonQualityScore,
     record.managerReviewRequired,
-    record.dispositionMatchesTranscript,
+    record.dispositionMatchesTranscript ?? null,
     record.llmConfidence,
     record.deterministicConfidence,
     record.briefReason,
@@ -326,12 +328,15 @@ function replaceImportIntelligence(analysis, options = {}) {
           customer_sentiment,
           manager_review_required,
           risk_flag_exists,
-          brief_reason
+          brief_reason,
+          (SELECT MAX(r.created_at) FROM intelligence_llm_results r WHERE r.import_id = call_intelligence.import_id AND r.call_id = call_intelligence.call_id) AS llm_result_created_at
         FROM call_intelligence
         WHERE import_id = ?
           AND llm_status <> 'not_requested'
       `).all(importId);
-      const existingLlmByCallId = new Map(existingLlmRows.map((row) => [row.call_id, row]));
+      const existingLlmByCallId = new Map(existingLlmRows
+        .filter((row) => String(row.llm_result_created_at || "") >= UNTRUSTED_LEGACY_AI_CUTOFF)
+        .map((row) => [row.call_id, row]));
 
       db.prepare("DELETE FROM intelligence_entities WHERE import_id = ? AND source = 'deterministic'").run(importId);
       db.prepare("DELETE FROM intelligence_events WHERE import_id = ? AND source = 'deterministic'").run(importId);
@@ -656,7 +661,7 @@ function listCallIntelligence(options = {}) {
       ORDER BY c.manager_review_required DESC, COALESCE(l.waste_risk, 0) DESC, c.lead_utilization_score ASC, c.call_id ASC
       LIMIT ? OFFSET ?
     `).all(...params, limit, offset);
-    return attachLlmAuditDetails(db, rows);
+    return attachLlmAuditDetails(db, rows).map(({ disposition_matches_transcript: _retiredDispositionField, ...row }) => row);
   } finally {
     db.close();
   }
@@ -681,10 +686,11 @@ function attachLlmAuditDetails(db, rows) {
       SELECT call_id, event_type, speaker, raw_value, normalized_value, follow_up_required, due_at, evidence, confidence
       FROM intelligence_events
       WHERE source = 'llm'
+        AND created_at >= ?
         AND import_id = ?
         AND call_id IN (${placeholders})
       ORDER BY call_id, id
-    `).all(importId, ...callIds).forEach((event) => {
+    `).all(UNTRUSTED_LEGACY_AI_CUTOFF, importId, ...callIds).forEach((event) => {
       const key = keyFor(importId, event.call_id);
       if (!eventsByCall.has(key)) eventsByCall.set(key, []);
       eventsByCall.get(key).push(event);
@@ -693,10 +699,11 @@ function attachLlmAuditDetails(db, rows) {
       SELECT call_id, entity_type, raw_value, normalized_value, speaker, evidence, confidence
       FROM intelligence_entities
       WHERE source = 'llm'
+        AND created_at >= ?
         AND import_id = ?
         AND call_id IN (${placeholders})
       ORDER BY call_id, id
-    `).all(importId, ...callIds).forEach((entity) => {
+    `).all(UNTRUSTED_LEGACY_AI_CUTOFF, importId, ...callIds).forEach((entity) => {
       const key = keyFor(importId, entity.call_id);
       if (!entitiesByCall.has(key)) entitiesByCall.set(key, []);
       entitiesByCall.get(key).push(entity);
@@ -705,10 +712,11 @@ function attachLlmAuditDetails(db, rows) {
       SELECT call_id, flag_type, severity, speaker, evidence, confidence, manager_review_recommended
       FROM intelligence_risk_flags
       WHERE source = 'llm'
+        AND created_at >= ?
         AND import_id = ?
         AND call_id IN (${placeholders})
       ORDER BY call_id, id
-    `).all(importId, ...callIds).forEach((flag) => {
+    `).all(UNTRUSTED_LEGACY_AI_CUTOFF, importId, ...callIds).forEach((flag) => {
       const key = keyFor(importId, flag.call_id);
       if (!flagsByCall.has(key)) flagsByCall.set(key, []);
       flagsByCall.get(key).push(flag);
@@ -717,9 +725,10 @@ function attachLlmAuditDetails(db, rows) {
       SELECT call_id, result_json, confidence, created_at
       FROM intelligence_llm_results
       WHERE import_id = ?
+        AND created_at >= ?
         AND call_id IN (${placeholders})
       ORDER BY call_id, created_at ASC, job_id ASC
-    `).all(importId, ...callIds).forEach((result) => {
+    `).all(importId, UNTRUSTED_LEGACY_AI_CUTOFF, ...callIds).forEach((result) => {
       resultsByCall.set(keyFor(importId, result.call_id), result);
     });
   });

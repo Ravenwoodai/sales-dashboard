@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
 
 const DEFAULT_LAYER_PATH = "C:\\Users\\User\\Desktop\\ai-execution-layer";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
@@ -118,7 +119,7 @@ function safeRawFieldsForAi(rawFields = {}, omittedFields = []) {
   return Object.fromEntries(
     Object.entries(rawFields || {}).filter(([key]) => {
       const normalized = normalizedFieldName(key);
-      return !omitted.has(normalized) && !isParkedAllocationField(key);
+      return !omitted.has(normalized) && !isParkedAllocationField(key) && !isUntrustedLegacyField(key);
     })
   );
 }
@@ -146,7 +147,6 @@ function buildTranscriptEvaluationInput(call, options = {}) {
     deterministic_baseline: {
       contact_classification: call.contactClassification,
       local_outcome: call.localOutcome,
-      imported_no_sale: call.importedNoSale,
       follow_up_status: call.followUpStatus,
       follow_up_channel: call.followUpChannel,
       transcript_quality: call.transcriptQuality,
@@ -193,7 +193,7 @@ function truncatedText(value, maxChars = 8000) {
 }
 
 function intelligenceRawFields(rawFields = {}) {
-  return safeRawFieldsForAi(rawFields || {}, ["transcription_text", "Baz_DetailedNotes", "transcript"]);
+  return safeRawFieldsForAi(rawFields || {}, ["transcription_text", "transcript"]);
 }
 
 function buildTranscriptIntelligenceInput(call, deterministicIntelligence, options = {}) {
@@ -257,7 +257,7 @@ function buildTranscriptIntelligenceInput(call, deterministicIntelligence, optio
       "Redacted phone values are intentionally unavailable and must not be reconstructed.",
       "Campaign/allocation imports are parked; ignore allocation totals, campaign rows, actioned/remaining counts, and reconciliation status if present.",
       "OrderCount can indicate historical warmth but is not proof this call converted.",
-      "NoSaleType is a weak imported label and may be wrong.",
+      "Untrusted legacy disposition and note fields are excluded and must not be inferred or reconstructed.",
       "Use transcript evidence first; use structured fields only as context.",
       "If the transcript was truncated, limit conclusions to visible evidence."
     ]

@@ -5,7 +5,13 @@ model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 
 developer_instructions = """
-Remain read-only. Never modify files, data, configuration, or runtime state.
+Remain read-only. Never create, modify, delete, stage, commit, or reset files,
+data, configuration, or runtime state. Never request permission escalation.
+Do not run application commands, migrations, seeds, workers, schedulers,
+deployment commands, unknown database operations, network requests, or other
+external-system actions. Do not inspect secrets, credentials, production data,
+or customer data. Prefer direct file inspection, search, diff review, and
+static reasoning; report evidence that cannot be safely inspected.
 Review the proposed diff and relevant execution paths. Prioritize correctness over style.
 Trace failure modes and edge cases. Where relevant, check concurrency, retries,
 idempotency, locking, and state recovery; authentication, authorization, privacy,

@@ -518,6 +518,48 @@ test("SQLite intelligence database salvages useful fields from truncated local L
   replaceImportIntelligence(analysis, { storePath, importId: "import-truncated-llm" });
   const rebuiltCall = listCallIntelligence({ storePath, importId: "import-truncated-llm", llmStatus: "completed" })[0];
   assert.equal(rebuiltCall.manager_review_required, 1);
-  assert.equal(rebuiltCall.risk_flag_exists, 1);
+  assert.equal(rebuiltCall.risk_flag_exists, 0);
   assert.equal(rebuiltCall.llm_confidence, 0.84);
+});
+
+test("pre-policy LLM intelligence is preserved in storage but quarantined from active rows", () => {
+  const storePath = tempStorePath();
+  const analysis = analyzeCsvText(csv([row({
+    call_id: "legacy-llm-call",
+    transcription_text: "Customer: Please send the information. Agent: I will send it."
+  })]));
+
+  replaceImportIntelligence(analysis, { storePath, importId: "import-legacy-llm" });
+  saveLlmIntelligenceResult({
+    storePath,
+    importId: "import-legacy-llm",
+    callId: "legacy-llm-call",
+    jobId: "job-legacy-llm",
+    result: {
+      call_summary: { manager_review_required: true, confidence: 0.9, brief_reason: "Legacy result." },
+      risk_flags: [{ flag_type: "customer_complaint", severity: "high", evidence: "Legacy evidence", confidence: 0.9 }]
+    }
+  });
+
+  const db = openIntelligenceDb({ storePath });
+  try {
+    for (const table of ["intelligence_llm_results", "intelligence_events", "intelligence_entities", "intelligence_risk_flags"]) {
+      db.prepare(`UPDATE ${table} SET created_at = ? WHERE import_id = ? AND call_id = ?`).run("2026-07-10T00:00:00.000Z", "import-legacy-llm", "legacy-llm-call");
+    }
+  } finally {
+    db.close();
+  }
+
+  replaceImportIntelligence(analysis, { storePath, importId: "import-legacy-llm" });
+  const active = listCallIntelligence({ storePath, importId: "import-legacy-llm" })[0];
+  assert.equal(active.llm_status, "not_requested");
+  assert.equal(active.llm_result_json, "");
+  assert.deepEqual(active.llm_risk_flags, []);
+
+  const preserved = openIntelligenceDb({ storePath });
+  try {
+    assert.equal(preserved.prepare("SELECT COUNT(*) AS count FROM intelligence_llm_results WHERE import_id = ? AND call_id = ?").get("import-legacy-llm", "legacy-llm-call").count, 1);
+  } finally {
+    preserved.close();
+  }
 });

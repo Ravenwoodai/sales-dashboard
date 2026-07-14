@@ -1,5 +1,7 @@
 # Sales Dashboard Audit Report
 
+> Historical audit only: conclusions involving `NoSaleType`, `Baz_DetailedNotes`, imported-disposition mismatches, or allocation/stable-lead-day concepts are superseded. Those legacy fields are preserved in raw source storage but excluded from the active product as of 11 July 2026.
+
 Audit date: 2026-07-07
 Scope: live local dashboard, call workbook, allocation workbook, derived store artifacts, SQLite intelligence store, UI rendering, and automated tests.
 Audit mode: read-only inspection. No app code, migrations, source data, or runtime data were modified.

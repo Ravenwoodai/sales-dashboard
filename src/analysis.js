@@ -39,7 +39,7 @@ const {
   MANAGER_REVIEW_STATUSES,
   normalizeManagerReview
 } = require("./managerReview");
-
+const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
 const IGNORED_FIELDS = [
   {
     field: "dialled_phone_number",
@@ -58,8 +58,6 @@ const REQUIRED_COLUMNS = [
   "ring_time_seconds",
   "call_duration_seconds",
   "transcription_text",
-  "NoSaleType",
-  "Baz_DetailedNotes",
   "CustomerImportSource"
 ];
 
@@ -265,7 +263,7 @@ function buildIntelligenceGovernance(items, totals = {}) {
       unknownRate: rate(counts.unknown)
     },
     provenance: {
-      rawImportedFields: ["NoSaleType", "Baz_DetailedNotes", "transcription_text"],
+      rawImportedFields: ["transcription_text"],
       deterministicFields: ["contactClassification", "localOutcome", "followUpRequired", "alerts", "scorecards"],
       llmReviewedOnlyWhen: "llm_status is completed and a usable LLM result is stored.",
       managerReviewedOnlyWhen: "a saved manager review exists for the call."
@@ -362,7 +360,6 @@ function summarizeBy(items, keyFn, seedFn) {
     if (item.evaluation.contact.meaningfulConversation) group.meaningfulConversation += 1;
     if (item.evaluation.contact.actionableConversation) group.actionableConversation += 1;
     if (item.evaluation.opportunity.followUpRequired) group.followUpRequired += 1;
-    if (item.evaluation.outcome.mismatch) group.outcomeMismatches += 1;
     if (item.evaluation.risk.reviewRequired) group.riskReviews += 1;
     const confidenceBand = confidenceBandForItem(item);
     if (confidenceBand === "high") group.highConfidence = (group.highConfidence || 0) + 1;
@@ -388,7 +385,6 @@ function summarizeBy(items, keyFn, seedFn) {
       meaningfulConversationRate: percent(group.meaningfulConversation, group.calls),
       actionableConversationRate: percent(group.actionableConversation, group.calls),
       followUpRequiredRate: percent(group.followUpRequired, group.calls),
-      outcomeMismatchRate: percent(group.outcomeMismatches, group.calls),
       highConfidence: group.highConfidence || 0,
       mediumConfidence: group.mediumConfidence || 0,
       lowConfidence: group.lowConfidence || 0,
@@ -427,7 +423,6 @@ function seedSourceQualityGroup(name, extras = {}) {
     meaningfulConversation: 0,
     actionableConversation: 0,
     followUpRequired: 0,
-    outcomeMismatches: 0,
     riskReviews: 0,
     noHumanAnswerCalls: 0,
     ...extras
@@ -468,7 +463,6 @@ function addSourceQualityCounts(group, item) {
   if (item.evaluation.contact.meaningfulConversation) group.meaningfulConversation += 1;
   if (item.evaluation.contact.actionableConversation) group.actionableConversation += 1;
   if (item.evaluation.opportunity.followUpRequired) group.followUpRequired += 1;
-  if (item.evaluation.outcome.mismatch) group.outcomeMismatches += 1;
   if (item.evaluation.risk.reviewRequired) group.riskReviews += 1;
   if (!item.evaluation.contact.probableLiveHuman) group.noHumanAnswerCalls += 1;
   if (segment === "new" && attribution.daysSinceImport !== null) {
@@ -497,7 +491,6 @@ function finalizeSourceQualityGroup(group) {
     meaningfulConversationRate: percent(group.meaningfulConversation, group.calls),
     actionableConversationRate: percent(group.actionableConversation, group.calls),
     followUpRequiredRate: percent(group.followUpRequired, group.calls),
-    outcomeMismatchRate: percent(group.outcomeMismatches, group.calls),
     riskReviewRate: percent(group.riskReviews, group.calls),
     bulkSourceCoverageRate: percent(group.callsWithBulkSource, group.calls),
     importDateCoverageRate: percent(group.callsWithImportDate, group.calls),
@@ -684,20 +677,6 @@ function buildAlerts(items) {
       });
     }
 
-    if (item.evaluation.outcome.mismatch) {
-      const evidence = item.evaluation.evidence.find((entry) => entry.signal === "outcome_mismatch");
-      alerts.push({
-        ...baseAlert,
-        severity: "warning",
-        category: "Imported outcome mismatch",
-        callId,
-        owner,
-        message: `Imported disposition does not align with local outcome: ${item.evaluation.outcome.localCategory}.`,
-        evidence: evidence?.text || item.evaluation.preview,
-        evidenceSummary: evidence?.summary || "Imported outcome may not match the transcript"
-      });
-    }
-
     if (item.evaluation.opportunity.followUpRequired && item.followUpStatus !== "completed") {
       const evidence = item.evaluation.evidence.find((entry) => entry.signal === "follow_up");
       alerts.push({
@@ -731,7 +710,7 @@ function durationRelationMatchesFor(rows) {
 }
 
 function buildFieldCoverage(columns = [], rows = []) {
-  return columns.reduce((coverage, column) => {
+  return columns.filter((column) => !isUntrustedLegacyField(column)).reduce((coverage, column) => {
     const present = rows.filter((row) => !isMissing(row[column])).length;
     coverage[column] = {
       present,
@@ -756,7 +735,6 @@ function buildBusinessSegmentMetrics(items) {
       meaningfulConversation: 0,
       actionableConversation: 0,
       followUpRequired: 0,
-      outcomeMismatches: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -787,10 +765,7 @@ function buildDashboardView(items, options = {}) {
     aiVoiceAssistantFutureMeaningful: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureMeaningfulConversation).length,
     newBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "new").length,
     warmBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "warm").length,
-    outcomeMismatches: items.filter((item) => item.evaluation.outcome.mismatch).length,
     riskReviews: items.filter((item) => item.evaluation.risk.reviewRequired).length,
-    noSaleCoverage: canonicalRows.filter((row) => !isMissing(row.NoSaleType)).length,
-    bazNotesCoverage: canonicalRows.filter((row) => !isMissing(row.Baz_DetailedNotes)).length,
     sourceCoverage: canonicalRows.filter((row) => !isMissing(row.CustomerImportSource)).length
   };
 
@@ -810,9 +785,6 @@ function buildDashboardView(items, options = {}) {
     aiVoiceAssistantFutureMeaningful: percent(totals.aiVoiceAssistantFutureMeaningful, totals.aiVoiceAssistantEncounters),
     newBusiness: percent(totals.newBusinessCalls, totals.uniqueCalls),
     warmBusiness: percent(totals.warmBusinessCalls, totals.uniqueCalls),
-    outcomeMismatch: percent(totals.outcomeMismatches, totals.uniqueCalls),
-    noSaleCoverage: percent(totals.noSaleCoverage, totals.uniqueCalls),
-    bazNotesCoverage: percent(totals.bazNotesCoverage, totals.uniqueCalls),
     sourceCoverage: percent(totals.sourceCoverage, totals.uniqueCalls),
     durationRelationMatch: percent(durationRelationMatches, canonicalRows.length)
   };
@@ -829,7 +801,6 @@ function buildDashboardView(items, options = {}) {
       meaningfulConversation: 0,
       actionableConversation: 0,
       followUpRequired: 0,
-      outcomeMismatches: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -847,7 +818,6 @@ function buildDashboardView(items, options = {}) {
       meaningfulConversation: 0,
       actionableConversation: 0,
       followUpRequired: 0,
-      outcomeMismatches: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -860,7 +830,7 @@ function buildDashboardView(items, options = {}) {
   const systemAudio = buildSystemAudioModel(items);
   const alerts = buildAlerts(items);
   const reviewQueue = items
-    .filter((item) => item.evaluation.outcome.reviewRequired || item.evaluation.opportunity.followUpRequired)
+    .filter((item) => item.evaluation.risk.reviewRequired || item.evaluation.opportunity.followUpRequired)
     .map((item) => buildExplorerRow(item))
     .slice(0, 250);
   const dateTimes = items.map((item) => item.dateTime).filter(Boolean);
@@ -1280,7 +1250,8 @@ function analyzeCsvText(csvText, options = {}) {
   linkAiVoiceAssistantOutcomes(items, maxDateTime);
   const leadUtilization = buildLeadUtilizationModel(items);
 
-  const fieldCoverage = buildFieldCoverage(parsed.columns, rawRows);
+  const activeColumns = parsed.columns.filter((column) => !isUntrustedLegacyField(column));
+  const fieldCoverage = buildFieldCoverage(activeColumns, rawRows);
 
   const durationRelationMatches = durationRelationMatchesFor(rawRows);
 
@@ -1305,10 +1276,7 @@ function analyzeCsvText(csvText, options = {}) {
     aiVoiceAssistantFutureMeaningful: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureMeaningfulConversation).length,
     newBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "new").length,
     warmBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "warm").length,
-    outcomeMismatches: items.filter((item) => item.evaluation.outcome.mismatch).length,
     riskReviews: items.filter((item) => item.evaluation.risk.reviewRequired).length,
-    noSaleCoverage: canonicalRows.filter((row) => !isMissing(row.NoSaleType)).length,
-    bazNotesCoverage: canonicalRows.filter((row) => !isMissing(row.Baz_DetailedNotes)).length,
     sourceCoverage: canonicalRows.filter((row) => !isMissing(row.CustomerImportSource)).length
   };
 
@@ -1328,9 +1296,6 @@ function analyzeCsvText(csvText, options = {}) {
     aiVoiceAssistantFutureMeaningful: percent(totals.aiVoiceAssistantFutureMeaningful, totals.aiVoiceAssistantEncounters),
     newBusiness: percent(totals.newBusinessCalls, totals.uniqueCalls),
     warmBusiness: percent(totals.warmBusinessCalls, totals.uniqueCalls),
-    outcomeMismatch: percent(totals.outcomeMismatches, totals.uniqueCalls),
-    noSaleCoverage: percent(totals.noSaleCoverage, totals.uniqueCalls),
-    bazNotesCoverage: percent(totals.bazNotesCoverage, totals.uniqueCalls),
     sourceCoverage: percent(totals.sourceCoverage, totals.uniqueCalls),
     durationRelationMatch: percent(durationRelationMatches, rawRows.length)
   };
@@ -1347,7 +1312,6 @@ function analyzeCsvText(csvText, options = {}) {
       meaningfulConversation: 0,
       actionableConversation: 0,
       followUpRequired: 0,
-      outcomeMismatches: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -1365,7 +1329,6 @@ function analyzeCsvText(csvText, options = {}) {
       meaningfulConversation: 0,
       actionableConversation: 0,
       followUpRequired: 0,
-      outcomeMismatches: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -1401,7 +1364,7 @@ function analyzeCsvText(csvText, options = {}) {
 
   const alerts = buildAlerts(items);
   const reviewQueue = items
-    .filter((item) => item.evaluation.outcome.reviewRequired || item.evaluation.opportunity.followUpRequired)
+    .filter((item) => item.evaluation.risk.reviewRequired || item.evaluation.opportunity.followUpRequired)
     .map((item) => buildExplorerRow(item))
     .slice(0, 250);
   const dateRange = buildDateRange(items, minDateTime, maxDateTime);
@@ -1413,7 +1376,7 @@ function analyzeCsvText(csvText, options = {}) {
     sourceName: options.sourceName || "CSV import",
     inputHash,
     generatedAt: new Date().toISOString(),
-    columns: parsed.columns,
+    columns: activeColumns,
     missingColumns,
     ignoredFields: IGNORED_FIELDS,
     unsupportedMetrics: [
@@ -1506,10 +1469,6 @@ function buildEvaluationRow(item) {
     businessSegmentLabel: businessSegmentLabel(segment),
     durationSeconds: item.evaluation.durationSeconds,
     totalSeconds: item.evaluation.totalSeconds,
-    importedNoSale: item.evaluation.outcome.importedNoSaleLabel,
-    importedNoSaleRaw: item.evaluation.outcome.importedNoSale,
-    importedNoSaleReliability: item.evaluation.outcome.importedNoSaleReliability,
-    importedNoSalePriority: item.evaluation.outcome.importedNoSalePriority,
     localOutcome: item.evaluation.outcome.localCategory,
     localOutcomeConfidence: item.evaluation.outcome.confidence,
     contactClassification: item.evaluation.contact.classification,
@@ -1534,7 +1493,6 @@ function buildEvaluationRow(item) {
     followUpMatchedCallId: item.followUpMatchedCallId || "",
     followUpChannel: item.evaluation.opportunity.followUpChannel,
     riskReviewRequired: item.evaluation.risk.reviewRequired,
-    outcomeMismatch: item.evaluation.outcome.mismatch,
     reviewRequired: item.evaluation.outcome.reviewRequired,
     ...governance,
     evidence: item.evaluation.evidence.map((evidence) => ({
@@ -1592,10 +1550,6 @@ function buildExplorerRow(item) {
     businessSegment: segment,
     businessSegmentLabel: businessSegmentLabel(segment),
     durationSeconds: item.evaluation.durationSeconds,
-    importedNoSale: item.evaluation.outcome.importedNoSaleLabel,
-    importedNoSaleRaw: item.evaluation.outcome.importedNoSale,
-    importedNoSaleReliability: item.evaluation.outcome.importedNoSaleReliability,
-    importedNoSalePriority: item.evaluation.outcome.importedNoSalePriority,
     localOutcome: item.evaluation.outcome.localCategory,
     contactClassification: item.evaluation.contact.classification,
     transcriptQuality: item.evaluation.transcript.qualityBand,

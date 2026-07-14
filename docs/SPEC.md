@@ -24,9 +24,14 @@ Required MVP columns:
 - `ring_time_seconds`
 - `call_duration_seconds`
 - `transcription_text`
-- `NoSaleType`
-- `Baz_DetailedNotes`
 - `CustomerImportSource`
+
+Optional untrusted legacy columns:
+- `NoSaleType`: unverified human-entered disposition that is often inaccurate.
+- `Baz_DetailedNotes`: unverified legacy model output whose model, prompt, provenance, and accuracy are unknown.
+
+These columns are preserved unchanged in the raw source only. Their absence does not fail the active data contract, and their values must not affect active analytics, alerts, filters, reports, scorecards, normal UI/APIs, manager-review prefill, or AI/evaluator context.
+Derived reports, alerts, reviews, Evaluation Studio records, and local LLM intelligence created under the earlier policy remain preserved for audit but are excluded from active views or quarantined until recreated without these fields.
 
 Optional stable linkage fields:
 - `customer_id`
@@ -55,9 +60,9 @@ Restricted current fields:
 ## Local Evaluation Rules
 - Duration above zero is treated only as a telephony-connected signal.
 - Probable live-human contact requires transcript evidence, not duration alone.
-- Imported `NoSaleType` and `Baz_DetailedNotes` are raw source context only.
+- Untrusted legacy disposition/note fields are not evaluation context and must not be inferred or reconstructed.
 - Local outcome classification is generated independently.
-- Evidence snippets are recorded for follow-up, mismatch, complaint, and opt-out signals.
+- Evidence snippets are recorded for follow-up, complaint, and opt-out signals.
 - Unknown is preferred when the transcript or stable IDs are insufficient.
 - One-dial reattempt records are neutral until deterministic evidence separates valid one-dial outcomes, risky one-dial no-contact/no-pitch rows, and ambiguous rows needing manager or later local-LLM review.
 - Lead harvest candidates require deterministic live-human, positive-response, and callback/follow-up evidence. Later-call status is labelled as "later matching call observed" only when stable source IDs match; missing stable IDs are labelled matching unavailable.
@@ -81,7 +86,7 @@ Restricted current fields:
 - Supported review statuses are `unreviewed`, `review_needed`, `in_review`, `reviewed_confirmed`, `reviewed_corrected`, `dismissed`, and `escalated`.
 - Manager corrections are stored as separate review records with correction entries and review history. They include actor, timestamp, reviewed field, previous/displayed value, manager-corrected value, reason or note where supplied, and evidence assessment where supplied.
 - Review actors resolve to `local_manager` until authentication exists. Client-supplied actor/reviewer names are not authoritative.
-- Correctable fields are allowlisted to derived contact, outcome, follow-up, coaching, risk, and evidence-assessment fields. Raw imported fields, raw transcript text, raw `NoSaleType`, raw notes, source IDs, phone fields, import metadata, alert evidence, and parked allocation/campaign fields cannot be corrected through manager review.
+- Correctable fields are allowlisted to derived contact, outcome, follow-up, coaching, risk, and evidence-assessment fields. Raw imported fields, raw transcript text, untrusted legacy disposition/note fields, source IDs, phone fields, import metadata, alert evidence, and parked allocation/campaign fields cannot be corrected through manager review.
 - Dashboard display may show manager-corrected values as manager-reviewed overlays, but raw imported, deterministic, and LLM values must remain inspectable.
 
 ## Evaluation Studio Governance
@@ -97,6 +102,7 @@ Restricted current fields:
 - Optional local model submission must use the existing AI Execution Layer. Sales Dashboard must not call Ollama, vLLM, or external providers directly.
 - Evaluation Studio may keep raw call CSV `AllocatedLeadID` as raw/canonical context, but it must not use parked campaign/allocation imports or allocation-performance concepts.
 - Evaluation Studio results are evidence-backed review signals. They must not claim confirmed sales, revenue, order value, close rate, true conversion, or lost revenue, and must not silently replace deterministic or manager-reviewed values.
+- The active lead-record evaluator is `Lead Record & Disposition Evidence Audit` with goal `lead_record_disposition_evidence_audit` and output schema `lead_record_disposition_evidence_audit.v1`. It separates record evidence from salesperson-allegation assessment, requires direct transcript/system proof for supported or contradictory conclusions, treats missing allegations as explicitly absent, and emits recommendations only. Its results remain outside report rollups and cannot mutate claim or lead state.
 
 ## Persistence Requirements
 - Store derived state under `data/`, which must stay ignored by Git.
@@ -104,6 +110,7 @@ Restricted current fields:
 - Persist sanitized evaluation artifacts per import.
 - Persist alert events with lifecycle-ready status fields.
 - Persist manager review records, correction entries, and review history keyed by import/call/scope/optional alert.
+- Persist versioned `bad_lead_claim.v1` allegation records and append-only history in the local JSON store. Claim payloads cannot supply authoritative actor/timestamp/decision metadata. Only active `submitted` and `under_review` claims may be selected as read-only local Evaluation Studio allegation context, using exact `call_id` first and then an exact canonical `AllocatedLeadID` lead-only fallback. Claims remain absent from dashboard persistence, prompt-test API task-input responses, reports, drilldowns, normal UI, and dedicated HTTP routes.
 - Persist Evaluation Studio knowledgebase entries, templates, run records, local AI job harvest state, result records, and report-safe rollups under the local ignored store without copying raw imports into Git.
 - Persist generated reports with title, type, summary, content, metadata, timestamps, and source.
 - Automatically create or update an executive-summary report for each imported CSV.

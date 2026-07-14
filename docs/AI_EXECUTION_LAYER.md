@@ -31,6 +31,12 @@ sales_dashboard_evaluation_studio
 
 That task is for editable Evaluation Studio templates and knowledgebase-driven transcript review. The normal transcript intelligence extraction task remains separate as `sales_transcript_intelligence_extraction`.
 
+### Evaluation Studio output contracts
+
+Evaluation Studio sends the active template's versioned output contract in `evaluation_template.output_schema`. The Execution Layer allowlists dynamic schema authority only for `sales_dashboard_evaluation_studio`, validates and hashes the supplied contract before model execution, includes the canonical schema in the model prompt, and uses it as Ollama's structured-output format where supported. Historical templates using the dashboard's legacy descriptive schema shape are canonicalised to the same bounded JSON Schema subset before execution.
+
+The Execution Layer performs JSON and schema validation. Sales Dashboard then performs evaluator-specific semantic validation. A terminal schema or semantic failure is stored once and moves the run out of `running`; normal harvesting does not resubmit jobs. Raw model attempts remain internal to the Execution Layer and are not returned by the dashboard's public job proxy.
+
 ## Endpoints Added
 
 ```text

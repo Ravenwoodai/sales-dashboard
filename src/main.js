@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
@@ -72,6 +73,7 @@ const {
   updateAlertLifecycle
 } = require("./storage");
 const { buildCallIntelligence } = require("./transcriptIntelligence");
+const { alertContainsUntrustedLegacyData, managerReviewContainsUntrustedLegacyData, sanitizeImportSummary, sanitizeManagerReviewForPublic, sanitizeUntrustedLegacyDataForPublic } = require("./untrustedLegacyFields");
 
 const DEFAULT_LOGO_PATH = path.join(__dirname, "assets", "sales-dashboard-logo.png");
 const BRAND_LOGO_LIMIT_BYTES = 768 * 1024;
@@ -81,7 +83,8 @@ const BRAND_LOGO_TYPES = {
   "image/webp": "webp"
 };
 const EVALUATION_STUDIO_AUTO_HARVEST_MAX_RUNS = 5;
-const EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS = 5;
+const EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS = 100;
+const EVALUATION_STUDIO_EXECUTION_CONTRACT_REVISION = "dynamic-schema-v1";
 
 function resolveCsvPath(argv = process.argv.slice(2), env = process.env) {
   const csvFlagIndex = argv.findIndex((arg) => arg === "--csv" || arg === "--csv-path");
@@ -295,9 +298,10 @@ function llmReviewState(row = {}) {
 function filterContextForStore(store, importId, intelligenceRows = []) {
   const currentAlerts = (store.alertEvents || []).map(normalizeAlertEvent).filter((event) => {
     if (event.parkedDataRelated) return false;
+    if (alertContainsUntrustedLegacyData(event)) return false;
     return !importId || event.importId === importId;
   });
-  const currentReviews = (store.managerReviews || []).map(normalizeManagerReview).filter((review) => !importId || review.importId === importId);
+  const currentReviews = (store.managerReviews || []).map(normalizeManagerReview).filter((review) => !managerReviewContainsUntrustedLegacyData(review) && (!importId || review.importId === importId));
   const alertSeverityByCallId = new Map();
   const alertStatusByCallId = new Map();
   const alertEventById = new Map();
@@ -509,6 +513,13 @@ function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
     callIds,
     evaluationGoal: query.evaluationGoal || query.goal,
     status: query.resultStatus || query.status,
+    recordClassification: query.recordClassification,
+    recordReason: query.recordReason,
+    operationalClassification: query.operationalClassification,
+    recommendation: query.recommendation,
+    allegationAssessment: query.allegationAssessment,
+    confidenceBand: query.confidenceBand,
+    evidenceAvailability: query.evidenceAvailability,
     reviewRecommended: query.reviewRecommended,
     evidenceUnavailableOnly: query.evidenceUnavailableOnly,
     includeSuperseded: query.includeSuperseded
@@ -527,9 +538,10 @@ function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
       evaluationGoal: query.evaluationGoal || query.goal
     }),
     evaluationRuns: (studio.evaluationRuns || [])
-      .filter((run) => !currentImportId || !query.currentOnly || run.importId === currentImportId)
+      .filter((run) => !run.containsUntrustedLegacyData && (!currentImportId || !query.currentOnly || run.importId === currentImportId))
       .slice()
-      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+      .map(sanitizeUntrustedLegacyDataForPublic),
     evaluationResults: resultRows.slice(resultOffset, resultOffset + resultLimit),
     evidenceQueue: listEvaluationResults(studio, {
       importId: resultImportId,
@@ -547,6 +559,15 @@ function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
       previousOffset: resultOffset > 0 ? Math.max(0, resultOffset - resultLimit) : null
     }
   };
+}
+
+function stripTrustedClaimContextForPublic(value) {
+  if (Array.isArray(value)) return value.map(stripTrustedClaimContextForPublic);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
+    if (["salesperson_allegation", "trusted_bad_lead_claim_context"].includes(key)) return [];
+    return [[key, stripTrustedClaimContextForPublic(item)]];
+  }));
 }
 
 function findEvaluationStudioResult(store = {}, resultId = "", currentImportId = "") {
@@ -593,32 +614,86 @@ function normalizeLimit(value, fallback = 250, max = 10000) {
 }
 
 function parseCallIdFilter(value) {
-  const values = Array.isArray(value) ? value : String(value || "").split(",");
-  return new Set(values.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 100));
+  const values = Array.isArray(value) ? value : String(value || "").split(/[\s,;]+/);
+  return new Set(values.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 50000));
 }
 
 function selectIntelligenceExtractionCalls(rows, body = {}, eligibleCallIds = null) {
   const businessSegment = String(body.businessSegment || body.segment || "").trim();
+  const salesperson = String(body.salesperson || "").trim();
+  const source = String(body.source || body.customerImportSource || "").trim();
+  const contactClassification = String(body.contactClassification || body.contact || "").trim();
+  const transcriptQuality = String(body.transcriptQuality || body.quality || "").trim();
+  const dateFrom = String(body.dateFrom || body.date_from || "").trim().slice(0, 10);
+  const dateTo = String(body.dateTo || body.date_to || "").trim().slice(0, 10);
+  const minDuration = Math.max(0, Number(body.minDuration || body.min_duration || 0));
+  const maxDuration = Math.max(0, Number(body.maxDuration || body.max_duration || 0));
+  const search = String(body.search || body.query || "").trim().toLowerCase();
+  const selectionMode = String(body.selectionMode || body.selection_mode || body.sort || "newest").trim().toLowerCase();
   const limit = normalizeLimit(body.sampleSize || body.limit, 100, 50000);
   const requestedCallIds = parseCallIdFilter(body.callIds || body.call_ids || body.callId || body.call_id || "");
+  if (selectionMode === "call_ids" && !requestedCallIds.size) return [];
+  const sourceDate = (call) => String(call.date || call.dateTime || "").slice(0, 10);
   const candidates = (rows || []).filter((call) => {
     if (businessSegment && call.businessSegment !== businessSegment) return false;
+    if (salesperson && call.salesperson !== salesperson) return false;
+    if (source && call.source !== source && call.customerImportSource !== source) return false;
+    if (contactClassification && call.contactClassification !== contactClassification) return false;
+    if (transcriptQuality && call.transcriptQuality !== transcriptQuality) return false;
+    if (dateFrom && sourceDate(call) < dateFrom) return false;
+    if (dateTo && sourceDate(call) > dateTo) return false;
+    if (minDuration && Number(call.durationSeconds || 0) < minDuration) return false;
+    if (maxDuration && Number(call.durationSeconds || 0) > maxDuration) return false;
+    if (search && ![call.callId, call.salesperson, call.source, call.contactClassification, call.localOutcome]
+      .some((value) => String(value || "").toLowerCase().includes(search))) return false;
     if (eligibleCallIds && !eligibleCallIds.has(call.callId)) return false;
     if (requestedCallIds.size && !requestedCallIds.has(String(call.callId))) return false;
     return true;
   });
+  const ordered = candidates.slice().sort((left, right) => {
+    if (selectionMode === "random") {
+      const seed = String(body.randomSeed || body.random_seed || "sales-dashboard-local-sample");
+      const leftHash = crypto.createHash("sha256").update(`${seed}:${left.callId}`).digest("hex");
+      const rightHash = crypto.createHash("sha256").update(`${seed}:${right.callId}`).digest("hex");
+      return leftHash.localeCompare(rightHash);
+    }
+    const comparison = `${sourceDate(left)} ${left.time || ""} ${left.callId || ""}`
+      .localeCompare(`${sourceDate(right)} ${right.time || ""} ${right.callId || ""}`);
+    return selectionMode === "oldest" || selectionMode === "oldest_first" ? comparison : -comparison;
+  });
   if (businessSegment || !body.balancedSegments) {
-    return candidates.slice(0, limit);
+    return ordered.slice(0, limit);
   }
 
-  const newCalls = candidates.filter((call) => call.businessSegment === "new");
-  const warmCalls = candidates.filter((call) => call.businessSegment === "warm");
+  const newCalls = ordered.filter((call) => call.businessSegment === "new");
+  const warmCalls = ordered.filter((call) => call.businessSegment === "warm");
   const warmTarget = Math.max(1, Math.floor(limit / 2));
   const newTarget = Math.max(0, limit - warmTarget);
   return [
     ...newCalls.slice(0, newTarget),
     ...warmCalls.slice(0, warmTarget)
   ].slice(0, limit);
+}
+
+function selectEvaluationBatchCalls(rows, body = {}, studio = {}, importId = "") {
+  const evaluationState = String(body.evaluationState || body.evaluation_state || "unevaluated").trim().toLowerCase();
+  const templateId = String(body.templateId || body.template_id || "").trim();
+  const existingResults = listEvaluationResults(studio, {
+    importId,
+    templateId,
+    includeSuperseded: false
+  });
+  const existingByCall = new Map(existingResults.map((result) => [String(result.callId), result]));
+  let eligibleCallIds = null;
+  if (evaluationState === "unevaluated") {
+    eligibleCallIds = new Set((rows || []).map((call) => String(call.callId)).filter((callId) => !existingByCall.has(callId)));
+  } else if (evaluationState === "evaluated") {
+    eligibleCallIds = new Set(existingByCall.keys());
+  } else if (evaluationState === "failed") {
+    eligibleCallIds = new Set(existingResults.filter((result) => result.status === "failed").map((result) => String(result.callId)));
+  }
+  return selectIntelligenceExtractionCalls(rows, body, eligibleCallIds)
+    .filter((call) => String(call.transcript || "").trim());
 }
 
 function aiJobId(result = {}) {
@@ -677,6 +752,33 @@ function evaluationStudioJobError(job = {}) {
   return typeof error === "string" ? error : JSON.stringify(error).slice(0, 1000);
 }
 
+function evaluationStudioTerminalHarvestFailure(error, resolvedStatus) {
+  if (!aiJobIsDone(resolvedStatus)) return null;
+  const statusCode = Number(error?.statusCode || error?.status || 0);
+  if (statusCode !== 400) return null;
+  return {
+    category: "evaluator_semantic_validation_failed",
+    error: String(error?.message || "Evaluation result failed semantic validation.").slice(0, 1000)
+  };
+}
+
+function dedupeEvaluationStudioErrors(items = []) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = [item.callId || "", item.jobId || "", item.category || "", item.error || ""].join("|");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function evaluationStudioHarvestKey(jobs = []) {
+  return jobs
+    .map((job) => [job.jobId || "", job.status || "", job.resultId || "", job.terminalFailureCategory || ""].join(":"))
+    .sort()
+    .join("|");
+}
+
 function evaluationStudioAiJobMetadata(existing = {}, run = {}, jobRef = {}) {
   return {
     ...(existing.metadata || {}),
@@ -685,6 +787,17 @@ function evaluationStudioAiJobMetadata(existing = {}, run = {}, jobRef = {}) {
     evaluationTemplateId: run.templateId,
     evaluationGoal: run.templateSnapshot?.evaluationGoal || jobRef.evaluationGoal || ""
   };
+}
+
+function evaluationStudioIdempotencyKey(run = {}, call = {}, template = {}) {
+  return [
+    "sales-dashboard",
+    "evaluation-studio",
+    EVALUATION_STUDIO_EXECUTION_CONTRACT_REVISION,
+    run.id || "run",
+    call.callId || "call",
+    template.promptHash || `template-v${template.version || 1}`
+  ].join(":");
 }
 
 function evaluationStudioHarvestStatus(run = {}, pendingCount = 0, completedCount = 0, failedCount = 0) {
@@ -746,7 +859,8 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
   const knowledgebase = studio.knowledgebaseEntries.filter((entry) => run.knowledgebaseIds.includes(entry.id));
   const taskInput = buildEvaluationStudioInput(call, template, knowledgebase, {
     importId: run.importId,
-    sourceName: state.analysis.sourceName
+    sourceName: state.analysis.sourceName,
+    badLeadClaims: store.badLeadClaims || []
   });
 
   if (submitNow) {
@@ -755,6 +869,7 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
       fetchImpl,
       taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
       responseMode: body.responseMode,
+      idempotencyKey: evaluationStudioIdempotencyKey(run, call, template),
       metadata: {
         source_system: "sales_dashboard",
         source_type: "evaluation_studio_prompt_test",
@@ -793,7 +908,8 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
         runId: run.id,
         templateId: template.id,
         jobId,
-        result: aiJobResultPayload(executionLayerResponse)
+        result: aiJobResultPayload(executionLayerResponse),
+        validationContext: { call }
       }, { storePath });
       evaluationResult = saved.result;
       store = saved.store;
@@ -830,8 +946,115 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
   };
 }
 
+async function createEvaluationBatchRun(body = {}, options = {}) {
+  const { state, storePath, aiConfig, fetchImpl } = options;
+  if (!state?.analysis || !state?.importRecord?.id) {
+    const error = new Error("No current import is loaded.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const importId = body.importId || state.importRecord.id;
+  const currentStore = readStore({ storePath });
+  const currentStudio = normalizeEvaluationStudio(currentStore.evaluationStudio);
+  const calls = selectEvaluationBatchCalls(state.analysis.drilldownRows || [], body, currentStudio, importId);
+  if (!calls.length) {
+    const error = new Error("No calls with transcript text matched this selection.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const submitNow = truthy(body.submitNow || body.submit || body.runNow);
+  const initial = saveEvaluationRun({
+    ...body,
+    status: submitNow ? "queued" : (body.status || "queued"),
+    callSelection: {
+      ...(body.callSelection || {}),
+      businessSegment: body.businessSegment || "",
+      salesperson: body.salesperson || "",
+      source: body.source || "",
+      contactClassification: body.contactClassification || "",
+      transcriptQuality: body.transcriptQuality || "",
+      dateFrom: body.dateFrom || "",
+      dateTo: body.dateTo || "",
+      minDuration: Number(body.minDuration || 0),
+      maxDuration: Number(body.maxDuration || 0),
+      selectionMode: body.selectionMode || "newest",
+      evaluationState: body.evaluationState || "unevaluated",
+      requestedCallIds: Array.from(parseCallIdFilter(body.callIds || body.call_ids || "")),
+      limit: normalizeLimit(body.limit, 100, 50000),
+      sourceType: body.callSelection?.sourceType || "evaluation_studio_local_selection"
+    }
+  }, {
+    importId,
+    plannedCallCount: calls.length
+  }, { storePath });
+  let run = initial.run;
+  let store = initial.store;
+  if (!submitNow) return { calls, evaluationRun: run, submitted: false, store };
+
+  const studio = normalizeEvaluationStudio(store.evaluationStudio);
+  const template = studio.evaluationTemplates.find((item) => item.id === run.templateId);
+  const knowledgebase = studio.knowledgebaseEntries.filter((entry) => run.knowledgebaseIds.includes(entry.id));
+  const queuedJobs = [];
+  const errors = [];
+  for (const call of calls) {
+    try {
+      const input = buildEvaluationStudioInput(call, template, knowledgebase, {
+        importId: run.importId,
+        sourceName: state.analysis.sourceName,
+        badLeadClaims: store.badLeadClaims || []
+      });
+      const result = await submitAiTask(input, {
+        config: aiConfig,
+        fetchImpl,
+        taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+        responseMode: body.responseMode,
+        idempotencyKey: evaluationStudioIdempotencyKey(run, call, template),
+        metadata: {
+          source_system: "sales_dashboard",
+          source_type: "evaluation_studio_batch",
+          source_record_id: call.callId,
+          import_id: run.importId,
+          evaluation_run_id: run.id,
+          evaluation_template_id: template.id,
+          evaluation_goal: template.evaluationGoal
+        }
+      });
+      const jobId = aiJobId(result);
+      const status = aiJobStatus(result) || "queued";
+      if (!jobId) throw new Error("Execution layer response did not include a job ID.");
+      saveAiJobReference({
+        importId: run.importId,
+        callId: call.callId,
+        jobId,
+        taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+        status,
+        metadata: {
+          source: "evaluation_studio",
+          evaluationRunId: run.id,
+          evaluationTemplateId: template.id,
+          evaluationGoal: template.evaluationGoal
+        }
+      }, { storePath });
+      queuedJobs.push({ callId: call.callId, jobId, status });
+    } catch (error) {
+      errors.push({ callId: call.callId, error: error.message });
+    }
+  }
+  const updated = updateStoredEvaluationRun(run.id, {
+    status: queuedJobs.length && errors.length ? "partially_completed" : queuedJobs.length ? "running" : "failed",
+    startedAt: new Date().toISOString(),
+    queuedJobCount: queuedJobs.length,
+    failedCallCount: errors.length,
+    queuedJobs,
+    errors
+  }, { storePath });
+  run = updated.run;
+  store = updated.store;
+  return { calls, evaluationRun: run, submitted: true, store };
+}
+
 async function harvestEvaluationStudioRunJobs(runId, options = {}) {
-  const { storePath, aiConfig, fetchImpl } = options;
+  const { storePath, aiConfig, fetchImpl, analysis = null } = options;
   let store = readStore({ storePath });
   let studio = normalizeEvaluationStudio(store.evaluationStudio);
   const run = (studio.evaluationRuns || []).find((item) => item.id === runId);
@@ -867,12 +1090,26 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
   const updatedJobs = [];
 
   for (const jobRef of jobs) {
+    if (jobRef.terminalHandledAt && aiJobIsFailed(jobRef.status)) {
+      failed.push({
+        callId: jobRef.callId,
+        jobId: jobRef.jobId,
+        status: jobRef.status,
+        error: jobRef.error || "Terminal Evaluation Studio failure already handled.",
+        category: jobRef.terminalFailureCategory || "execution_failed",
+        alreadyHandled: true
+      });
+      updatedJobs.push(jobRef);
+      continue;
+    }
     const currentAiJob = (store.aiJobs || []).find((job) =>
       job.importId === run.importId && job.callId === jobRef.callId && job.jobId === jobRef.jobId
     ) || {};
+    let resolvedStatus = "";
     try {
       const job = await getAiJob(jobRef.jobId, { config: aiConfig, fetchImpl });
       const status = aiJobStatus(job) || jobRef.status || currentAiJob.status || "queued";
+      resolvedStatus = status;
       const savedJob = saveAiJobReference({
         ...currentAiJob,
         importId: run.importId,
@@ -894,7 +1131,10 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
             templateId: run.templateId,
             jobId: jobRef.jobId,
             callId: jobRef.callId,
-            result: aiJobResultPayload(job)
+            result: aiJobResultPayload(job),
+            validationContext: {
+              call: analysis ? findCallProof(analysis, jobRef.callId) : null
+            }
           }, { storePath });
           result = savedResult.result;
           store = savedResult.store;
@@ -924,6 +1164,8 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
           ...jobRef,
           status: "failed",
           error: reason,
+          terminalFailureCategory: "execution_failed",
+          terminalHandledAt: timestamp,
           harvestedAt: timestamp
         });
       } else {
@@ -939,17 +1181,36 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
         });
       }
     } catch (error) {
-      errors.push({
-        callId: jobRef.callId,
-        jobId: jobRef.jobId,
-        error: error.message
-      });
-      updatedJobs.push({
-        ...jobRef,
-        status: jobRef.status || "queued",
-        lastHarvestError: error.message,
-        lastCheckedAt: timestamp
-      });
+      const terminalFailure = evaluationStudioTerminalHarvestFailure(error, resolvedStatus);
+      if (terminalFailure) {
+        failed.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          status: "failed",
+          error: terminalFailure.error,
+          category: terminalFailure.category
+        });
+        updatedJobs.push({
+          ...jobRef,
+          status: "failed",
+          error: terminalFailure.error,
+          terminalFailureCategory: terminalFailure.category,
+          terminalHandledAt: timestamp,
+          harvestedAt: timestamp
+        });
+      } else {
+        errors.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          error: error.message
+        });
+        updatedJobs.push({
+          ...jobRef,
+          status: jobRef.status || "queued",
+          lastHarvestError: error.message,
+          lastCheckedAt: timestamp
+        });
+      }
     }
   }
 
@@ -963,7 +1224,11 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
   const failedCallCount = updatedJobs.filter((job) => aiJobIsFailed(job.status)).length;
   const pendingJobCount = updatedJobs.filter((job) => !aiJobIsDone(job.status) && !aiJobIsFailed(job.status)).length;
   const nextStatus = evaluationStudioHarvestStatus(latestRun, pendingJobCount, completedCallCount, failedCallCount);
-  const completedAt = nextStatus === "completed" && !latestRun.completedAt ? timestamp : latestRun.completedAt;
+  const completedAt = ["completed", "failed", "partially_completed"].includes(nextStatus) && !latestRun.completedAt
+    ? timestamp
+    : latestRun.completedAt;
+  const harvestKey = evaluationStudioHarvestKey(updatedJobs);
+  const duplicateHarvest = (latestRun.runHistory || []).some((item) => item?.metadata?.harvestKey === harvestKey);
   const event = evaluationStudioRunHistoryEvent(latestRun, "harvest", {
     timestamp,
     newStatus: nextStatus,
@@ -972,9 +1237,20 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
       completed: completed.length,
       pending: pending.length,
       failed: failed.length,
-      errors: errors.length
+      errors: errors.length,
+      harvestKey
     }
   });
+  const mergedErrors = dedupeEvaluationStudioErrors([
+    ...(Array.isArray(latestRun.errors) ? latestRun.errors : []),
+    ...failed.filter((item) => !item.alreadyHandled).map((item) => ({
+      callId: item.callId,
+      jobId: item.jobId,
+      category: item.category || "execution_failed",
+      error: item.error
+    })),
+    ...errors
+  ]).slice(-200);
   const updatedRun = updateStoredEvaluationRun(run.id, {
     status: nextStatus,
     completedAt,
@@ -982,15 +1258,10 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
     completedCallCount,
     failedCallCount,
     queuedJobs: updatedJobs,
-    errors: [
-      ...(Array.isArray(latestRun.errors) ? latestRun.errors : []),
-      ...failed.map((item) => ({ callId: item.callId, jobId: item.jobId, error: item.error })),
-      ...errors
-    ].slice(-200),
-    runHistory: [
-      ...(Array.isArray(latestRun.runHistory) ? latestRun.runHistory : []),
-      event
-    ].slice(-200)
+    errors: mergedErrors,
+    runHistory: duplicateHarvest
+      ? latestRun.runHistory
+      : [...(Array.isArray(latestRun.runHistory) ? latestRun.runHistory : []), event].slice(-200)
   }, { storePath });
 
   return {
@@ -1006,15 +1277,19 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
 function evaluationStudioAutoHarvestCandidate(run = {}, currentImportId = null) {
   const status = String(run.status || "").toLowerCase();
   const jobs = Array.isArray(run.queuedJobs) ? run.queuedJobs : [];
-  if (run.runType !== "prompt_test") return false;
+  if (!["prompt_test", "batch"].includes(run.runType)) return false;
   if (!["queued", "running", "partially_completed"].includes(status)) return false;
   if (currentImportId && run.importId !== currentImportId) return false;
   if (!jobs.length || jobs.length > EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS) return false;
-  return jobs.some((job) => String(job.jobId || job.job_id || "").trim() && !job.resultId);
+  return jobs.some((job) => {
+    const jobId = String(job.jobId || job.job_id || "").trim();
+    if (!jobId || job.resultId) return false;
+    return !(aiJobIsFailed(job.status) && job.terminalHandledAt);
+  });
 }
 
-async function autoHarvestEvaluationStudioPromptTests(options = {}) {
-  const { storePath, aiConfig, fetchImpl, currentImportId = null } = options;
+async function autoHarvestEvaluationStudioRuns(options = {}) {
+  const { storePath, aiConfig, fetchImpl, currentImportId = null, analysis = null } = options;
   let store = readStore({ storePath });
   const studio = normalizeEvaluationStudio(store.evaluationStudio);
   const candidates = (studio.evaluationRuns || [])
@@ -1027,7 +1302,7 @@ async function autoHarvestEvaluationStudioPromptTests(options = {}) {
 
   for (const run of candidates) {
     try {
-      const result = await harvestEvaluationStudioRunJobs(run.id, { storePath, aiConfig, fetchImpl });
+      const result = await harvestEvaluationStudioRunJobs(run.id, { storePath, aiConfig, fetchImpl, analysis });
       store = result.store;
       harvested.push({
         runId: run.id,
@@ -1384,7 +1659,7 @@ function createServer(options = {}) {
       const store = readStore({ storePath });
       const event = (store.alertEvents || [])
         .map(normalizeAlertEvent)
-        .find((item) => (item.id === alertId || item.alertId === alertId) && !item.parkedDataRelated && (!state.importRecord?.id || item.importId === state.importRecord.id));
+        .find((item) => (item.id === alertId || item.alertId === alertId) && !item.parkedDataRelated && !alertContainsUntrustedLegacyData(item) && (!state.importRecord?.id || item.importId === state.importRecord.id));
       if (!event) {
         sendJson(response, 404, { ok: false, error: "Alert not found" });
         return;
@@ -1699,11 +1974,12 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/evaluation-studio" && request.method === "GET") {
-      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+      const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
         aiConfig,
         fetchImpl,
-        currentImportId: state.importRecord?.id || null
+        currentImportId: state.importRecord?.id || null,
+        analysis: state.analysis
       });
       const store = autoHarvest.store || readStore({ storePath });
       const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
@@ -1713,7 +1989,17 @@ function createServer(options = {}) {
         tag: url.searchParams.get("tag"),
         evaluationGoal: url.searchParams.get("evaluationGoal") || url.searchParams.get("goal"),
         currentOnly: url.searchParams.get("currentOnly"),
-        callIds
+        callIds,
+        limit: url.searchParams.get("limit"),
+        offset: url.searchParams.get("offset"),
+        resultStatus: url.searchParams.get("resultStatus") || url.searchParams.get("status"),
+        recordClassification: url.searchParams.get("recordClassification"),
+        recordReason: url.searchParams.get("recordReason"),
+        operationalClassification: url.searchParams.get("operationalClassification"),
+        recommendation: url.searchParams.get("recommendation"),
+        allegationAssessment: url.searchParams.get("allegationAssessment"),
+        confidenceBand: url.searchParams.get("confidenceBand"),
+        evidenceAvailability: url.searchParams.get("evidenceAvailability")
       });
       sendJson(response, 200, {
         ...payload,
@@ -1743,7 +2029,10 @@ function createServer(options = {}) {
     if (url.pathname === "/api/evaluation-studio/knowledgebase" && request.method === "POST") {
       try {
         const body = await readJsonBody(request);
-        const result = saveEvaluationKnowledgebaseEntry(body, { storePath });
+        const result = saveEvaluationKnowledgebaseEntry({
+          ...body,
+          approvalStatus: body.approvalStatus || body.approval_status || "approved_current"
+        }, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
         sendJson(response, 201, { ok: true, knowledgebaseEntry: result.entry, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
       } catch (error) {
@@ -1806,11 +2095,12 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/evaluation-studio/runs" && request.method === "GET") {
-      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+      const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
         aiConfig,
         fetchImpl,
-        currentImportId: url.searchParams.get("importId") || state.importRecord?.id || null
+        currentImportId: url.searchParams.get("importId") || state.importRecord?.id || null,
+        analysis: state.analysis
       });
       const store = autoHarvest.store || readStore({ storePath });
       const studio = normalizeEvaluationStudio(store.evaluationStudio);
@@ -1822,10 +2112,46 @@ function createServer(options = {}) {
           errors: autoHarvest.errors
         },
         evaluationRuns: (studio.evaluationRuns || [])
-          .filter((run) => !url.searchParams.get("importId") || run.importId === url.searchParams.get("importId"))
+          .filter((run) => !run.containsUntrustedLegacyData && (!url.searchParams.get("importId") || run.importId === url.searchParams.get("importId")))
           .slice()
           .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+          .map(sanitizeUntrustedLegacyDataForPublic)
       });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/selection-preview" && request.method === "POST") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) {
+          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
+          return;
+        }
+        const body = await readJsonBody(request);
+        const store = readStore({ storePath });
+        const studio = normalizeEvaluationStudio(store.evaluationStudio);
+        const calls = selectEvaluationBatchCalls(
+          state.analysis.drilldownRows || [],
+          body,
+          studio,
+          body.importId || state.importRecord.id
+        );
+        sendJson(response, 200, {
+          ok: true,
+          matchingCalls: calls.length,
+          preview: calls.slice(0, 8).map((call) => ({
+            callId: call.callId,
+            sourceTime: call.sourceTime,
+            salesperson: call.salesperson,
+            source: call.source,
+            businessSegment: call.businessSegment,
+            contactClassification: call.contactClassification,
+            transcriptQuality: call.transcriptQuality,
+            durationSeconds: call.durationSeconds
+          }))
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
       return;
     }
 
@@ -1836,81 +2162,14 @@ function createServer(options = {}) {
           return;
         }
         const body = await readJsonBody(request);
-        const calls = selectIntelligenceExtractionCalls(state.analysis.drilldownRows || [], body, null)
-          .filter((call) => String(call.transcript || "").trim());
-        const initial = saveEvaluationRun(body, {
-          importId: body.importId || state.importRecord.id,
-          plannedCallCount: calls.length
-        }, { storePath });
-        let run = initial.run;
-        let store = initial.store;
-        const submitNow = ["1", "true", "yes", "on"].includes(String(body.submitNow || body.submit || "").toLowerCase());
-        if (submitNow && calls.length) {
-          const studio = normalizeEvaluationStudio(store.evaluationStudio);
-          const template = studio.evaluationTemplates.find((item) => item.id === run.templateId);
-          const knowledgebase = studio.knowledgebaseEntries.filter((entry) => run.knowledgebaseIds.includes(entry.id));
-          const queuedJobs = [];
-          const errors = [];
-          for (const call of calls) {
-            try {
-              const input = buildEvaluationStudioInput(call, template, knowledgebase, {
-                importId: run.importId,
-                sourceName: state.analysis.sourceName
-              });
-              const result = await submitAiTask(input, {
-                config: aiConfig,
-                fetchImpl,
-                taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
-                responseMode: body.responseMode,
-                metadata: {
-                  source_system: "sales_dashboard",
-                  source_type: "evaluation_studio_batch",
-                  source_record_id: call.callId,
-                  import_id: run.importId,
-                  evaluation_run_id: run.id,
-                  evaluation_template_id: template.id,
-                  evaluation_goal: template.evaluationGoal
-                }
-              });
-              const jobId = aiJobId(result);
-              const status = aiJobStatus(result) || "queued";
-              if (!jobId) throw new Error("Execution layer response did not include a job ID.");
-              saveAiJobReference({
-                importId: run.importId,
-                callId: call.callId,
-                jobId,
-                taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
-                status,
-                metadata: {
-                  source: "evaluation_studio",
-                  evaluationRunId: run.id,
-                  evaluationTemplateId: template.id,
-                  evaluationGoal: template.evaluationGoal
-                }
-              }, { storePath });
-              queuedJobs.push({ callId: call.callId, jobId, status });
-            } catch (error) {
-              errors.push({ callId: call.callId, error: error.message });
-            }
-          }
-          const updated = updateStoredEvaluationRun(run.id, {
-            status: queuedJobs.length && errors.length ? "partially_completed" : queuedJobs.length ? "running" : "failed",
-            startedAt: new Date().toISOString(),
-            queuedJobCount: queuedJobs.length,
-            failedCallCount: errors.length,
-            queuedJobs,
-            errors
-          }, { storePath });
-          run = updated.run;
-          store = updated.store;
-        }
-        state.analysis = attachPersistence(state.analysis, store, state.importRecord?.id || null);
-        sendJson(response, submitNow ? 202 : 201, {
+        const result = await createEvaluationBatchRun(body, { state, storePath, aiConfig, fetchImpl });
+        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
+        sendJson(response, result.submitted ? 202 : 201, {
           ok: true,
-          evaluationRun: run,
-          submitted: submitNow,
-          plannedCallCount: calls.length,
-          persistence: dashboardPersistence(store, state.importRecord?.id || null)
+          evaluationRun: result.evaluationRun,
+          submitted: result.submitted,
+          plannedCallCount: result.calls.length,
+          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
         });
       } catch (error) {
         sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
@@ -1924,7 +2183,8 @@ function createServer(options = {}) {
         const result = await harvestEvaluationStudioRunJobs(runId, {
           storePath,
           aiConfig,
-          fetchImpl
+          fetchImpl,
+          analysis: state.analysis
         });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
         sendJson(response, 200, {
@@ -1998,8 +2258,8 @@ function createServer(options = {}) {
           callId: result.callId,
           evaluationRun: result.evaluationRun,
           evaluationResult: result.evaluationResult,
-          taskInput: body.includeTaskInput === false ? null : result.taskInput,
-          executionLayerResponse: result.executionLayerResponse,
+          taskInput: body.includeTaskInput === false ? null : stripTrustedClaimContextForPublic(result.taskInput),
+          executionLayerResponse: stripTrustedClaimContextForPublic(result.executionLayerResponse),
           persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
         });
       } catch (error) {
@@ -2009,11 +2269,12 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/evaluation-studio/report-rollups" && request.method === "GET") {
-      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+      const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
         aiConfig,
         fetchImpl,
-        currentImportId: state.importRecord?.id || null
+        currentImportId: state.importRecord?.id || null,
+        analysis: state.analysis
       });
       const store = autoHarvest.store || readStore({ storePath });
       const studio = normalizeEvaluationStudio(store.evaluationStudio);
@@ -2032,11 +2293,12 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/evaluation-studio/results" && request.method === "GET") {
-      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+      const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
         aiConfig,
         fetchImpl,
-        currentImportId: state.importRecord?.id || null
+        currentImportId: state.importRecord?.id || null,
+        analysis: state.analysis
       });
       const store = autoHarvest.store || readStore({ storePath });
       const studio = normalizeEvaluationStudio(store.evaluationStudio);
@@ -2053,6 +2315,13 @@ function createServer(options = {}) {
         callIds,
         evaluationGoal: url.searchParams.get("evaluationGoal") || url.searchParams.get("goal"),
         status: url.searchParams.get("status"),
+        recordClassification: url.searchParams.get("recordClassification"),
+        recordReason: url.searchParams.get("recordReason"),
+        operationalClassification: url.searchParams.get("operationalClassification"),
+        recommendation: url.searchParams.get("recommendation"),
+        allegationAssessment: url.searchParams.get("allegationAssessment"),
+        confidenceBand: url.searchParams.get("confidenceBand"),
+        evidenceAvailability: url.searchParams.get("evidenceAvailability"),
         reviewRecommended: url.searchParams.get("reviewRecommended") || url.searchParams.get("reviewOnly"),
         evidenceUnavailableOnly: url.searchParams.get("evidenceUnavailableOnly"),
         includeSuperseded: url.searchParams.get("includeSuperseded")
@@ -2083,13 +2352,18 @@ function createServer(options = {}) {
     if (url.pathname === "/api/evaluation-studio/results" && request.method === "POST") {
       try {
         const body = await readJsonBody(request, 5 * 1024 * 1024);
+        const resultPayload = body.result || body.output || body.response || body.data || body.payload || body.job || body;
+        const resultCallId = String(body.callId || body.call_id || resultPayload.call_id || resultPayload.callId || "").trim();
         const payload = {
           ...body,
           importId: body.importId || body.import_id || state.importRecord?.id || "current",
           runId: body.runId || body.evaluationRunId || body.evaluation_run_id,
           templateId: body.templateId || body.evaluationTemplateId || body.template_id,
           jobId: body.jobId || body.job_id || body.id || body.job?.id || body.job?.job_id,
-          result: body.result || body.output || body.response || body.data || body.payload || body.job || body
+          result: resultPayload,
+          validationContext: {
+            call: resultCallId ? findCallProof(state.analysis, resultCallId) : null
+          }
         };
         const result = saveEvaluationResult(payload, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
@@ -2121,8 +2395,8 @@ function createServer(options = {}) {
         state.analysis = attachPersistence(state.analysis, review.store, state.importRecord?.id || null);
         sendJson(response, 201, {
           ok: true,
-          evaluationResult,
-          review: review.review,
+          evaluationResult: sanitizeUntrustedLegacyDataForPublic(evaluationResult),
+          review: sanitizeManagerReviewForPublic(review.review),
           persistence: dashboardPersistence(review.store, state.importRecord?.id || null)
         });
       } catch (error) {
@@ -2169,7 +2443,7 @@ function createServer(options = {}) {
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_call_reviews_api.v1",
         callId,
-        reviews
+        reviews: reviews.filter((review) => !managerReviewContainsUntrustedLegacyData(review)).map(sanitizeManagerReviewForPublic)
       });
       return;
     }
@@ -2224,7 +2498,7 @@ function createServer(options = {}) {
       try {
         const jobId = decodeURIComponent(url.pathname.replace("/api/ai/jobs/", ""));
         const job = await getAiJob(jobId, { config: aiConfig, fetchImpl });
-        sendJson(response, 200, { ok: true, job });
+        sendJson(response, 200, { ok: true, job: stripTrustedClaimContextForPublic(job) });
       } catch (error) {
         sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
       }
@@ -2234,7 +2508,7 @@ function createServer(options = {}) {
     if (url.pathname === "/api/imports") {
       const store = readStore({ storePath });
       sendJson(response, 200, {
-        imports: store.imports,
+        imports: store.imports.map(sanitizeImportSummary),
         currentImportId: state.importRecord?.id || null
       });
       return;
@@ -2287,6 +2561,7 @@ function createServer(options = {}) {
       const status = url.searchParams.get("reviewStatus") || url.searchParams.get("status") || "";
       const scope = url.searchParams.get("reviewScope") || url.searchParams.get("scope") || "";
       const reviews = (store.managerReviews || []).map(normalizeManagerReview).filter((review) => {
+        if (managerReviewContainsUntrustedLegacyData(review)) return false;
         if (importId && review.importId !== importId) return false;
         if (callId && review.callId !== callId) return false;
         if (alertId && review.alertId !== alertId) return false;
@@ -2296,7 +2571,7 @@ function createServer(options = {}) {
       });
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_manager_reviews_api.v1",
-        reviews,
+        reviews: reviews.map(sanitizeManagerReviewForPublic),
         persistence: dashboardPersistence(store, state.importRecord?.id || null)
       });
       return;
@@ -2311,7 +2586,7 @@ function createServer(options = {}) {
           importId: body.importId || state.importRecord?.id || "current"
         }, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
-        sendJson(response, 201, { ok: true, review: result.review, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+        sendJson(response, 201, { ok: true, review: sanitizeManagerReviewForPublic(result.review), persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
       } catch (error) {
         sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
       }
@@ -2330,7 +2605,7 @@ function createServer(options = {}) {
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
         sendJson(response, 200, {
           ok: true,
-          reviews: result.reviews,
+          reviews: result.reviews.map(sanitizeManagerReviewForPublic),
           missingReviewIds: result.missingReviewIds,
           persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
         });
@@ -2346,7 +2621,7 @@ function createServer(options = {}) {
       const review = (store.managerReviews || [])
         .map(normalizeManagerReview)
         .find((item) => item.reviewId === reviewId || item.id === reviewId);
-      if (!review || (state.importRecord?.id && review.importId !== state.importRecord.id)) {
+      if (!review || managerReviewContainsUntrustedLegacyData(review) || (state.importRecord?.id && review.importId !== state.importRecord.id)) {
         sendJson(response, 404, { ok: false, error: "Manager review not found" });
         return;
       }
@@ -2355,7 +2630,7 @@ function createServer(options = {}) {
         reviewId,
         reviewStatus: review.reviewStatus,
         reviewHistory: review.reviewHistory || [],
-        corrections: review.corrections || []
+          corrections: sanitizeManagerReviewForPublic(review).corrections
       });
       return;
     }
@@ -2366,11 +2641,11 @@ function createServer(options = {}) {
       const review = (store.managerReviews || [])
         .map(normalizeManagerReview)
         .find((item) => item.reviewId === reviewId || item.id === reviewId);
-      if (!review || (state.importRecord?.id && review.importId !== state.importRecord.id)) {
+      if (!review || managerReviewContainsUntrustedLegacyData(review) || (state.importRecord?.id && review.importId !== state.importRecord.id)) {
         sendJson(response, 404, { ok: false, error: "Manager review not found" });
         return;
       }
-      sendJson(response, 200, { ok: true, review });
+      sendJson(response, 200, { ok: true, review: sanitizeManagerReviewForPublic(review) });
       return;
     }
 
@@ -2384,7 +2659,7 @@ function createServer(options = {}) {
           importId: body.importId || state.importRecord?.id || "current"
         }, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
-        sendJson(response, 200, { ok: true, review: result.review, persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
+        sendJson(response, 200, { ok: true, review: sanitizeManagerReviewForPublic(result.review), persistence: dashboardPersistence(result.store, state.importRecord?.id || null) });
       } catch (error) {
         sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
       }
@@ -2400,7 +2675,7 @@ function createServer(options = {}) {
           importId: body.importId || state.importRecord?.id || "current"
         }, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
-        sendJson(response, 201, { ok: true, review: result.review });
+        sendJson(response, 201, { ok: true, review: sanitizeManagerReviewForPublic(result.review) });
       } catch (error) {
         sendJson(response, 400, { ok: false, error: error.message });
       }
@@ -2451,14 +2726,19 @@ function createServer(options = {}) {
     if (url.pathname === "/evaluation-studio/knowledgebase" && request.method === "POST") {
       try {
         const form = await readFormBody(request);
+        const id = form.get("id") || "";
         const result = saveEvaluationKnowledgebaseEntry({
-          id: form.get("id") || "",
+          id,
           title: form.get("title") || "",
           category: form.get("category") || "general",
           tags: form.get("tags") || "",
           content: form.get("content") || "",
-          sourceProject: "Sales Dashboard",
-          sourceReference: "manager_entered"
+          approvalStatus: form.get("approvalStatus") || "approved_current",
+          approvalNote: form.get("approvalNote") || "",
+          ...(!id ? {
+            sourceProject: "Sales Dashboard",
+            sourceReference: "manager_entered"
+          } : {})
         }, { storePath });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
         response.writeHead(303, { Location: "/evaluation-studio" });
@@ -2530,21 +2810,26 @@ function createServer(options = {}) {
           templateId: form.get("templateId") || "",
           importId: form.get("importId") || state.importRecord.id,
           businessSegment: form.get("businessSegment") || "",
+          salesperson: form.get("salesperson") || "",
+          source: form.get("source") || "",
+          contactClassification: form.get("contactClassification") || "",
+          transcriptQuality: form.get("transcriptQuality") || "",
+          dateFrom: form.get("dateFrom") || "",
+          dateTo: form.get("dateTo") || "",
+          minDuration: form.get("minDuration") || 0,
+          maxDuration: form.get("maxDuration") || 0,
+          selectionMode: form.get("selectionMode") || "newest",
+          evaluationState: form.get("evaluationState") || "unevaluated",
+          callIds: form.get("callIds") || "",
+          search: form.get("search") || "",
+          randomSeed: form.get("randomSeed") || "sales-dashboard-local-sample",
           limit: form.get("limit") || 100,
-          callSelection: {
-            businessSegment: form.get("businessSegment") || "",
-            limit: form.get("limit") || 100,
-            source: "dashboard_form"
-          }
+          submitNow: form.get("submitNow") || "true",
+          callSelection: { sourceType: "evaluation_studio_form" }
         };
-        const calls = selectIntelligenceExtractionCalls(state.analysis.drilldownRows || [], body, null)
-          .filter((call) => String(call.transcript || "").trim());
-        const result = saveEvaluationRun(body, {
-          importId: state.importRecord.id,
-          plannedCallCount: calls.length
-        }, { storePath });
+        const result = await createEvaluationBatchRun(body, { state, storePath, aiConfig, fetchImpl });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
-        response.writeHead(303, { Location: "/evaluation-studio" });
+        response.writeHead(303, { Location: `/evaluation-studio?runId=${encodeURIComponent(result.evaluationRun.id)}#runs` });
         response.end();
       } catch (error) {
         sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
@@ -2560,7 +2845,8 @@ function createServer(options = {}) {
         const result = await harvestEvaluationStudioRunJobs(runId, {
           storePath,
           aiConfig,
-          fetchImpl
+          fetchImpl,
+          analysis: state.analysis
         });
         state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
         response.writeHead(303, { Location: returnTo });
@@ -2766,15 +3052,37 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/evaluation-studio" && request.method === "GET") {
-      const autoHarvest = await autoHarvestEvaluationStudioPromptTests({
+      const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
         aiConfig,
         fetchImpl,
-        currentImportId: state.importRecord?.id || null
+        currentImportId: state.importRecord?.id || null,
+        analysis: state.analysis
       });
       if (autoHarvest.harvested.length) {
         state.analysis = attachPersistence(state.analysis, autoHarvest.store, state.importRecord?.id || null);
       }
+      const store = autoHarvest.store || readStore({ storePath });
+      const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
+      const resultFilters = {
+        evaluationGoal: url.searchParams.get("evaluationGoal") || "",
+        resultStatus: url.searchParams.get("resultStatus") || "",
+        recordClassification: url.searchParams.get("recordClassification") || "",
+        recordReason: url.searchParams.get("recordReason") || "",
+        operationalClassification: url.searchParams.get("operationalClassification") || "",
+        recommendation: url.searchParams.get("recommendation") || "",
+        allegationAssessment: url.searchParams.get("allegationAssessment") || "",
+        confidenceBand: url.searchParams.get("confidenceBand") || "",
+        evidenceAvailability: url.searchParams.get("evidenceAvailability") || "",
+        reviewRecommended: url.searchParams.get("reviewRecommended") || "",
+        limit: url.searchParams.get("limit") || "25",
+        offset: url.searchParams.get("offset") || "0"
+      };
+      const studioView = evaluationStudioApiPayload(store, state.importRecord?.id || null, {
+        ...resultFilters,
+        currentOnly: true,
+        callIds
+      });
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
@@ -2782,7 +3090,9 @@ function createServer(options = {}) {
       const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
       const studioAnalysis = analysisForRequest(state, url, storePath);
       response.end(renderEvaluationStudioPage(studioAnalysis, {
-        businessSegment: activeBusinessSegment
+        businessSegment: activeBusinessSegment,
+        studioView,
+        resultFilters
       }));
       return;
     }
@@ -2792,6 +3102,7 @@ function createServer(options = {}) {
       "Cache-Control": "no-store"
     });
     const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
+    const dashboardView = url.searchParams.get("view") || "overview";
     const intelligenceQueue = url.searchParams.get("intelligenceQueue") || "waste";
     const dashboardAnalysis = analysisForRequest(state, url, storePath);
     const filteredCallIds = new Set((dashboardAnalysis.drilldownRows || []).map((row) => row.callId));
@@ -2815,11 +3126,12 @@ function createServer(options = {}) {
         highQuality: url.searchParams.get("highQuality") || defaultQueueFilters.highQuality || "",
         llmStatus: url.searchParams.get("llmStatus") || defaultQueueFilters.llmStatus || "",
         callIds: url.searchParams.get("callIds") || "",
-        limit: url.searchParams.get("intelligenceLimit") || 80
+        limit: url.searchParams.get("intelligenceLimit") || 40
       }).filter((call) => !dashboardAnalysis.filterState?.active || filteredCallIds.has(call.call_id))
       : [];
     response.end(renderDashboard(dashboardAnalysis, {
       businessSegment: activeBusinessSegment,
+      dashboardView,
       intelligenceQueue,
       intelligenceCalls
     }));

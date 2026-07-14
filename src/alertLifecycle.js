@@ -110,9 +110,6 @@ function recommendedActionForAlert(alert = {}) {
   if (category.includes("follow-up")) {
     return "Check whether a follow-up action is needed or already completed outside this upload.";
   }
-  if (category.includes("outcome")) {
-    return "Compare raw imported disposition with transcript proof before coaching or correction.";
-  }
   return "Review the linked call proof and decide the next manager action.";
 }
 

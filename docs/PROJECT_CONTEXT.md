@@ -4,7 +4,7 @@
 Sales Dashboard is a local Node.js web app for scheduled CSV/XLSX sales-call transcript exports. It profiles import quality, deduplicates calls, runs deterministic local transcript evaluation, parks optional campaign/allocation imports outside active analytics, optionally submits local model jobs through the AI Execution Layer, persists derived local history, and renders a manager-facing dashboard without using unsupported phone/date, sales, or revenue assumptions.
 
 ## 2. Core Objective
-Make the current call export useful and safe: surface contact quality, meaningful conversations, follow-up signals, lead reattempt behaviour, lead harvest candidates, imported-outcome mismatches, call-CSV source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries. Preserve separate campaign/allocation data only as parked diagnostics.
+Make the current call export useful and safe: surface contact quality, meaningful conversations, follow-up signals, lead reattempt behaviour, lead harvest candidates, call-CSV source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries. Preserve separate campaign/allocation data only as parked diagnostics, and preserve untrusted legacy disposition/note fields only in raw source storage outside active product use.
 
 ## 3. Key Entities
 - CSV/XLSX import
@@ -43,11 +43,12 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 9. Apply shared global call/transcript filters with `src/globalFilters.js` for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.
 10. Merge alert lifecycle state with generated call-data alerts using `src/alertLifecycle.js`.
 11. Apply governed manager review overlays from `src/managerReview.js` and `src/storage.js` so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.
-12. Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, queued evaluation runs including all eligible transcript calls when requested, one-call prompt test runs, automatic reconciliation of small queued prompt-test jobs when the Studio page/API is read, run quarantine/resume state, batch result harvesting, versioned result records with prompt and knowledgebase provenance, global-filter-aware report-safe evaluation rollups, and result-to-manager-review handoffs with safe suggested correction prefill through `src/evaluationStudio.js`, `src/storage.js`, the standalone `/evaluation-studio` page, `/api/evaluation-studio`, `/api/evaluation-studio/prompt-tests`, `/api/evaluation-studio/report-rollups`, `/api/evaluation-studio/results`, and `/api/evaluation-studio/results/<id>/review`.
+12. Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, queued evaluation runs including all eligible transcript calls when requested, one-call prompt test runs, automatic reconciliation of small queued prompt-test jobs on Studio page/API reads with background UI refresh when status changes, advanced run quarantine/resume/harvest controls, batch result harvesting, versioned result records with prompt and knowledgebase provenance, global-filter-aware report-safe evaluation rollups, and result-to-manager-review handoffs with safe suggested correction prefill through `src/evaluationStudio.js`, `src/storage.js`, the standalone `/evaluation-studio` page, `/api/evaluation-studio`, `/api/evaluation-studio/prompt-tests`, `/api/evaluation-studio/report-rollups`, `/api/evaluation-studio/results`, and `/api/evaluation-studio/results/<id>/review`.
 13. Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, Evaluation Studio artifacts/results, and reports through `src/storage.js`.
 14. Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.
-15. Submit optional local model transcript jobs and explicit Evaluation Studio runs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`.
-16. Render the dashboard through `src/dashboardRenderer.js`.
+15. Submit optional local model transcript jobs and explicit Evaluation Studio runs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`. Evaluation Studio jobs require the Execution Layer's `dynamic-schema-v1` contract and one active leased worker; the existing `/api/ai/status?health=true` proxy exposes the sanitised worker state before a large batch is launched.
+16. Render shared-filter manager workspaces selected by `view=overview|harvest|follow_up|reviews|team|intelligence|records` through `src/dashboardRenderer.js`, while keeping Evaluation Studio at `/evaluation-studio`.
+17. Keep historical Evaluation Studio knowledge visible for governance but exclude entries marked `pending_manager_approval` from new run snapshots and local model input until a manager explicitly marks them `approved_current`.
 
 ## 5. Architecture Snapshot
 - `src/main.js`: local HTTP server, `/health`, `/api/summary`, and optional reload route.
@@ -65,8 +66,8 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - `src/analysis.js`: import profiling, deduplication, active/filtered call-transcript metrics, parked allocation status, deterministic lead reattempt buckets, lead harvest candidates, alerts, follow-up status, manager-review governance overlays, and sanitized rows.
 - `src/leadHarvestAnalytics.js`: positive-response callback candidate queue with possible name/timing extraction and stable-ID later-call labels.
 - `src/storage.js`: ignored local JSON store, import artifact writer, generated report saver, active report visibility view, alert lifecycle persistence, and manager review correction/history persistence.
-- `src/aiExecutionLayer.js`: optional local AI Execution Layer client for transcript jobs.
-- `src/dashboardRenderer.js`: HTML renderer and escaping layer.
+- `src/aiExecutionLayer.js`: optional local AI Execution Layer client for transcript jobs and sanitised worker-health proxying.
+- `src/dashboardRenderer.js`: HTML renderer, escaping layer, focused manager workspace navigation, and standalone Evaluation Studio presentation with separate readable knowledgebase/template libraries and expandable per-item editors.
 - `tests/analysis.test.js`: parser and evaluator checks.
 - `tests/storage.test.js`: persistence and report-library checks.
 

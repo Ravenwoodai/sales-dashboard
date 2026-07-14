@@ -4,6 +4,7 @@ const { ENTITY_FIELDS } = require("./analysisConstants");
 const { clean, isMissing, parseTranscriptTurns, toInt } = require("./transcriptEvaluator");
 const { SOURCE_AGE_THRESHOLDS, regionNameFor, sourceAttributionFor } = require("./sourceQuality");
 const { formatSourceDateTimeValue } = require("./dateTimeFormat");
+const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
 
 const EXCLUDED_RAW_FIELDS = new Set([
   "__rowNumber",
@@ -149,11 +150,6 @@ const METRICS = {
     title: "System Audio Recovered Later",
     description: "System-audio encounters followed by a later probable live-human call to the same stable customer or lead.",
     kind: "systemAudio"
-  },
-  "calls.outcomeMismatches": {
-    title: "Outcome Mismatches",
-    description: "Calls where imported disposition and local transcript evidence do not align.",
-    kind: "call"
   },
   "calls.riskReviews": {
     title: "Risk Reviews",
@@ -343,7 +339,7 @@ function contactIdFor(row) {
 
 function rawFieldsFor(row) {
   return Object.keys(row)
-    .filter((field) => !EXCLUDED_RAW_FIELDS.has(field) && field !== "transcription_text")
+    .filter((field) => !EXCLUDED_RAW_FIELDS.has(field) && !isUntrustedLegacyField(field) && field !== "transcription_text")
     .reduce((fields, field) => {
       fields[field] = clean(row[field]);
       return fields;
@@ -400,7 +396,6 @@ function metricKeysForItem(item) {
   if (item.evaluation.systemAudio?.detected) {
     keys.push("calls.systemAudio", `calls.systemAudio.${item.evaluation.systemAudio.subtype}`);
   }
-  if (item.evaluation.outcome.mismatch) keys.push("calls.outcomeMismatches");
   if (item.evaluation.risk.reviewRequired) keys.push("calls.riskReviews");
   if (sourceAttribution.hasBulkSource) keys.push("source.bulkSourced");
   if (sourceAttribution.hasManualCreator) keys.push("source.manualCreated");
@@ -466,10 +461,6 @@ function buildCallProofRow(item) {
     totalSeconds: item.evaluation.totalSeconds,
     contactClassification: item.evaluation.contact.classification,
     localOutcome: item.evaluation.outcome.localCategory,
-    importedNoSale: item.evaluation.outcome.importedNoSaleLabel,
-    importedNoSaleRaw: item.evaluation.outcome.importedNoSale,
-    importedNoSaleReliability: item.evaluation.outcome.importedNoSaleReliability,
-    importedNoSalePriority: item.evaluation.outcome.importedNoSalePriority,
     followUpStatus: item.followUpStatus,
     followUpMatchedCallId: item.followUpMatchedCallId || "",
     followUpChannel: item.evaluation.opportunity.followUpChannel,

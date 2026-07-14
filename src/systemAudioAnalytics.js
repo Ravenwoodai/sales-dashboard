@@ -209,7 +209,6 @@ function buildSystemAudioRecords(items, maxDateTime) {
         contactClassification: item.evaluation?.contact?.classification || "",
         localOutcome: item.evaluation?.outcome?.localCategory || "",
         transcriptQuality: item.evaluation?.transcript?.qualityBand || "",
-        importedNoSale: item.evaluation?.outcome?.importedNoSaleLabel || item.evaluation?.outcome?.importedNoSale || "",
         handledSuccessfully: screeningResponse.handledSuccessfully,
         bailed: screeningResponse.bailed,
         partial: screeningResponse.partial,

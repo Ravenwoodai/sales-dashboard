@@ -1,10 +1,45 @@
 # Plans
+
+### Local Evaluation Studio Workflow
+- Goal: make transcript evaluation a direct local workflow rather than a manager-approval process.
+- Scope shipped: local-user attribution, Draft/Included knowledgebase language, default inclusion for newly entered local knowledge, filtered transcript selection, specific-call selection, deterministic sampling, batch preview, submit-now batch runs, one-call tests, paginated result browsing, result filters for evaluator findings, and concise decision-first result details with deduplicated transcript evidence.
+- Safety retained: immutable raw calls, strict evaluator schemas, evidence validation, single-worker lease, idempotent harvesting, and no automatic lead/claim/CRM action.
+- Calibration: the frozen 25-call plus eight-allegation label set is preserved as optional local reference labels with canonical SHA-256 `3acfc1b70ff788a0b3772fe3905a92094d80510a8ccc8e380485e086f03147f3`; it does not gate normal evaluation.
+- Verification: `node --test tests/*.test.js` passes 146/146; desktop and 390px browser checks cover selection preview, result filtering, workspace order, and page-level overflow on the verified July 7 server at `http://127.0.0.1:3040/evaluation-studio`.
+- Status: complete. The separate v4 evaluator-quality calibration identifies follow-up semantic/model work before unattended full-dataset evaluation.
+
+### Evaluation Studio Single-Worker Safety
+- Goal: prevent stale, duplicate, or contract-incompatible Execution Layer processes from consuming Sales Dashboard Evaluation Studio jobs.
+- Scope shipped: per-process worker identity, `dynamic-schema-v1` job requirements, a 30-second durable lease with 5-second heartbeat, atomic lease-aware claims, a database trigger that blocks obsolete claim SQL, versioned claim attempts and recovery lineage, sanitised health visibility, standby/failover behaviour, and startup duplicate checks.
+- Verification: deterministic lease tests, Evaluation Studio contract tests, PostgreSQL claim test, full Sales Dashboard suite, and controlled compatible/standby/failover/incompatible live processes against the shared local SQLite queue.
+- Status: complete; the larger evaluator calibration batch remains deferred.
 This file tracks execution plans for Sales Dashboard.
 
 ## Active Plans
 - None.
 
 ## Completed Plans
+### Untrusted Legacy Field Exclusion
+- Goal: prevent unreliable legacy human disposition and unknown-model note fields from influencing any active product conclusion.
+- Scope shipped: central exclusion policy, optional import contract, transcript-only local evaluation, removal from metrics/alerts/filters/reports/UI/APIs/manager-review prefill/AI inputs, historical report and alert filtering, and invariance regression tests.
+- Risks handled: original raw sources and historical records remain unchanged; exact legacy values are not exposed through normal product paths; deterministic, LLM, and manager-review governance remain separate.
+- Verification: `node --test tests/*.test.js`.
+- Status: complete.
+
+### Evaluation Studio Knowledge Import And Approval Gate
+- Goal: replace brief seed summaries with structured Neuron source knowledge and a small de-identified LatentPulse calibration set, without allowing historical material to silently become current evaluation policy.
+- Scope shipped: imported ten versioned Neuron documents covering offer/compliance wording, call stages, conversation state, objections, buyer signals, scoring, pattern statistics, coaching phrases, successful patterns, and retrieval design; imported four de-identified LatentPulse calibration/governance entries; archived the five superseded seed summaries without deletion; added approval metadata and UI controls.
+- Risks handled: imported material is tagged historical and pending manager approval; pending entries are visible in Evaluation Studio but excluded from run snapshots and model input; only `approved_current` entries may enter a new evaluation run; raw LatentPulse transcripts and historical customer identifiers were not imported.
+- Verification: live Studio summary shows 14 active pending entries, 0 approved entries, and 5 archived seed summaries. `node --test tests/*.test.js` passes with 108 tests.
+- Status: complete.
+
+### Manager Workspace UI Redesign
+- Goal: turn the very long all-in-one dashboard into focused operational workspaces while keeping one shared filtered call population and a separate Evaluation Studio.
+- Scope shipped: seven Sales Dashboard workspaces (`overview`, `harvest`, `follow_up`, `reviews`, `team`, `intelligence`, and `records`), a product switcher, compact dataset context, progressive-disclosure filters, an overview attention queue, relevant in-page navigation, bounded table previews, Evaluation Studio jump navigation, and collapsed creation forms.
+- Risks handled: all existing analysis and governance remain server-rendered and unchanged; filter query state persists between workspaces; parked allocation content remains excluded; hidden workspace content is not presented as active UI; large tables scroll within their containers on mobile.
+- Verification: `node --test tests/*.test.js` passes with 107 tests. Browser checks passed at 1280x720 and 390x844 with no page-level horizontal overflow on the overview, Lead Harvest, Reviews, and Evaluation Studio routes.
+- Status: complete.
+
 ### Batch 7 Evaluation Studio
 - Goal: add a governed Evaluation Studio where managers can manage sales knowledgebase entries, strict-schema evaluation templates, local batch evaluation runs, evidence/confidence outputs, and manager-reviewed corrections without replacing raw, deterministic, LLM, or manager-review records.
 - Scope shipped: `src/evaluationStudio.js`, seeded Neuron/LatentPulse-derived knowledgebase entries, editable/archivable knowledgebase records, standalone `/evaluation-studio` workspace with text-file loader for knowledgebase material, editable/archivable strict-schema templates with safe custom evaluation goals, queued run records with template/knowledgebase snapshots, all-eligible-call batch selection support, one-call prompt test runs, versioned Evaluation Studio result records that preserve template and knowledgebase versions, result/evidence queues, manager-review handoff from result records with safe suggested correction prefill, run quarantine/resume governance with history, batch result harvesting from queued local AI jobs, global-filter-aware Evaluation Studio result and rollup views, report-safe Evaluation Studio lead utilisation/coaching rollups, `/api/evaluation-studio` APIs including `/api/evaluation-studio/results`, `/api/evaluation-studio/prompt-tests`, and `/api/evaluation-studio/report-rollups`, compact dashboard Evaluation Results bridge, explicit optional Execution Layer submission path, and regression tests.
@@ -29,7 +64,7 @@ This file tracks execution plans for Sales Dashboard.
 ### Manager Review Governance And Correction Workflow
 - Goal: make transcript-derived dashboard intelligence reviewable and correctable without overwriting raw imported, deterministic, LLM, or alert evidence.
 - Scope shipped: `src/managerReview.js` status/scope/correction allowlist helpers, manager review records with corrections/history, local `local_manager` actor resolution, `/api/manager-reviews` list/create/detail/update/history/bulk endpoints, `/api/calls/<call-id>/reviews`, upgraded `/reviews` form handling, manager-review global filter status support, review governance counts, call-page correction form/history, alert-centre linked review state, review queue actions, and raw explorer review/correction display.
-- Risks handled: manager review is separate from alert lifecycle, corrections are overlays only, raw `NoSaleType` and deterministic/LLM outputs remain preserved, protected/raw/allocation/campaign fields cannot be corrected, notes are escaped on render, and active alert counts do not change from manager review alone.
+- Risks handled: manager review is separate from alert lifecycle, corrections are overlays only, untrusted legacy disposition/note fields remain raw-source-only, deterministic/LLM outputs remain preserved, protected/raw/allocation/campaign fields cannot be corrected, notes are escaped on render, and active alert counts do not change from manager review alone.
 - Verification: `node --test tests/*.test.js`.
 - Status: complete.
 
@@ -122,6 +157,13 @@ This file tracks execution plans for Sales Dashboard.
 - Scope shipped: evidence summaries on dashboard, drill-down, alert, review, explorer, and lead-utilization report surfaces; call pages now show the readable Transcript Timeline before separate Detected Signal proof excerpts; raw transcript remains available below the readable view.
 - Risks handled: proof snippets no longer start mid-word or flatten several transcript fragments into one table cell; signal excerpts are not presented as the full conversation; source transcript order is preserved in the timeline instead of being re-sorted by the UI; 12-month/next-financial-year callback wording is classified as long-term deferral rather than active follow-up.
 - Verification: `node --test tests/*.test.js`; browser verification at `http://127.0.0.1:3101` for drill-down proof summaries, call proof cards, report proof-summary samples, desktop layout, and mobile-width overflow.
+- Status: complete.
+
+### Lead Record Safety Decision Mappings
+- Goal: ensure direct opt-out, serious threat, permanent-closure, and uncertain-closure evidence cannot produce contradictory operational recommendations.
+- Scope shipped: versioned Lead Record audit template v4, transcript-backed semantic reconciliation, advisory manager-review mappings, permanent-closure certainty checks, and separate normalized operational-issue findings.
+- Risks handled: recommendations remain advisory; trusted claims, leads, allocation, CRM, alerts, reports, and manager-review records are not mutated; historical v1-v3 runs and calibration artifacts remain preserved.
+- Verification: preserved CAL-14, CAL-17, CAL-18, and hedged-closure patterns are covered by focused tests; `node --test tests/*.test.js` passes 145/145.
 - Status: complete.
 
 ## Planning Rules

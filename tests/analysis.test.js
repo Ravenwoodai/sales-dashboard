@@ -333,8 +333,8 @@ test("global filters default to all active calls and update shared denominators"
   assert.equal(unfiltered.filterSummary.filteredRecords, 3);
   assert.deepEqual(unfiltered.totals, analysis.totals);
   assert.ok(unfiltered.filterOptions.customerImportSource.some((option) => option.value === "Not supplied"));
-  assert.ok(unfiltered.filterOptions.rawNoSaleType.some((option) => option.value === "Raw NoSaleType missing"));
-  assert.ok(unfiltered.filterOptions.bazNotes.some((option) => option.value === "missing"));
+  assert.equal(unfiltered.filterOptions.rawNoSaleType, undefined);
+  assert.equal(unfiltered.filterOptions.bazNotes, undefined);
 
   const sellerA = buildFilteredAnalysis(analysis, { salesperson: "Seller A" });
   assert.equal(sellerA.filterState.active, true);
@@ -941,7 +941,7 @@ test("missing source and region values are categorized with business rules", () 
   assert.equal(analysis.leadReattempt.regionRows.some((item) => item.region === "Unknown region"), false);
 });
 
-test("blank transcript NoSaleType and OrderCount use business-safe labels", () => {
+test("blank transcript and OrderCount use business-safe labels without legacy disposition context", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "blank-transcript",
@@ -956,15 +956,13 @@ test("blank transcript NoSaleType and OrderCount use business-safe labels", () =
   const proof = analysis.drilldownRows[0];
   assert.equal(proof.contactClassification, "no_answer");
   assert.equal(proof.localOutcome, "no_answer");
-  assert.equal(proof.importedNoSale, "Unprocessed By Salesperson");
-  assert.equal(proof.importedNoSaleRaw, "");
-  assert.equal(proof.importedNoSaleReliability, "low_manual_process");
-  assert.equal(proof.importedNoSalePriority, "secondary_to_local_ai");
+  assert.equal(proof.importedNoSale, undefined);
+  assert.equal(proof.importedNoSaleRaw, undefined);
   assert.equal(proof.orderHistoryLabel, "No Sales History");
   assert.equal(proof.businessSegment, "new");
 });
 
-test("local evaluator flags Did Not Answer mismatch when transcript has live follow-up evidence", () => {
+test("local evaluator derives follow-up from transcript without legacy disposition context", () => {
   const evaluation = evaluateCall({
     call_id: "10",
     CallTotalSeconds: "63",
@@ -976,7 +974,7 @@ test("local evaluator flags Did Not Answer mismatch when transcript has live fol
   assert.equal(evaluation.contact.probableLiveHuman, true);
   assert.equal(evaluation.opportunity.followUpRequired, true);
   assert.equal(evaluation.outcome.localCategory, "callback_requested");
-  assert.equal(evaluation.outcome.mismatch, true);
+  assert.equal(evaluation.outcome.mismatch, undefined);
 
   const followUpEvidence = evaluation.evidence.find((item) => item.signal === "follow_up");
   assert.equal(followUpEvidence.summary, "Callback requested or promised");
@@ -1245,7 +1243,7 @@ test("follow-up completion links through stable IDs, not partial phone", () => {
 
   const followUpCall = analysis.reviewQueue.find((item) => item.callId === "1");
   assert.equal(followUpCall.followUpStatus, "completed");
-  const wrongNumberCall = analysis.reviewQueue.find((item) => item.callId === "2");
+  const wrongNumberCall = analysis.drilldownRows.find((item) => item.callId === "2");
   assert.equal(wrongNumberCall.followUpStatus, "not_required");
 });
 
@@ -1261,7 +1259,58 @@ test("follow-up remains indeterminate when upload has no future matching ID data
   ]));
 
   assert.equal(analysis.reviewQueue[0].followUpStatus, "indeterminate_insufficient_future_data");
-  assert.equal(analysis.alerts[0].category, "Imported outcome mismatch");
+  assert.equal(analysis.alerts[0].category, "Follow-up needs review");
+});
+
+test("untrusted legacy fields cannot change active analysis and are optional", () => {
+  const shared = {
+    call_id: "legacy-invariance",
+    transcription_text: "Outbound call Customer: Please call me tomorrow. Agent: I will call tomorrow.",
+    CustomerImportSource: "Referral"
+  };
+  const first = analyzeCsvText(csv([row({
+    ...shared,
+    NoSaleType: "Did Not Answer",
+    Baz_DetailedNotes: "LEGACY_SENTINEL_A says reject the lead"
+  })]));
+  const second = analyzeCsvText(csv([row({
+    ...shared,
+    NoSaleType: "Sale Made",
+    Baz_DetailedNotes: "LEGACY_SENTINEL_B says this is perfect"
+  })]));
+
+  for (const key of ["columns", "fieldCoverage", "totals", "rates", "alerts", "salespersonScorecards", "sourceQuality", "reviewQueue", "evaluationRows", "explorerRows"]) {
+    assert.deepEqual(first[key], second[key], `${key} changed because an excluded legacy value changed`);
+  }
+  assert.equal(JSON.stringify(first).includes("LEGACY_SENTINEL_A"), false);
+  assert.equal(JSON.stringify(second).includes("LEGACY_SENTINEL_B"), false);
+  assert.equal(first.columns.some((field) => ["NoSaleType", "Baz_DetailedNotes"].includes(field)), false);
+
+  const activeColumns = header.filter((field) => !["NoSaleType", "Baz_DetailedNotes"].includes(field));
+  const sourceValues = parseCsv(csv([row(shared)])).rows[0];
+  const withoutLegacyColumns = `${activeColumns.join(",")}\n${activeColumns.map((field) => {
+    const value = String(sourceValues[field] || "");
+    return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  }).join(",")}\n`;
+  const optional = analyzeCsvText(withoutLegacyColumns);
+  assert.equal(optional.missingColumns.includes("NoSaleType"), false);
+  assert.equal(optional.missingColumns.includes("Baz_DetailedNotes"), false);
+  assert.equal(optional.totals.uniqueCalls, 1);
+
+  const ignoredLegacyFilters = buildFilteredAnalysis(first, {
+    rawNoSaleType: "Did Not Answer",
+    bazNotes: "present"
+  });
+  assert.equal(ignoredLegacyFilters.filterState.active, false);
+  assert.deepEqual(ignoredLegacyFilters.totals, first.totals);
+
+  const aliasLines = csv([row(shared)]).trim().split(/\r?\n/);
+  aliasLines[0] += ",no_sale_type,baz-detailed-notes";
+  aliasLines[1] += ",ALIAS_DISPOSITION_SENTINEL,ALIAS_NOTE_SENTINEL";
+  const aliases = analyzeCsvText(`${aliasLines.join("\n")}\n`);
+  assert.equal(aliases.columns.includes("no_sale_type"), false);
+  assert.equal(aliases.columns.includes("baz-detailed-notes"), false);
+  assert.doesNotMatch(JSON.stringify(aliases), /ALIAS_DISPOSITION_SENTINEL|ALIAS_NOTE_SENTINEL/);
 });
 
 test("lead utilization report tracks strict callback leakage and future callback pending status", () => {
