@@ -481,6 +481,7 @@ function buildCallProofRow(item) {
     localOutcome: item.evaluation.outcome.localCategory,
     followUpStatus: item.followUpStatus,
     followUpMatchedCallId: item.followUpMatchedCallId || "",
+    followUpMatch: item.followUpMatch || null,
     followUpChannel: item.evaluation.opportunity.followUpChannel,
     aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
     aiVoiceAssistantConfidence: item.evaluation.aiVoiceAssistant?.confidence || 0,

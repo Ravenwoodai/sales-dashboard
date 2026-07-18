@@ -861,6 +861,24 @@ function aiJobResultPayload(result = {}) {
   return result.result_payload || result.resultPayload || result.result || result.output || result.response || result.data || result.job?.result_payload || result.job?.resultPayload || result.job?.result || result;
 }
 
+function evaluationExecutionAudit(result = {}) {
+  const job = result.job && typeof result.job === "object" ? result.job : result;
+  return {
+    modelMetadata: {
+      model: job.model_used || job.modelUsed || job.model || "",
+      providerModel: job.provider_model || job.providerModel || "",
+      route: job.route_id || job.routeId || ""
+    },
+    executionMetadata: {
+      promptTokens: job.prompt_tokens ?? job.promptTokens ?? null,
+      completionTokens: job.completion_tokens ?? job.completionTokens ?? null,
+      totalTokens: job.total_tokens ?? job.totalTokens ?? null,
+      executionMs: job.execution_ms ?? job.executionMs ?? null,
+      retryCount: job.retry_count ?? job.retryCount ?? null
+    }
+  };
+}
+
 function aiJobIsDone(status) {
   return ["done", "completed", "complete", "succeeded", "success"].includes(String(status || "").toLowerCase());
 }
@@ -1083,6 +1101,7 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
         runId: run.id,
         templateId: template.id,
         jobId,
+        ...evaluationExecutionAudit(executionLayerResponse),
         result: aiJobResultPayload(executionLayerResponse),
         validationContext: { call }
       }, { storePath });
@@ -1496,6 +1515,7 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
             templateId: run.templateId,
             jobId: jobRef.jobId,
             callId: jobRef.callId,
+            ...evaluationExecutionAudit(job),
             result: aiJobResultPayload(job),
             validationContext: {
               call: validationCall
@@ -2886,7 +2906,28 @@ function createServer(options = {}) {
         evidenceUnavailableOnly: url.searchParams.get("evidenceUnavailableOnly"),
         includeSuperseded: url.searchParams.get("includeSuperseded")
       });
-      const visibleResults = results.slice(offset, offset + limit);
+      const resultCallLookup = new Map((state.analysis?.drilldownRows || []).map((call) => [String(call.callId || call.call_id || "").trim(), call]));
+      const visibleResults = attachFoundationContextToResults(
+        studio,
+        results.slice(offset, offset + limit),
+        state.analysis?.drilldownRows || []
+      ).map((result) => {
+        const call = resultCallLookup.get(String(result.callId || "").trim()) || {};
+        const customerId = String(call.customerId || call.customer_id || result.customerId || "").trim() || "Not available";
+        return {
+          ...result,
+          customerId,
+          callContext: {
+            callId: result.callId,
+            customerId,
+            salesperson: call.salesperson || "",
+            source: call.source || call.customerImportSource || "",
+            date: call.date || call.callDate || "",
+            time: call.time || call.callTime || "",
+            sourceTime: call.sourceTime || ""
+          }
+        };
+      });
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_evaluation_studio_results_api.v1",
         autoHarvest: {

@@ -100,6 +100,51 @@ function csv(rows) {
   return `${header.join(",")}\n${rows.join("\n")}\n`;
 }
 
+function typedCallbackPayload(callId, quote, timingRaw = "tomorrow", overrides = {}) {
+  return {
+    schema_version: "callback_opportunity.v2",
+    evaluation_goal: "callback_opportunity",
+    call_id: callId,
+    status: "usable",
+    confidence: 0.88,
+    evidence_availability: "available",
+    transcript_quality: "high",
+    callback_state: "requested",
+    next_action_channel: "call",
+    timing_raw: timingRaw,
+    customer_intent: "interest",
+    objection: "",
+    handover_summary: "Customer requested a callback.",
+    evidence: [{ claim_type: "timing", speaker: "customer", quote }],
+    manager_review_recommended: false,
+    manager_summary: "Customer requested a callback.",
+    limitations: [],
+    findings: [],
+    ...overrides
+  };
+}
+
+function typedProcedurePayload(callId, quote, overrides = {}) {
+  return {
+    schema_version: "procedure_adherence.v2",
+    evaluation_goal: "procedure_adherence",
+    call_id: callId,
+    status: "usable",
+    confidence: 0.86,
+    evidence_availability: "available",
+    transcript_quality: "high",
+    outcome: "evaluated_clear",
+    strongest_issue_stage: "none",
+    issue_summary: "",
+    evidence: [{ claim_type: "procedure_clear", speaker: "customer", quote }],
+    manager_review_recommended: false,
+    manager_summary: "No material procedure issue was established.",
+    limitations: [],
+    findings: [],
+    ...overrides
+  };
+}
+
 async function withServer(csvText, fn, options = {}) {
   const storePath = tempStorePath();
   const csvPath = path.join(path.dirname(storePath), "sample.csv");
@@ -1803,12 +1848,12 @@ test("dashboard exposes Evaluation Studio APIs, queued runs, and management UI",
     assert.equal(resultsResponse.results[0].provenance, "evaluation_studio_local_model");
 
     const studioAfterResult = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    assert.equal(studioAfterResult.reportRollups.totals.callbackOpportunities, 2);
+    assert.equal(studioAfterResult.reportRollups.totals.callbackOpportunities, 1);
     assert.equal(studioAfterResult.reportRollups.totals.evaluatedCalls, 2);
     assert.equal(studioAfterResult.reportRollups.priorityExamples[0].callId, "studio-1");
 
     const rollupOnly = await fetch(`${baseUrl}/api/evaluation-studio/report-rollups?currentOnly=true`).then((response) => response.json());
-    assert.equal(rollupOnly.reportRollups.totals.callbackOpportunities, 2);
+    assert.equal(rollupOnly.reportRollups.totals.callbackOpportunities, 1);
     assert.equal(rollupOnly.reportRollups.scope.use, "Report-ready lead utilisation and coaching signals for manager review, not disciplinary proof.");
 
     const filteredRollup = await fetch(`${baseUrl}/api/evaluation-studio/report-rollups?currentOnly=true&salesperson=${encodeURIComponent("Riley Example")}`).then((response) => response.json());
@@ -2015,26 +2060,15 @@ test("Evaluation Studio batch harvest stores completed jobs, marks failures, and
           text: async () => JSON.stringify({
             job_id: jobId,
             status: "completed",
-            result_payload: {
-              call_id: "harvest-1",
-              evaluation_goal: "callback_opportunity",
-              status: "usable",
-              confidence: 0.88,
-              evidence_availability: "available",
-              transcript_quality: "high",
-              manager_summary: "Customer showed interest and asked for a callback tomorrow.",
-              manager_review_recommended: true,
-              findings: [
-                {
-                  field: "callback_requested",
-                  value: true,
-                  evidence: "Customer: I am interested but need a call back tomorrow.",
-                  confidence: 0.88,
-                  manager_review_recommended: true
-                }
-              ],
-              limitations: ["No confirmed sales, revenue, or conversion data is available."]
-            }
+            result_payload: typedCallbackPayload(
+              "harvest-1",
+              "I am interested but need a call back tomorrow.",
+              "tomorrow",
+              {
+                manager_review_recommended: true,
+                manager_summary: "Customer showed interest and asked for a callback tomorrow."
+              }
+            )
           })
         };
       }
@@ -2153,25 +2187,17 @@ test("Evaluation Studio prompt test submits one call and stores completed local 
         text: async () => JSON.stringify({
           job_id: "prompt-test-job-1",
           status: "completed",
-          result_payload: {
-            call_id: requestBody.metadata.source_record_id,
-            evaluation_goal: requestBody.metadata.evaluation_goal,
-            status: "usable",
-            confidence: 0.91,
-            evidence_availability: "available",
-            transcript_quality: "high",
-            manager_summary: "Customer is interested and requested a callback tomorrow.",
-            findings: [
-              {
-                field: "callback_requested",
-                value: true,
-                evidence: "Customer: Please call me back tomorrow.",
-                confidence: 0.91,
-                manager_review_recommended: true
-              }
-            ],
-            limitations: ["No confirmed sale or revenue data is available."]
-          }
+          result_payload: typedCallbackPayload(
+            requestBody.metadata.source_record_id,
+            "I am interested, but I need to speak to my partner. Please call me back tomorrow.",
+            "tomorrow",
+            {
+              confidence: 0.91,
+              objection: "I need to speak to my partner.",
+              manager_review_recommended: true,
+              manager_summary: "Customer is interested and requested a callback tomorrow."
+            }
+          )
         })
       };
     }
@@ -2259,25 +2285,16 @@ test("Evaluation Studio auto-harvests completed queued prompt tests on Studio AP
         text: async () => JSON.stringify({
           job_id: "prompt-auto-harvest-job",
           status: "completed",
-          result_payload: {
-            call_id: "prompt-auto-harvest",
-            evaluation_goal: "callback_opportunity",
-            status: "usable",
-            confidence: 0.89,
-            evidence_availability: "available",
-            transcript_quality: "high",
-            manager_summary: "Customer gave a positive response and asked for a callback tomorrow.",
-            findings: [
-              {
-                field: "callback_requested",
-                value: true,
-                evidence: "Customer: I like the idea, please call me tomorrow.",
-                confidence: 0.89,
-                manager_review_recommended: true
-              }
-            ],
-            limitations: ["No confirmed sale or revenue data is available."]
-          }
+          result_payload: typedCallbackPayload(
+            "prompt-auto-harvest",
+            "I like the idea, please call me tomorrow.",
+            "tomorrow",
+            {
+              confidence: 0.89,
+              manager_review_recommended: true,
+              manager_summary: "Customer gave a positive response and asked for a callback tomorrow."
+            }
+          )
         })
       };
     }
@@ -2461,6 +2478,11 @@ test("Call Intelligence Foundation automatically routes only eligible specialist
     assert.equal(goals.includes("offer_acceptance_classification"), false);
     assert.equal(goals.includes("objection_handling"), false);
     assert.equal(goals.includes("lead_record_disposition_evidence_audit"), false);
+    assert.equal(specialistRefresh.evaluationResults.every((result) => result.callIntelligence?.schemaVersion === "call_intelligence_aggregate.v1"), true);
+    assert.equal(specialistRefresh.evaluationResults.every((result) => result.customerId === "customer-1"), true);
+    const resultsApi = await fetch(`${baseUrl}/api/evaluation-studio/results?callId=${encodeURIComponent(callId)}&currentOnly=true`).then((response) => response.json());
+    assert.equal(resultsApi.results.every((result) => result.callIntelligence?.schemaVersion === "call_intelligence_aggregate.v1"), true);
+    assert.equal(resultsApi.results.every((result) => result.customerId === "customer-1"), true);
     assert.equal(specialistRefresh.foundationReport.totals.routedSpecialistChecks, 2);
     assert.equal(specialistRefresh.foundationReport.totals.completedSpecialistChecks, 2);
     const html = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
@@ -2503,24 +2525,16 @@ test("Call Intelligence Foundation automatically routes only eligible specialist
       const goal = jobId.replace(/-job$/, "");
       const resultPayload = goal === "call_intelligence_foundation"
         ? foundationPayload
-        : {
-            schema_version: "sales_dashboard_evaluation_result.v1",
-            evaluation_goal: goal,
-            call_id: callId,
-            status: "usable",
-            confidence: 0.86,
-            evidence_availability: "available",
-            transcript_quality: "high",
-            findings: [{
-              field: goal === "callback_opportunity" ? "callback_requested" : "procedure_stage",
-              value: goal === "callback_opportunity" ? true : "purpose_explained",
-              evidence: "Please send the information and call me tomorrow afternoon.",
-              confidence: 0.86,
-              manager_review_recommended: false
-            }],
-            manager_summary: `${goal} specialist result.`,
-            limitations: []
-          };
+        : goal === "callback_opportunity"
+          ? typedCallbackPayload(
+              callId,
+              "Please send the information and call me tomorrow afternoon.",
+              "tomorrow afternoon"
+            )
+          : typedProcedurePayload(
+              callId,
+              "Please send the information and call me tomorrow afternoon."
+            );
       return {
         ok: true,
         status: 200,
@@ -2595,24 +2609,12 @@ test("large Evaluation Studio runs submit concurrently and auto-harvest in bound
           job: {
             id: jobId,
             status: "done",
-            result_payload: {
-              schema_version: "sales_dashboard_evaluation_result.v1",
-              evaluation_goal: "callback_opportunity",
-              call_id: callId,
-              status: "usable",
-              confidence: 0.85,
-              evidence_availability: "available",
-              transcript_quality: "high",
-              findings: [{
-                field: "callback_requested",
-                value: true,
-                evidence: "Please send the information and call tomorrow.",
-                confidence: 0.85,
-                manager_review_recommended: false
-              }],
-              manager_summary: "Customer requested information and a callback.",
-              limitations: []
-            }
+            result_payload: typedCallbackPayload(
+              callId,
+              "Please send the information and call tomorrow.",
+              "tomorrow",
+              { confidence: 0.85, manager_summary: "Customer requested information and a callback." }
+            )
           }
         })
       };
@@ -2904,7 +2906,9 @@ test("Foundation result cards surface authoritative acceptance and always show C
   assert.match(html, /Customer accepted offer/);
   assert.match(html, /Authoritative Offer Acceptance/);
   assert.match(html, /95\.0%/);
-  assert.match(html, /Outcome confidence 95\.0%/);
+  assert.match(html, /High confidence/);
+  assert.match(html, /Model-reported confidence \(audit\)/);
+  assert.match(html, /uncalibrated/);
   assert.match(html, /Customer ID:[\s\S]*customer-accepted-42/);
   assert.match(html, /Customer ID:[\s\S]*Not available/);
   assert.match(html, /Record summary/);

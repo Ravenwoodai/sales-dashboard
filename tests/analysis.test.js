@@ -1266,7 +1266,11 @@ test("follow-up completion links through stable IDs, not partial phone", () => {
   ]));
 
   const followUpCall = analysis.reviewQueue.find((item) => item.callId === "1");
-  assert.equal(followUpCall.followUpStatus, "completed");
+  assert.equal(followUpCall.followUpStatus, "later_attempt_observed");
+  assert.equal(followUpCall.followUpMatch.relationStatus, "confirmed_related_call");
+  assert.equal(followUpCall.followUpMatch.matchMethod, "exact_stable_identifier");
+  assert.equal(followUpCall.followUpMatch.completionState, "not_established");
+  assert.equal(followUpCall.followUpMatch.paymentState, "not_established");
   const wrongNumberCall = analysis.drilldownRows.find((item) => item.callId === "2");
   assert.equal(wrongNumberCall.followUpStatus, "not_required");
 });

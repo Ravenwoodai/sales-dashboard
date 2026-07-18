@@ -45,12 +45,13 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 9. Apply shared global call/transcript filters with `src/globalFilters.js` for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.
 10. Merge alert lifecycle state with generated call-data alerts using `src/alertLifecycle.js`.
 11. Apply governed manager review overlays from `src/managerReview.js` and `src/storage.js` so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.
-12. Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, Call Intelligence Foundation v6/schema v3 with transcript-grounded represented-party capture, final-state/long-term-nurture reconciliation, separately tagged/listed exact callback timing shared across a call's result rows, independent opportunity/measurement/efficiency lenses, and selective routing to five specialist evaluators, the manager-calibrated Offer Acceptance evaluator, queued runs, one-call prompt tests, transient idempotent submission retries, bounded automatic harvest, versioned results with provenance, report-safe rollups, and result-to-manager-review handoffs through `src/evaluationStudio.js`, `src/storage.js`, the standalone `/evaluation-studio` page, and the `/api/evaluation-studio` routes.
-13. Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, Evaluation Studio artifacts/results, and reports through `src/storage.js`.
-14. Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.
-15. Submit optional local model transcript jobs and explicit Evaluation Studio runs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`. Evaluation Studio jobs require the Execution Layer's `dynamic-schema-v1` contract and one active leased worker; the existing `/api/ai/status?health=true` proxy exposes the sanitised worker state before a large batch is launched.
-16. Render shared-filter manager workspaces selected by `view=overview|harvest|follow_up|reviews|team|intelligence|records` through `src/dashboardRenderer.js`, while keeping Evaluation Studio at `/evaluation-studio`.
-17. Keep historical Evaluation Studio knowledge visible for governance but exclude entries marked `pending_manager_approval` from new run snapshots and local model input until a manager explicitly marks them `approved_current`.
+12. Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, Call Intelligence Foundation v6/schema v3, typed Callback/Procedure/Objection specialist contracts, authoritative Offer Acceptance, complete-source transcript audit metadata, selective routing, bounded automatic harvest, versioned results with provenance, report-safe rollups, and result-to-manager-review handoffs through `src/evaluationStudio.js`, `src/storage.js`, the standalone `/evaluation-studio` page, and the `/api/evaluation-studio` routes.
+13. Project each call's stored results through `src/callIntelligenceAggregate.js`, keeping offer acceptance, quoted context, intended payment, payment verification, invoice, fulfilment, revenue, and CRM state independent while exposing exact evidence, authority conflicts, specialist lifecycle, provenance, and source-date relative-date policy.
+14. Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, Evaluation Studio artifacts/results, and reports through `src/storage.js`.
+15. Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.
+16. Submit optional local model transcript jobs and explicit Evaluation Studio runs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`. Evaluation Studio jobs require the Execution Layer's `dynamic-schema-v1` contract and one active leased worker; the existing `/api/ai/status?health=true` proxy exposes the sanitised worker state before a large batch is launched.
+17. Render shared-filter manager workspaces selected by `view=overview|harvest|follow_up|reviews|team|intelligence|records` through `src/dashboardRenderer.js`, while keeping Evaluation Studio at `/evaluation-studio`.
+18. Keep historical Evaluation Studio knowledge visible for governance but exclude entries marked `pending_manager_approval` from new run snapshots and local model input until a manager explicitly marks them `approved_current`.
 
 ## 5. Architecture Snapshot
 - `src/main.js`: local HTTP server, `/health`, `/api/summary`, and optional reload route.
@@ -63,6 +64,7 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - `src/alertLifecycle.js`: alert status, active/closed count, server-resolved local actor, manager note, and lifecycle-history helpers.
 - `src/managerReview.js`: manager review status/scope/correction allowlist, local actor resolution, correction overlay, and review-history helpers.
 - `src/evaluationStudio.js`: Evaluation Studio knowledgebase/template/run/result model, Call Intelligence Foundation v3 schema/validation/reporting including represented-party proof/repair, final-state and long-term-nurture reconciliation, shared Foundation call context, independent opportunity/measurement/efficiency lenses, deterministic specialist routing, safe custom goals, Lead Record and Offer Acceptance validation, run governance, bounded batch harvesting, provenance, evidence normalization, and guarded local-model input construction.
+- `src/callIntelligenceAggregate.js`: versioned call commercial lifecycle, authority conflict, specialist state, exact-evidence, provenance, and Australian relative-date projection.
 - `src/dateTimeFormat.js`: Australian/AEST UI date/time formatter for source call times, filters, reports, and stored system timestamps.
 - `src/transcriptEvaluator.js`: local transcript-quality, contact, outcome, follow-up, and risk classifier.
 - `src/analysis.js`: import profiling, deduplication, active/filtered call-transcript metrics, parked allocation status, deterministic lead reattempt buckets, lead harvest candidates, alerts, follow-up status, manager-review governance overlays, and sanitized rows.
@@ -118,5 +120,5 @@ Make the current call export useful and safe: surface contact quality, meaningfu
 - `/runtime/AUTONOMOUS_BACKLOG.md`
 
 ## 9. Metadata
-- Last Generated: 2026-07-16T12:00:00.000Z
+- Last Generated: 2026-07-18T10:30:00.000Z
 - Confidence Level: high

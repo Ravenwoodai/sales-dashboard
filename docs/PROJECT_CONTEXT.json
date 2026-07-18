@@ -22,6 +22,8 @@
     "Evaluation Studio run",
     "Evaluation Studio result",
     "Call Intelligence Foundation assessment",
+    "Call intelligence aggregate",
+    "Call commercial lifecycle state",
     "Evaluation Studio specialist route",
     "Evaluation Studio worker lease",
     "Evaluation Studio job claim attempt",
@@ -40,13 +42,14 @@
       "Parse CSV/XLSX first-sheet tabular inputs with src/sourceFile.js, src/csvParser.js, and src/xlsxReader.js.",
       "Deduplicate calls by call_id, ignore privacy-reduced fields for analytics, and parse valid customer import/create dates only for source-quality Record Age.",
       "Evaluate each transcript locally with deterministic rules in src/transcriptEvaluator.js.",
-      "Link follow-up signals through stable source IDs only.",
+      "Link follow-up signals through stable source IDs only; record a later exact-ID attempt without claiming callback completion, payment, or sale completion.",
       "Build active call/transcript metrics, deterministic one-dial lead reattempt buckets, lead harvest candidates, an isolated long-held-record/import attribution audit, a separate weekly-report supply snapshot, parked allocation status, alerts, sanitized evaluation rows, and explorer rows in src/analysis.js.",
       "Format all UI-facing dates and times through src/dateTimeFormat.js using Australian DD/MM/YYYY HH:mm:ss AEST display. Source call times are labelled as source call time in AEST without browser timezone conversion; system timestamps are converted to fixed AEST.",
       "Apply shared global call/transcript filters with src/globalFilters.js for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.",
       "Merge alert lifecycle state with generated call-data alerts using src/alertLifecycle.js.",
       "Apply governed manager review overlays from src/managerReview.js and src/storage.js so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.",
-      "Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, Call Intelligence Foundation v6/schema v3 with transcript-grounded represented-party capture, final-state and long-term-nurture reconciliation, separately tagged/listed exact callback timing shared across a call's results, and independent opportunity/measurement/efficiency lenses, locally reconciled routes to five specialist evaluators, the Offer Acceptance evaluator, queued runs, one-call prompt tests, idempotent transient submission retries, bounded harvest, versioned results with provenance, report-safe rollups, and result-to-manager-review handoffs through the Evaluation Studio UI and APIs.",
+      "Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, Call Intelligence Foundation v6/schema v3, typed Callback/Procedure/Objection specialist contracts, authoritative Offer Acceptance, full-transcript input audit metadata, locally reconciled routing, bounded harvest, versioned results with provenance, report-safe rollups, and result-to-manager-review handoffs through the Evaluation Studio UI and APIs.",
+      "Build a read-only call_intelligence_aggregate.v1 projection that separates accepted-offer evidence, quoted context, intended payment timing, payment verification, invoice, fulfilment, revenue, and CRM state; resolves supported relative dates from Australian source dates; and exposes evaluator conflicts, specialist lifecycle states, strongest evidence, and claim provenance.",
       "Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, Evaluation Studio artifacts/results, and reports through src/storage.js.",
       "Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.",
       "Submit optional local model transcript jobs and explicit Evaluation Studio runs through src/aiExecutionLayer.js and C:\\Users\\User\\Desktop\\ai-execution-layer. Evaluation Studio jobs require the Execution Layer dynamic-schema-v1 contract and one active leased worker; /api/ai/status?health=true exposes sanitised worker state before a large batch.",
@@ -70,6 +73,7 @@
     "src/alertLifecycle.js: alert status, active/closed count, server-resolved local actor, manager note, and lifecycle-history helpers",
     "src/managerReview.js: manager review status/scope/correction allowlist, local actor resolution, correction overlay, and review-history helpers",
     "src/evaluationStudio.js: Evaluation Studio knowledgebase/template/run/result model, Call Intelligence Foundation schema v3 with represented-party proof/repair, final-state and long-term-nurture reconciliation, shared Foundation call context, independent opportunity/measurement/efficiency lenses, locally reconciled specialist routing, strict transcript validation, Lead Record and Offer Acceptance validation, bounded batch harvesting, provenance, Foundation/specialist rollups, and guarded local-model input construction",
+    "src/callIntelligenceAggregate.js: versioned call-level commercial lifecycle, authority conflict, specialist state, provenance, exact-evidence, and Australian relative-date projection",
     "src/dateTimeFormat.js: Australian/AEST UI date/time formatter for source call times, filters, reports, and stored system timestamps",
     "src/transcriptEvaluator.js: local deterministic call evaluator",
     "src/analysis.js: data profiling, active/filtered call-transcript metrics, deterministic lead reattempt buckets, lead harvest candidates, parked allocation status, alert construction, manager-review governance overlays, and sanitized rows",
@@ -113,7 +117,7 @@
     "lead_harvest_api": "http://127.0.0.1:3000/api/lead-harvest",
     "ai_status_api": "http://127.0.0.1:3000/api/ai/status",
     "local_store": "data/store/state.json",
-    "verification": "node --test tests/*.test.js (165/165 passing on 2026-07-16)"
+    "verification": "node --test tests/*.test.js (198/198 passing on 2026-07-18)"
   },
   "guardrails": {
     "ignored_fields": [
@@ -133,7 +137,7 @@
     "allocation_campaign_attribution": "Campaign/allocation imports are parked and excluded from active metrics, reports, alerts, filters, source/list quality, scorecards, and AI transcript context.",
     "alert_lifecycle": "Active alert counts include only new, acknowledged, and in_progress call-data alerts. Resolved, dismissed, false_positive, and parked alerts are excluded from active totals. Lifecycle actors are server-resolved as local_manager until authentication exists.",
     "manager_review": "Manager review statuses and corrections are separate from alert lifecycle. Corrections are local_manager-attributed overlays and do not overwrite raw imported, deterministic, LLM, or generated alert evidence.",
-    "evaluation_studio": "Evaluation Studio artifacts are versioned management records. Active Call Intelligence Foundation template v6 uses schema call_intelligence_foundation.v3, records a transcript-grounded represented organisation/publication/client or No product pitched, reconciles the final agreed state, stores distant timing as long_term_nurture, shares Foundation context across a call's specialist rows, and keeps opportunity, measurement eligibility, and efficiency independent with no composite score. Explicit represented-party wording can be repaired from exact transcript proof. Local routing excludes long-term nurture from active callbacks, skips existing specialist results, and treats specialists as authoritative. Batch submission uses 12-way chunks with up to three idempotent transient retries; automatic harvesting advances 100 unfinished jobs per pass. Neither Foundation nor Offer Acceptance proves payment, fulfilment, revenue, ROI, or CRM closure. Observed live latency still does not establish 10,000/day capacity.",
+    "evaluation_studio": "Evaluation Studio artifacts are versioned management records. Foundation keeps opportunity, measurement eligibility, and efficiency independent; typed specialists remain authoritative for their questions. The call aggregate separates accepted offer from payment verification, invoice, fulfilment, revenue, and CRM state; unknowns remain unknown. Relative dates retain raw language and source-date policy. Later exact-ID calls prove only that a related attempt was observed. Inputs record complete app-source transcript length/hash and final-turn policy. Numeric model confidence is uncalibrated audit metadata. Neither Foundation nor Offer Acceptance proves payment, fulfilment, revenue, ROI, or CRM closure. Observed live latency still does not establish 10,000/day capacity.",
     "lead_reattempt": "One-dial records are neutral until deterministic evidence separates valid one-dial outcomes, risky one-dial no-contact rows, and rows needing manager or later local-LLM review.",
     "lead_harvest": "Lead harvest candidates require deterministic live-human, positive-response, and callback/follow-up evidence. Later-call labels use stable IDs only; missing stable IDs are labelled matching unavailable.",
     "report_visibility": "Normal report APIs and dashboard report lists expose active non-parked reports only. Parked allocation, stale stable-target, and superseded lead-day report records remain preserved internally."
@@ -147,6 +151,6 @@
     "/docs/AGENT_CONTEXT.md",
     "/runtime/AUTONOMOUS_BACKLOG.md"
   ],
-  "generated_at": "2026-07-16T12:00:00.000Z",
+  "generated_at": "2026-07-18T10:30:00.000Z",
   "confidence": "high"
 }

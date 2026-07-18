@@ -281,3 +281,17 @@ Consequences:
 - stored compatibility enums remain readable, but the UI uses Draft, Included, and Manual check suggested
 - optional Manager Review remains separate and does not gate evaluation
 - schema, evidence, worker, idempotency, and no-operational-write protections remain mandatory
+
+## ADR-024 - Separate Accepted Offer From Commercial Completion
+Date: 2026-07-18
+Status: Accepted
+Decision: Project each call's stored Foundation and specialist results into a read-only, versioned commercial lifecycle that keeps accepted-offer evidence, quoted context, intended payment, payment verification, invoice, fulfilment, revenue, and CRM state independent. Offer Acceptance is authoritative only for whether the presented offer was accepted. A later stable-ID call is evidence of a related attempt, not automatic completion.
+Context: The Foundation and Offer Acceptance evaluators can establish transcript facts, but the current source does not prove cleared payment, invoicing, fulfilment, realised revenue, or CRM closure. Earlier follow-up linking and percentage confidence presentation could overstate what was actually known.
+Consequences:
+- `call_intelligence_aggregate.v1` and `call_commercial_state.v1` are deterministic views over stored evidence and trusted call metadata; they do not rewrite historical results or operational systems
+- Foundation/specialist disagreements remain visible and use explicit authority rules instead of silent merging
+- supported relative dates resolve from the source call's Australian DD/MM/YYYY date while retaining raw wording, source basis, method, and ambiguity
+- unknown downstream lifecycle fields remain unknown; accepted-offer reporting cannot imply paid, invoiced, fulfilled, realised revenue, or CRM won
+- stable-ID follow-up matching stores the matched fields and later call context as `later_attempt_observed`; completion/payment stay not established without separate evidence
+- normal result UI uses evidence-strength bands; numeric model confidence remains uncalibrated audit metadata
+- seeded Callback, Procedure, and Objection evaluators use typed v2 contracts with exact evidence, while historical generic results and safe user-created custom templates remain compatible

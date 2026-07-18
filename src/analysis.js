@@ -331,6 +331,14 @@ function entityKeys(row) {
     .filter(Boolean);
 }
 
+function matchingEntityIdentifiers(left = {}, right = {}) {
+  return ENTITY_FIELDS.map((field) => {
+    const leftValue = clean(left[field]);
+    const rightValue = clean(right[field]);
+    return !isMissing(leftValue) && leftValue === rightValue ? { field, value: leftValue } : null;
+  }).filter(Boolean);
+}
+
 function buildDurationStats(rows, field) {
   const values = rows.map((row) => toInt(row[field])).filter((value) => value !== null).sort((a, b) => a - b);
   if (!values.length) {
@@ -628,12 +636,41 @@ function linkFollowUps(items, maxDateTime) {
   [...items].reverse().forEach((item) => {
     const keys = entityKeys(item.row);
     const laterMatches = keys.flatMap((key) => keyToLaterItems.get(key) || []);
-    const uniqueLaterMatches = Array.from(new Map(laterMatches.map((match) => [match.row.call_id, match])).values());
+    const uniqueLaterMatches = Array.from(new Map(laterMatches.map((match) => [match.row.call_id, match])).values())
+      .map((match) => ({ match, matchingIdentifiers: matchingEntityIdentifiers(item.row, match.row) }))
+      .filter((candidate) => candidate.matchingIdentifiers.length)
+      .sort((left, right) => {
+        const leftTime = left.match.dateTime instanceof Date ? left.match.dateTime.getTime() : Number.MAX_SAFE_INTEGER;
+        const rightTime = right.match.dateTime instanceof Date ? right.match.dateTime.getTime() : Number.MAX_SAFE_INTEGER;
+        return leftTime - rightTime;
+      });
 
     if (item.evaluation.opportunity.followUpRequired) {
       if (uniqueLaterMatches.length > 0) {
-        item.followUpStatus = "completed";
-        item.followUpMatchedCallId = clean(uniqueLaterMatches[0].row.call_id);
+        const selected = uniqueLaterMatches[0];
+        const later = selected.match;
+        const laterCallId = clean(later.row.call_id);
+        const laterLiveContact = Boolean(later.evaluation.contact.probableLiveHuman);
+        item.followUpStatus = "later_attempt_observed";
+        item.followUpMatchedCallId = laterCallId;
+        item.followUpMatch = {
+          status: "later_attempt_observed",
+          relationStatus: "confirmed_related_call",
+          matchMethod: "exact_stable_identifier",
+          matchingIdentifiers: selected.matchingIdentifiers,
+          conflictingIdentifiers: [],
+          matchedCallId: laterCallId,
+          laterCallDate: clean(later.row.call_date),
+          laterCallTime: clean(later.row.call_time),
+          laterCallOutcome: clean(later.evaluation.outcome.localCategory) || "unknown",
+          laterCallContactState: laterLiveContact ? "live_contact_observed" : "no_live_contact_observed",
+          laterCallDurationSeconds: Number(later.evaluation.durationSeconds || 0),
+          completionState: "not_established",
+          paymentState: "not_established",
+          verificationStatus: laterLiveContact
+            ? "related_live_call_observed_completion_not_verified"
+            : "related_attempt_observed_completion_not_verified"
+        };
       } else if (!item.dateTime || !maxDateTime || maxDateTime.getTime() - item.dateTime.getTime() < 48 * 60 * 60 * 1000) {
         item.followUpStatus = "indeterminate_insufficient_future_data";
       } else {
@@ -679,7 +716,7 @@ function buildAlerts(items) {
       });
     }
 
-    if (item.evaluation.opportunity.followUpRequired && item.followUpStatus !== "completed") {
+    if (item.evaluation.opportunity.followUpRequired) {
       const evidence = item.evaluation.evidence.find((entry) => entry.signal === "follow_up");
       alerts.push({
         ...baseAlert,
@@ -689,7 +726,9 @@ function buildAlerts(items) {
         owner,
         message: item.followUpStatus === "indeterminate_insufficient_future_data"
           ? "Follow-up signal found, but the upload does not contain enough future data to prove completion."
-          : "Follow-up signal found with no later matching action in the available data.",
+          : item.followUpStatus === "later_attempt_observed"
+            ? "A later matching call attempt exists, but its presence does not prove follow-up completion."
+            : "Follow-up signal found with no later matching action in the available data.",
         evidence: evidence?.text || item.evaluation.preview,
         evidenceSummary: evidence?.summary || "Follow-up signal found"
       });
@@ -758,7 +797,8 @@ function buildDashboardView(items, options = {}) {
     meaningfulConversation: items.filter((item) => item.evaluation.contact.meaningfulConversation).length,
     actionableConversation: items.filter((item) => item.evaluation.contact.actionableConversation).length,
     followUpRequired: items.filter((item) => item.evaluation.opportunity.followUpRequired).length,
-    followUpCompleted: items.filter((item) => item.followUpStatus === "completed").length,
+    followUpCompleted: 0,
+    followUpLaterAttemptObserved: items.filter((item) => item.followUpStatus === "later_attempt_observed").length,
     followUpIndeterminate: items.filter((item) => item.followUpStatus === "indeterminate_insufficient_future_data").length,
     aiVoiceAssistantEncounters: items.filter((item) => item.evaluation.aiVoiceAssistant?.detected).length,
     aiVoiceAssistantHandled: items.filter((item) => item.evaluation.aiVoiceAssistant?.handledSuccessfully).length,
@@ -780,6 +820,7 @@ function buildDashboardView(items, options = {}) {
     actionableConversation: percent(totals.actionableConversation, totals.uniqueCalls),
     followUpRequired: percent(totals.followUpRequired, totals.uniqueCalls),
     followUpCompleted: percent(totals.followUpCompleted, totals.followUpRequired),
+    followUpLaterAttemptObserved: percent(totals.followUpLaterAttemptObserved, totals.followUpRequired),
     aiVoiceAssistantEncounter: percent(totals.aiVoiceAssistantEncounters, totals.uniqueCalls),
     aiVoiceAssistantHandled: percent(totals.aiVoiceAssistantHandled, totals.aiVoiceAssistantEncounters),
     aiVoiceAssistantBail: percent(totals.aiVoiceAssistantBailed, totals.aiVoiceAssistantEncounters),
@@ -1273,7 +1314,8 @@ function analyzeCsvText(csvText, options = {}) {
     meaningfulConversation: items.filter((item) => item.evaluation.contact.meaningfulConversation).length,
     actionableConversation: items.filter((item) => item.evaluation.contact.actionableConversation).length,
     followUpRequired: items.filter((item) => item.evaluation.opportunity.followUpRequired).length,
-    followUpCompleted: items.filter((item) => item.followUpStatus === "completed").length,
+    followUpCompleted: 0,
+    followUpLaterAttemptObserved: items.filter((item) => item.followUpStatus === "later_attempt_observed").length,
     followUpIndeterminate: items.filter((item) => item.followUpStatus === "indeterminate_insufficient_future_data").length,
     aiVoiceAssistantEncounters: items.filter((item) => item.evaluation.aiVoiceAssistant?.detected).length,
     aiVoiceAssistantHandled: items.filter((item) => item.evaluation.aiVoiceAssistant?.handledSuccessfully).length,
@@ -1295,6 +1337,7 @@ function analyzeCsvText(csvText, options = {}) {
     actionableConversation: percent(totals.actionableConversation, totals.uniqueCalls),
     followUpRequired: percent(totals.followUpRequired, totals.uniqueCalls),
     followUpCompleted: percent(totals.followUpCompleted, totals.followUpRequired),
+    followUpLaterAttemptObserved: percent(totals.followUpLaterAttemptObserved, totals.followUpRequired),
     aiVoiceAssistantEncounter: percent(totals.aiVoiceAssistantEncounters, totals.uniqueCalls),
     aiVoiceAssistantHandled: percent(totals.aiVoiceAssistantHandled, totals.aiVoiceAssistantEncounters),
     aiVoiceAssistantBail: percent(totals.aiVoiceAssistantBailed, totals.aiVoiceAssistantEncounters),
@@ -1501,6 +1544,7 @@ function buildEvaluationRow(item) {
     followUpRequired: item.evaluation.opportunity.followUpRequired,
     followUpStatus: item.followUpStatus,
     followUpMatchedCallId: item.followUpMatchedCallId || "",
+    followUpMatch: item.followUpMatch || null,
     followUpChannel: item.evaluation.opportunity.followUpChannel,
     riskReviewRequired: item.evaluation.risk.reviewRequired,
     reviewRequired: item.evaluation.outcome.reviewRequired,
@@ -1574,6 +1618,8 @@ function buildExplorerRow(item) {
     systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
     systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
     followUpStatus: item.followUpStatus,
+    followUpMatchedCallId: item.followUpMatchedCallId || "",
+    followUpMatch: item.followUpMatch || null,
     followUpChannel: item.evaluation.opportunity.followUpChannel,
     reviewRequired: item.evaluation.outcome.reviewRequired,
     ...governance,

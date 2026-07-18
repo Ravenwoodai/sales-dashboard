@@ -315,6 +315,16 @@ function confidenceBandLabel(band) {
   return "Confidence unavailable";
 }
 
+function resultConfidenceBand(row = {}) {
+  if (row.confidenceBand) return row.confidenceBand;
+  if (row.status === "failed" || row.transcriptQuality === "unusable") return "unusable";
+  const confidence = Number(row.confidence);
+  if (!Number.isFinite(confidence)) return "confidence_unavailable";
+  if (confidence >= 0.78) return "high";
+  if (confidence >= 0.55) return "medium";
+  return "low";
+}
+
 function confidenceBandTone(band) {
   if (band === "high") return "success";
   if (band === "medium") return "notice";
@@ -2161,6 +2171,22 @@ function renderOfferAcceptanceReport(report = {}) {
   </section>`;
 }
 
+function evaluationAuditMarkup(row = {}) {
+  const audit = row.evaluationAudit || {};
+  if (!Object.values(audit).some((value) => value !== "" && value !== null && value !== undefined)) return "";
+  return `<details class="compact-details evaluation-audit-details"><summary>Evaluation audit details</summary><dl class="result-answer-list">
+    <div><dt>Model</dt><dd>${escapeHtml(audit.providerModel || audit.model || "Not recorded for this historical result")}</dd></div>
+    <div><dt>Prompt hash</dt><dd class="mono">${escapeHtml(audit.promptHash || "Not recorded")}</dd></div>
+    <div><dt>Schema</dt><dd>${escapeHtml(audit.schemaVersion || "Legacy generic contract")}</dd></div>
+    <div><dt>Validation</dt><dd>${escapeHtml(humanizeSlug(audit.validationStatus || "unknown"))}</dd></div>
+    <div><dt>Transcript hash</dt><dd class="mono">${escapeHtml(audit.transcriptHash || "Not recorded")}</dd></div>
+    <div><dt>Transcript size</dt><dd>${audit.transcriptCharacterCount === null || audit.transcriptCharacterCount === undefined ? "Not recorded" : `${formatNumber(audit.transcriptCharacterCount)} characters`}</dd></div>
+    <div><dt>Tokens</dt><dd>${audit.promptTokens === null || audit.promptTokens === undefined ? "Not recorded" : `${formatNumber(audit.promptTokens)} prompt / ${formatNumber(audit.completionTokens || 0)} completion`}</dd></div>
+    <div><dt>Execution</dt><dd>${audit.executionMs === null || audit.executionMs === undefined ? "Not recorded" : `${formatNumber(audit.executionMs)} ms`}${audit.retryCount === null || audit.retryCount === undefined ? "" : ` · ${formatNumber(audit.retryCount)} retries`}</dd></div>
+    <div><dt>Confidence type</dt><dd>${escapeHtml(humanizeSlug(audit.confidenceKind || "unknown"))}</dd></div>
+  </dl></details>`;
+}
+
 function renderEvaluationResultDetails(row = {}) {
   if (row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL || row.foundationAssessment) {
     const assessment = row.foundationAssessment || {};
@@ -2195,6 +2221,7 @@ function renderEvaluationResultDetails(row = {}) {
       </dl>
       ${evidence ? `<div class="result-proof"><strong>Transcript evidence</strong><ul class="result-evidence-list">${evidence}</ul></div>` : `<p class="muted small">No transcript excerpt was stored for this result.</p>`}
       <p class="muted small">Foundation accepted signals are candidates only. Offer Acceptance remains authoritative for accepted-offer reporting.</p>
+      ${evaluationAuditMarkup(row)}
       <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
     </details>`;
   }
@@ -2218,9 +2245,32 @@ function renderEvaluationResultDetails(row = {}) {
         <div><dt>Offer presented</dt><dd>${assessment.offerPresented ? "Yes" : "No"}</dd></div>
         <div><dt>Customer response</dt><dd>${escapeHtml(responseEvidence.summary || humanizeSlug(assessment.customerCommitment || "not supplied"))}</dd></div>
         <div><dt>Unresolved condition</dt><dd>${assessment.unresolvedCondition ? "Yes — this prevents an accepted classification" : "No"}</dd></div>
-        <div><dt>Evidence quality</dt><dd>${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)} · ${escapeHtml(humanizeSlug(row.evidenceAvailability || "unavailable"))} evidence</dd></div>
+        <div><dt>Model-reported confidence (audit)</dt><dd>${row.confidence === null || row.confidence === undefined ? "Unavailable" : formatRatioPercent(row.confidence)} · uncalibrated · ${escapeHtml(humanizeSlug(row.evidenceAvailability || "unavailable"))} evidence</dd></div>
       </dl>
       ${proof ? `<div class="result-proof"><strong>Transcript evidence</strong><ul class="result-evidence-list">${proof}</ul></div>` : `<p class="muted small">No transcript excerpt was stored for this result.</p>`}
+      ${evaluationAuditMarkup(row)}
+      <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
+    </details>`;
+  }
+  if (row.specialistAssessment) {
+    const assessment = row.specialistAssessment;
+    const evidence = (assessment.evidence || []).map((item) => `<li><strong>${escapeHtml(humanizeSlug(item.claim_type || "evidence"))}:</strong> ${escapeHtml(item.quote || "")}</li>`).join("");
+    const facts = row.evaluationGoal === "callback_opportunity"
+      ? [
+          ["Callback state", assessment.callbackState],
+          ["Next-action channel", assessment.nextActionChannel],
+          ["Timing", assessment.timingRaw || "Not supplied"],
+          ["Customer intent", assessment.customerIntent],
+          ["Objection", assessment.objection || "None captured"]
+        ]
+      : row.evaluationGoal === "procedure_adherence"
+        ? [["Evaluation outcome", assessment.outcome], ["Strongest issue stage", assessment.strongestIssueStage], ["Issue", assessment.issueSummary || "No issue identified"]]
+        : [["Objection state", assessment.objectionState], ["Objection type", assessment.objectionType], ["Handling outcome", assessment.outcome], ["Handling actions", (assessment.handlingActions || []).join(", ") || "None"]];
+    return `<details class="compact-details result-details typed-specialist-details"><summary>View result</summary>
+      <div class="result-decision"><span>${escapeHtml(humanizeSlug(row.evaluationGoal))}</span><strong>${escapeHtml(humanizeSlug(assessment.outcome || assessment.callbackState || "evaluated"))}</strong><p>${escapeHtml(evaluationSummaryLabel(row.managerSummary))}</p></div>
+      <dl class="result-answer-list">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(humanizeSlug(value || "unknown"))}</dd></div>`).join("")}</dl>
+      ${evidence ? `<div class="result-proof"><strong>Transcript evidence</strong><ul class="result-evidence-list">${evidence}</ul></div>` : `<p class="muted small">No exact transcript excerpt was stored.</p>`}
+      ${evaluationAuditMarkup(row)}
       <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
     </details>`;
   }
@@ -2252,10 +2302,11 @@ function renderEvaluationResultDetails(row = {}) {
     <dl class="result-answer-list">
       <div><dt>What the call showed</dt><dd>${escapeHtml(evaluationSummaryLabel(row.managerSummary))}</dd></div>
       <div><dt>Next step</dt><dd>${escapeHtml(evaluationRecommendationLabel(facets.recommendation))}</dd></div>
-      <div><dt>Confidence</dt><dd>${row.confidence === null || row.confidence === undefined ? "Unavailable" : formatRatioPercent(row.confidence)} · ${escapeHtml(humanizeSlug(row.evidenceAvailability || "unavailable"))} evidence</dd></div>
+      <div><dt>Model-reported confidence (audit)</dt><dd>${row.confidence === null || row.confidence === undefined ? "Unavailable" : formatRatioPercent(row.confidence)} · uncalibrated · ${escapeHtml(humanizeSlug(row.evidenceAvailability || "unavailable"))} evidence</dd></div>
       ${allegation !== "absent" ? `<div><dt>Salesperson allegation</dt><dd>${escapeHtml(humanizeSlug(allegation))}</dd></div>` : ""}
     </dl>
     ${evidence ? `<div class="result-proof"><strong>Evidence</strong><ul class="result-evidence-list">${evidence}</ul></div>` : `<p class="muted small">No evidence snippets were stored.</p>`}
+    ${evaluationAuditMarkup(row)}
     <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
   </details>`;
 }
@@ -2308,12 +2359,12 @@ function renderEvaluationResultCard(row = {}, options = {}) {
   const primaryConfidence = authoritativeOffer?.confidence ?? row.confidence;
   const primaryStatus = authoritativeOffer?.status || row.status;
   const primaryEvidenceAvailability = authoritativeOffer?.evidenceAvailability || row.evidenceAvailability;
-  const primaryConfidenceBand = authoritativeOffer?.confidenceBand || row.confidenceBand;
-  const confidence = primaryConfidence === null || primaryConfidence === undefined ? "Unavailable" : formatRatioPercent(primaryConfidence);
+  const primaryConfidenceBand = authoritativeOffer?.confidenceBand || resultConfidenceBand(row);
+  const confidence = confidenceBandLabel(primaryConfidenceBand);
   const evidenceStatus = primaryStatus === "usable" ? "Evidence sufficient" : humanizeSlug(primaryStatus || "evidence status unavailable");
-  const confidenceContext = authoritativeOffer && row.evaluationGoal !== OFFER_ACCEPTANCE_GOAL
-    ? `Offer Acceptance evidence · Foundation confidence ${row.confidence === null || row.confidence === undefined ? "unavailable" : formatRatioPercent(row.confidence)}`
-    : `${evidenceStatus} · ${humanizeSlug(primaryEvidenceAvailability || "unavailable")}`;
+  const confidenceContext = row.callIntelligence?.confidence?.reason || (authoritativeOffer && row.evaluationGoal !== OFFER_ACCEPTANCE_GOAL
+    ? `Offer Acceptance evidence · Foundation confidence ${confidenceBandLabel(row.confidenceBand)}`
+    : `${evidenceStatus} · ${humanizeSlug(primaryEvidenceAvailability || "unavailable")}`);
   const confidenceHref = evaluationResultsUrl({
     evaluationGoal: authoritativeOffer ? OFFER_ACCEPTANCE_GOAL : row.evaluationGoal,
     confidenceBand: primaryConfidenceBand
@@ -2379,7 +2430,8 @@ function renderEvaluationCallGroup(group = {}) {
   const call = rows.find((row) => Object.keys(row.callContext || {}).length)?.callContext || primary.callContext || {};
   const customerId = customerIdValue({ ...primary, ...call });
   const authoritative = authoritativeOfferAcceptanceContext(primary);
-  const outcomeConfidence = authoritative?.confidence ?? primary.confidence;
+  const aggregate = primary.callIntelligence || rows.find((row) => row.callIntelligence)?.callIntelligence || null;
+  const confidenceBand = aggregate?.confidence?.band || authoritative?.confidenceBand || primary.confidenceBand || "unknown";
   const types = Array.from(new Set(rows.map((row) => row.evaluationTypeLabel || humanizeSlug(row.evaluationGoal || "evaluation"))));
   const sourceTime = call.sourceTime || call.date;
   const salesperson = call.salesperson
@@ -2391,6 +2443,19 @@ function renderEvaluationCallGroup(group = {}) {
   const callDate = sourceTime
     ? hrefDataLink(formatSourceTime(call), evaluationResultsUrl(sourceDateFilters(call.date || sourceTime)), `View all evaluated calls from ${formatSourceTime(call)}`)
     : "Call date not supplied";
+  const commercial = aggregate?.commercialState || null;
+  const quotedValue = commercial?.quotedValue === null || commercial?.quotedValue === undefined
+    ? "Unknown"
+    : `${commercial.quotedCurrency && commercial.quotedCurrency !== "unknown" ? `${commercial.quotedCurrency} ` : ""}${formatNumber(commercial.quotedValue)} quoted`;
+  const conflicts = (aggregate?.conflicts || []).map((conflict) => `<li><strong>${escapeHtml(humanizeSlug(conflict.type))}</strong>: Foundation ${escapeHtml(humanizeSlug(conflict.foundationValue))}; specialist ${escapeHtml(humanizeSlug(conflict.specialistValue))}. Resolved by ${escapeHtml(humanizeSlug(conflict.resolutionRule))}.</li>`).join("");
+  const provenance = (aggregate?.provenanceClaims || []).map((claim) => `<li>${badge(humanizeSlug(claim.sourceType), claim.sourceType === "call_metadata" ? "neutral" : claim.sourceType === "specialist_result" ? "success" : claim.sourceType === "deterministic_derivation" ? "notice" : "info")} <strong>${escapeHtml(humanizeSlug(claim.claimType))}</strong>: ${escapeHtml(claim.value === null || claim.value === "" ? "Unknown" : String(claim.value))}${claim.evidence ? `<br /><span class="evidence">${escapeHtml(claim.evidence)}</span>` : ""}</li>`).join("");
+  const routing = Object.entries(aggregate?.routing || {}).map(([goal, route]) => `<li><strong>${escapeHtml(humanizeSlug(goal))}</strong>: ${escapeHtml(humanizeSlug(route.state))}${route.resultId ? ` · result ${escapeHtml(route.resultId)}` : ""}</li>`).join("");
+  const keyEvidence = aggregate?.keyEvidence || {};
+  const keyEvidenceMarkup = [
+    ["Presented offer", keyEvidence.offer],
+    ["Customer acceptance", keyEvidence.acceptance],
+    ["Payment timing", keyEvidence.paymentTiming]
+  ].filter(([, quote]) => quote).map(([label, quote]) => `<li><strong>${escapeHtml(label)}:</strong> <span class="evidence">${escapeHtml(quote)}</span></li>`).join("");
   return `<article class="evaluation-call-group" role="listitem" data-call-id="${escapeHtml(group.callId || "unknown")}">
     <header class="evaluation-call-group-header">
       <div class="evaluation-call-identity">
@@ -2402,7 +2467,7 @@ function renderEvaluationCallGroup(group = {}) {
       <div class="evaluation-call-current-outcome">
         <span class="result-card-label">Current call outcome</span>
         ${evaluationResultOutcomeMarkup(primary)}
-        ${outcomeConfidence === null || outcomeConfidence === undefined ? "" : `<span class="muted small">Outcome confidence ${formatRatioPercent(outcomeConfidence)}</span>`}
+        <span class="muted small">${escapeHtml(confidenceBandLabel(confidenceBand))}${aggregate?.confidence?.reason ? ` · ${escapeHtml(aggregate.confidence.reason)}` : ""}</span>
       </div>
       <div class="evaluation-call-count">
         ${badge(`${formatNumber(rows.length)} evaluation${rows.length === 1 ? "" : "s"}`, rows.length > 1 ? "notice" : "neutral")}
@@ -2411,8 +2476,22 @@ function renderEvaluationCallGroup(group = {}) {
     </header>
     <div class="evaluation-call-summary">
       <span class="result-card-label">Record summary</span>
-      <p>${escapeHtml(evaluationRecordSummary(primary))}</p>
+      <p>${escapeHtml(aggregate?.authoritativeResult?.summary || evaluationRecordSummary(primary))}</p>
     </div>
+    ${commercial ? `<dl class="result-answer-list call-commercial-state">
+      <div><dt>Accepted-offer state</dt><dd>${escapeHtml(humanizeSlug(commercial.offerState))} · ${escapeHtml(humanizeSlug(commercial.acceptanceStrength))}</dd></div>
+      <div><dt>Quoted value</dt><dd>${escapeHtml(quotedValue)} · ${escapeHtml(humanizeSlug(commercial.currencyBasis))} currency basis</dd></div>
+      <div><dt>Payment</dt><dd>${escapeHtml(humanizeSlug(commercial.paymentState))} · ${escapeHtml(humanizeSlug(commercial.paymentVerificationState))}</dd></div>
+      <div><dt>Intended payment timing</dt><dd>${escapeHtml(commercial.intendedPaymentDateRaw || "Unknown")}${commercial.intendedPaymentDateResolved ? ` → ${escapeHtml(commercial.intendedPaymentDateResolved)}` : ""}${commercial.intendedPaymentDateResolution?.ambiguity === "possible" ? " · policy-resolved; raw wording retained" : ""}</dd></div>
+      <div><dt>Invoice / fulfilment</dt><dd>${escapeHtml(humanizeSlug(commercial.invoiceState))} / ${escapeHtml(humanizeSlug(commercial.fulfilmentState))}</dd></div>
+      <div><dt>Revenue / CRM</dt><dd>${escapeHtml(humanizeSlug(commercial.revenueState))} / ${escapeHtml(humanizeSlug(commercial.crmState))}</dd></div>
+      <div><dt>Follow-up evidence</dt><dd>${escapeHtml(humanizeSlug(aggregate.followUp?.status || "unknown"))}${aggregate.followUp?.matchedCallId ? ` · related call ${escapeHtml(aggregate.followUp.matchedCallId)} · completion not established` : ""}</dd></div>
+      <div><dt>Operational next step</dt><dd>${escapeHtml(aggregate.operationalNextAction || "No verified next action established")}</dd></div>
+    </dl>` : ""}
+    ${keyEvidenceMarkup ? `<details class="compact-details"><summary>View strongest transcript evidence</summary><ul class="result-evidence-list">${keyEvidenceMarkup}</ul></details>` : ""}
+    ${conflicts ? `<div class="notice-box"><strong>Resolved evaluator conflict</strong><ul>${conflicts}</ul></div>` : ""}
+    ${routing ? `<details class="compact-details"><summary>View specialist routing and evaluation states</summary><ul class="result-evidence-list">${routing}</ul></details>` : ""}
+    ${provenance ? `<details class="compact-details"><summary>View claim provenance</summary><ul class="result-evidence-list">${provenance}</ul></details>` : ""}
     <details class="evaluation-call-evaluations">
       <summary>View ${formatNumber(rows.length)} evaluation${rows.length === 1 ? "" : "s"}: ${escapeHtml(types.join(", "))}</summary>
       <div class="evaluation-result-list grouped-results" role="list">${rows.map((row) => renderEvaluationResultCard(row, { grouped: true })).join("")}</div>
@@ -2718,7 +2797,7 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
         { label: "Call", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "Unknown")}</a><br /><span class="muted small">${escapeHtml(row.evaluationGoal || "evaluation")}</span>` },
         { label: "Customer ID", render: (row) => customerIdCell(row) },
         { label: "Status", render: (row) => `${badge(String(row.status || "usable").replace(/_/g, " "), row.status === "failed" ? "critical" : row.status === "insufficient_evidence" ? "warning" : "success")}<br />${badge(String(row.provenance || "evaluation_studio_local_model").replace(/_/g, " "), "notice")}` },
-        { label: "Confidence", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(String(row.confidenceBand || "confidence_unavailable").replace(/_/g, " "))}</span>` },
+        { label: "Confidence", render: (row) => `${escapeHtml(confidenceBandLabel(row.confidenceBand))}<br /><span class="muted small">Evidence-strength band; numeric model value is uncalibrated</span>` },
         { label: "Evidence", render: (row) => {
           const firstFinding = (row.findings || [])[0] || {};
           return `<span class="evidence">${escapeHtml(firstFinding.evidence || row.managerSummary || "Evidence unavailable")}</span><span class="muted small">${escapeHtml(String(row.evidenceAvailability || "unavailable").replace(/_/g, " "))}</span>`;
@@ -2744,7 +2823,7 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
         { label: "Call", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "Unknown")}</a><br /><span class="muted small">${escapeHtml(row.signalLabel || "signal")}</span>` },
         { label: "Customer ID", render: (row) => customerIdCell(row) },
         { label: "Finding", render: (row) => `${escapeHtml(row.field || "finding")}<br /><span class="muted small">${escapeHtml(row.value || "Not supplied")}</span>` },
-        { label: "Confidence", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(String(row.confidenceBand || "confidence_unavailable").replace(/_/g, " "))}</span>` },
+        { label: "Confidence", render: (row) => `${escapeHtml(confidenceBandLabel(row.confidenceBand))}<br /><span class="muted small">Evidence-strength band; numeric model value is uncalibrated</span>` },
         { label: "Proof", render: (row) => `<span class="evidence">${escapeHtml(row.evidence || "Evidence unavailable")}</span>` }
       ], reportExampleDisplayRows, "No priority report examples yet.")}
 
@@ -3769,6 +3848,16 @@ function renderCallPage(call, options = {}) {
       updatedAt: offerResult.updatedAt || offerResult.createdAt
     } : null)
   } : null;
+  const callAggregate = summaryRow?.callIntelligence || evaluationResults.find((result) => result.callIntelligence)?.callIntelligence || null;
+  const callCommercial = callAggregate?.commercialState || null;
+  const callQuotedValue = callCommercial?.quotedValue === null || callCommercial?.quotedValue === undefined
+    ? "Unknown"
+    : `${callCommercial.quotedCurrency && callCommercial.quotedCurrency !== "unknown" ? `${callCommercial.quotedCurrency} ` : ""}${formatNumber(callCommercial.quotedValue)} quoted`;
+  const callKeyEvidence = [
+    ["Presented offer", callAggregate?.keyEvidence?.offer],
+    ["Customer acceptance", callAggregate?.keyEvidence?.acceptance],
+    ["Payment timing", callAggregate?.keyEvidence?.paymentTiming]
+  ].filter(([, quote]) => quote).map(([label, quote]) => `<li><strong>${escapeHtml(label)}:</strong> ${escapeHtml(quote)}</li>`).join("");
   const evidenceRows = (call?.evidence || []).map((item) => ({
     signal: item.signal,
     summary: item.summary,
@@ -3896,6 +3985,9 @@ function renderCallPage(call, options = {}) {
       .raw-result { margin: 0 12px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: #05070B; }
       .raw-result summary { padding: 10px 12px; cursor: pointer; font-weight: 760; }
       .raw-result pre { max-height: 360px; border: 0; padding: 0 12px 12px; color: var(--muted-foreground); }
+      .commercial-summary { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-elevated); }
+      .commercial-summary details summary { cursor: pointer; font-weight: 760; }
+      .commercial-summary ul { display: grid; gap: 7px; margin: 9px 0 0; padding-left: 20px; }
       @media (max-width: 860px) { .topbar, .call-title, .grid-2, .audit-grid { grid-template-columns: 1fr; flex-direction: column; } .form-grid, .turn { grid-template-columns: 1fr; } .call-brand { min-width: 0; width: 190px; } table { min-width: 0; table-layout: fixed; } }
     </style>
   </head>
@@ -3916,7 +4008,7 @@ function renderCallPage(call, options = {}) {
         <p class="page-kicker">Record summary</p>
         <h2>What this call currently tells you</h2>
         <p><strong>Customer ID: <span class="mono">${escapeHtml(customerIdValue(call))}</span></strong></p>
-        ${summaryRow ? `<div class="stack" style="margin: 10px 0;">${evaluationResultOutcomeMarkup(summaryRow)}</div><p class="muted">${escapeHtml(evaluationRecordSummary(summaryRow))}</p>` : `<p class="muted">No Evaluation Studio result has been stored for this call. The deterministic classifications below remain available.</p>`}
+        ${summaryRow ? `<div class="stack" style="margin: 10px 0;">${evaluationResultOutcomeMarkup(summaryRow)}</div><p class="muted">${escapeHtml(callAggregate?.authoritativeResult?.summary || evaluationRecordSummary(summaryRow))}</p>${callAggregate ? `<p><strong>Next action:</strong> ${escapeHtml(callAggregate.operationalNextAction)}</p>` : ""}${callCommercial ? `<div class="commercial-summary"><strong>Commercial lifecycle</strong><span>Offer: ${escapeHtml(humanizeSlug(callCommercial.offerState))} | ${escapeHtml(humanizeSlug(callCommercial.acceptanceStrength))}</span><span>Quoted value: ${escapeHtml(callQuotedValue)}</span><span>Payment: ${escapeHtml(humanizeSlug(callCommercial.paymentState))} | ${escapeHtml(humanizeSlug(callCommercial.paymentVerificationState))}</span><span>Intended timing: ${escapeHtml(callCommercial.intendedPaymentDateRaw || "Unknown")}${callCommercial.intendedPaymentDateResolved ? ` → ${escapeHtml(callCommercial.intendedPaymentDateResolved)}` : ""}</span><span>Revenue / CRM: ${escapeHtml(humanizeSlug(callCommercial.revenueState))} / ${escapeHtml(humanizeSlug(callCommercial.crmState))}</span>${callKeyEvidence ? `<details><summary>View strongest transcript evidence</summary><ul>${callKeyEvidence}</ul></details>` : ""}</div>` : ""}` : `<p class="muted">No Evaluation Studio result has been stored for this call. The deterministic classifications below remain available.</p>`}
       </section>` : ""}
       ${call ? `<section class="grid-2">
         <div class="panel">
@@ -3933,7 +4025,8 @@ function renderCallPage(call, options = {}) {
             { item: "Manager review state", value: hasManagerReview ? `${reviewStatusLabel(latestManagerReview.reviewStatus)} | Manager-reviewed` : "Unreviewed" },
             ...(latestManagerReview?.corrections?.length ? [{ item: "Manager-corrected fields", value: latestManagerReview.corrections.map((correction) => `${correction.fieldName}: ${correction.managerCorrectedValue}`).join(" | ") }] : []),
             { item: "Order history", value: call.orderHistoryLabel || (Number(call.orderCount || 0) > 0 ? "Previous Sales History" : "No Sales History") },
-            { item: "Follow-up status", value: `${call.followUpStatus} | ${call.followUpProvenance || "Deterministic"}` },
+            { item: "Follow-up status", value: `${humanizeSlug(call.followUpStatus)} | ${call.followUpProvenance || "Deterministic"}` },
+            ...(call.followUpMatch ? [{ item: "Related later call", value: `${call.followUpMatch.matchedCallId || "Not available"} | ${humanizeSlug(call.followUpMatch.matchMethod || "unknown")} | ${humanizeSlug(call.followUpMatch.laterCallOutcome || "unknown")} | completion not established` }] : []),
             { item: "Follow-up channel", value: call.followUpChannel },
             { item: "AI assistant", value: call.aiVoiceAssistantDetected ? `${call.aiVoiceAssistantResponse || "detected"} (${Math.round(Number(call.aiVoiceAssistantConfidence || 0) * 100)}% confidence)` : "Not detected" },
             { item: "AI response", value: call.aiVoiceAssistantDetected ? call.aiVoiceAssistantBailed ? "Bailed" : call.aiVoiceAssistantHandledSuccessfully ? "Handled well" : "Partial" : "Not applicable" },

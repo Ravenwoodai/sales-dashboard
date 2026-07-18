@@ -15,12 +15,15 @@ const {
   buildManagerReviewPrefillCorrections,
   CALL_INTELLIGENCE_FOUNDATION_GOAL,
   CALL_INTELLIGENCE_FOUNDATION_SCHEMA_VERSION,
+  CALLBACK_OPPORTUNITY_SCHEMA_VERSION,
   createDefaultEvaluationStudio,
   evaluationResultFacets,
   LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
   LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION,
   OFFER_ACCEPTANCE_GOAL,
   OFFER_ACCEPTANCE_SCHEMA_VERSION,
+  OBJECTION_HANDLING_SCHEMA_VERSION,
+  PROCEDURE_ADHERENCE_SCHEMA_VERSION,
   listEvaluationResults,
   normalizeEvaluationResult,
   normalizeEvaluationStudio,
@@ -29,6 +32,7 @@ const {
   upsertEvaluationResult,
   validateCallIntelligenceFoundationResult,
   validateOfferAcceptanceResult,
+  validateTypedSpecialistResult,
   validateLeadRecordDispositionAuditResult
 } = require("../src/evaluationStudio");
 const {
@@ -87,12 +91,12 @@ function validFoundationResult(overrides = {}) {
         quote: "I am calling on behalf of SES Yearbook."
       },
       {
-        supports: "offer_presented",
+        supports: "commercial_context",
         speaker: "salesperson",
         quote: "Our Community Bronze support is $550 for the year."
       },
       {
-        supports: "next_step_status",
+        supports: "follow_up_timing",
         speaker: "customer",
         quote: "I need to speak with my partner, so call me tomorrow afternoon."
       }
@@ -230,6 +234,76 @@ function offerAcceptanceContext(transcript) {
   };
 }
 
+function validCallbackResult(overrides = {}) {
+  return {
+    schema_version: CALLBACK_OPPORTUNITY_SCHEMA_VERSION,
+    evaluation_goal: "callback_opportunity",
+    call_id: "call-1",
+    status: "usable",
+    confidence: 0.84,
+    evidence_availability: "available",
+    transcript_quality: "high",
+    callback_state: "requested",
+    next_action_channel: "call",
+    timing_raw: "tomorrow",
+    customer_intent: "interest",
+    objection: "",
+    handover_summary: "Customer requested a call tomorrow.",
+    evidence: [{ claim_type: "timing", speaker: "customer", quote: "Please call me back tomorrow." }],
+    manager_review_recommended: true,
+    manager_summary: "Customer requested a call tomorrow.",
+    limitations: [],
+    findings: [],
+    ...overrides
+  };
+}
+
+function validObjectionResult(overrides = {}) {
+  return {
+    schema_version: OBJECTION_HANDLING_SCHEMA_VERSION,
+    evaluation_goal: "objection_handling",
+    call_id: "call-1",
+    status: "usable",
+    confidence: 0.81,
+    evidence_availability: "available",
+    transcript_quality: "high",
+    objection_state: "present",
+    objection_type: "affordability",
+    outcome: "partially_handled",
+    handling_actions: ["acknowledged"],
+    evidence: [
+      { claim_type: "objection", speaker: "customer", quote: "I cannot afford it right now." },
+      { claim_type: "handling", speaker: "salesperson", quote: "I understand that the timing is difficult." }
+    ],
+    manager_review_recommended: true,
+    manager_summary: "Customer raised affordability and the salesperson acknowledged it.",
+    limitations: [],
+    findings: [],
+    ...overrides
+  };
+}
+
+function validProcedureResult(overrides = {}) {
+  return {
+    schema_version: PROCEDURE_ADHERENCE_SCHEMA_VERSION,
+    evaluation_goal: "procedure_adherence",
+    call_id: "call-coaching",
+    status: "usable",
+    confidence: 0.72,
+    evidence_availability: "available",
+    transcript_quality: "medium",
+    outcome: "issue_found",
+    strongest_issue_stage: "close",
+    issue_summary: "The salesperson ended without confirming the next step.",
+    evidence: [{ claim_type: "procedure_issue", speaker: "salesperson", quote: "No worries, take care." }],
+    manager_review_recommended: true,
+    manager_summary: "The close needs coaching review.",
+    limitations: [],
+    findings: [],
+    ...overrides
+  };
+}
+
 test("Evaluation Studio result facets support browse filters without changing stored results", () => {
   const template = createDefaultEvaluationStudio().evaluationTemplates.find((item) => item.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
   const invalid = normalizeEvaluationResult({
@@ -285,13 +359,14 @@ test("Offer Acceptance template preserves the manager-calibrated three-category 
   const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === OFFER_ACCEPTANCE_GOAL);
 
   assert.ok(template);
-  assert.equal(template.id, "template_offer_acceptance_classification_v2");
-  assert.equal(template.version, 2);
+  assert.equal(template.id, "template_offer_acceptance_classification_v3");
+  assert.equal(template.version, 3);
   assert.equal(template.outputSchema.schema_version, OFFER_ACCEPTANCE_SCHEMA_VERSION);
   assert.equal(template.outputSchema.category, "integer");
   assert.match(template.instructions, /send the invoice and we'll get that sorted/i);
   assert.match(template.instructions, /subject to partner, owner, manager, finance-team/i);
   assert.match(template.instructions, /not proof that payment cleared/i);
+  assert.match(template.instructions, /final position controls/i);
 });
 
 test("Call Intelligence Foundation is seeded as a neutral three-lens evaluator with represented organisation capture", () => {
@@ -443,7 +518,7 @@ test("Call Intelligence Foundation validates transcript proof and derives specia
   assert.throws(() => validateCallIntelligenceFoundationResult({
     result: validFoundationResult({
       evidence: validFoundationResult().evidence.map((item) => item.supports === "called_on_behalf_of"
-        ? { ...item, quote: "I need to speak with my partner, so call me tomorrow afternoon." }
+        ? { ...item, speaker: "unknown", quote: "I need to speak with my partner, so call me tomorrow afternoon." }
         : item)
     }),
     validationContext: context
@@ -1159,31 +1234,103 @@ test("existing Evaluation Studio stores receive the active Offer Acceptance temp
   assert.equal(studio.evaluationTemplates.some((item) => item.evaluationGoal === OFFER_ACCEPTANCE_GOAL && item.isActive), true);
 });
 
-test("existing Offer Acceptance templates receive v2 while preserving the historical v1 record", () => {
+test("existing Offer Acceptance templates receive v3 while preserving historical records", () => {
   const studio = normalizeEvaluationStudio({
-    evaluationTemplates: [{
-      id: "template_offer_acceptance_classification_v1",
+    evaluationTemplates: [1, 2].map((version) => ({
+      id: `template_offer_acceptance_classification_v${version}`,
       name: "Offer Acceptance (Sale Signal) Review",
       evaluationGoal: OFFER_ACCEPTANCE_GOAL,
+      version,
       instructions: "Classify the call.",
       outputSchema: {
         schema_version: OFFER_ACCEPTANCE_SCHEMA_VERSION,
-        category: "integer 1|2|3"
+        category: version === 1 ? "integer 1|2|3" : "integer"
       },
       isActive: true
-    }],
+    })),
     knowledgebaseEntries: [],
     evaluationRuns: [],
     evaluationResults: []
   });
   const historical = studio.evaluationTemplates.find((item) => item.id === "template_offer_acceptance_classification_v1");
-  const template = studio.evaluationTemplates.find((item) => item.id === "template_offer_acceptance_classification_v2");
+  const historicalV2 = studio.evaluationTemplates.find((item) => item.id === "template_offer_acceptance_classification_v2");
+  const template = studio.evaluationTemplates.find((item) => item.id === "template_offer_acceptance_classification_v3");
 
   assert.equal(historical.isActive, false);
   assert.equal(historical.status, "archived");
+  assert.equal(historicalV2.isActive, false);
+  assert.equal(historicalV2.status, "archived");
   assert.equal(template.isActive, true);
   assert.equal(template.outputSchema.category, "integer");
   assert.match(template.instructions, /one exact contiguous excerpt/i);
+});
+
+test("Offer Acceptance storage lets a later customer withdrawal override earlier acceptance", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === OFFER_ACCEPTANCE_GOAL);
+  const transcript = "Salesperson: We can book the advertising package for $440 today. Customer: Yes, go ahead and book it. Salesperson: Great, I will send the confirmation. Customer: Actually, we are not going ahead. Cancel that.";
+  const saved = upsertEvaluationResult(studio, {
+    templateId: template.id,
+    result: validOfferAcceptanceResult({
+      offer_evidence: {
+        speaker: "salesperson",
+        quote: "We can book the advertising package for $440 today.",
+        summary: "The salesperson presented the $440 package."
+      },
+      customer_response_evidence: {
+        speaker: "customer",
+        quote: "Yes, go ahead and book it.",
+        summary: "The customer initially accepted."
+      }
+    }),
+    validationContext: offerAcceptanceContext(transcript)
+  }).result;
+
+  assert.equal(saved.acceptanceAssessment.category, 1);
+  assert.equal(saved.acceptanceAssessment.classification, "no_sale_signal");
+  assert.match(saved.acceptanceAssessment.customerResponseEvidence.quote, /not going ahead/i);
+  assert.equal(saved.acceptanceAssessment.semanticAdjustments.some((item) =>
+    item.action === "final_customer_position_overrode_earlier_acceptance"
+  ), true);
+
+  const conditionalTranscript = "Salesperson: We can book the advertising package for $440 today. Customer: Yes, go ahead and book it. Customer: But I need to speak with the owner before we proceed.";
+  const conditional = upsertEvaluationResult(studio, {
+    templateId: template.id,
+    result: validOfferAcceptanceResult({
+      offer_evidence: {
+        speaker: "salesperson",
+        quote: "We can book the advertising package for $440 today.",
+        summary: "The salesperson presented the $440 package."
+      },
+      customer_response_evidence: {
+        speaker: "customer",
+        quote: "Yes, go ahead and book it.",
+        summary: "The customer initially accepted."
+      }
+    }),
+    validationContext: offerAcceptanceContext(conditionalTranscript)
+  }).result;
+  assert.equal(conditional.acceptanceAssessment.category, 2);
+  assert.equal(conditional.acceptanceAssessment.unresolvedCondition, true);
+
+  const reacceptedTranscript = `${conditionalTranscript} Customer: The owner has approved it. Go ahead and book it.`;
+  const reaccepted = upsertEvaluationResult(studio, {
+    templateId: template.id,
+    result: validOfferAcceptanceResult({
+      offer_evidence: {
+        speaker: "salesperson",
+        quote: "We can book the advertising package for $440 today.",
+        summary: "The salesperson presented the $440 package."
+      },
+      customer_response_evidence: {
+        speaker: "customer",
+        quote: "Yes, go ahead and book it.",
+        summary: "The customer initially accepted and ultimately confirmed it."
+      }
+    }),
+    validationContext: offerAcceptanceContext(reacceptedTranscript)
+  }).result;
+  assert.equal(reaccepted.acceptanceAssessment.category, 3);
 });
 
 test("Evaluation Studio replaces the old lead-validity template non-destructively", () => {
@@ -1425,6 +1572,25 @@ test("Evaluation Studio task input keeps call AllocatedLeadID raw-only and exclu
   assert.equal(input.evaluation_template.evaluation_goal, LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
   assert.equal(input.knowledgebase.length, 1);
   assert.equal(input.knowledgebase[0].id, studio.knowledgebaseEntries[0].id);
+  assert.equal(input.input_audit.transcript_character_count, input.transcript.length);
+  assert.equal(input.input_audit.transcript_hash.length, 64);
+  assert.equal(input.input_audit.transcript_inclusion, "complete_app_source");
+  assert.equal(input.input_audit.chronological_policy, "evaluate_complete_transcript_and_use_final_agreed_state");
+});
+
+test("Evaluation Studio preserves a decisive final turn in a long transcript", () => {
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === OFFER_ACCEPTANCE_GOAL);
+  const filler = Array.from({ length: 700 }, (_, index) => `Salesperson: Package detail ${index + 1} remains part of the discussion.`).join(" ");
+  const finalTurn = "Customer: I said yes earlier, but we are not going ahead. Cancel that.";
+  const transcript = `${filler} ${finalTurn}`;
+  const input = buildEvaluationStudioInput({ callId: "call-long-final-position", transcript }, template, []);
+
+  assert.equal(input.transcript, transcript);
+  assert.equal(input.transcript.endsWith(finalTurn), true);
+  assert.equal(input.input_audit.transcript_character_count, transcript.length);
+  assert.equal(input.input_audit.transcript_inclusion, "complete_app_source");
+  assert.equal(input.input_audit.chronological_policy, "evaluate_complete_transcript_and_use_final_agreed_state");
 });
 
 test("Evaluation Studio input includes a matched active claim as read-only allegation context", () => {
@@ -2017,46 +2183,45 @@ test("Evaluation Studio stores versioned evidence-backed model results", () => {
     importId: "import-july-7",
     runId: "run-1",
     templateId: template.id,
-    result: {
-      call_id: "call-1",
-      evaluation_goal: "callback_opportunity",
-      status: "usable",
-      confidence: 0.84,
-      evidence_availability: "available",
-      transcript_quality: "high",
-      manager_summary: "Customer showed interest and asked for a callback tomorrow.",
-      findings: [
-        {
-          field: "callback_requested",
-          value: true,
-          evidence: "Customer: Please call me back tomorrow.",
-          confidence: 0.88,
-          manager_review_recommended: true
-        }
-      ],
-      limitations: ["No confirmed sale or revenue data is available."]
-    }
+    modelMetadata: {
+      model: "sales-dashboard-qwen3-30b-a3b-q4km",
+      providerModel: "hf.co/lmstudio-community/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M",
+      route: "sales-dashboard-evaluation-studio-qwen3-30b-a3b-q4km"
+    },
+    executionMetadata: { promptTokens: 4087, completionTokens: 308, totalTokens: 4395, executionMs: 2157, retryCount: 0 },
+    result: validCallbackResult(),
+    validationContext: { call: { transcript: "Customer: Please call me back tomorrow.", transcriptQuality: "high" } }
   });
 
   assert.equal(first.result.callId, "call-1");
   assert.equal(first.result.confidenceBand, "high");
   assert.equal(first.result.managerReviewRecommended, true);
-  assert.equal(first.result.findings[0].evidence, "Customer: Please call me back tomorrow.");
+  assert.match(first.result.findings[0].evidence, /Please call me back tomorrow/);
+  assert.equal(first.result.evaluationAudit.model, "sales-dashboard-qwen3-30b-a3b-q4km");
+  assert.equal(first.result.evaluationAudit.providerModel, "hf.co/lmstudio-community/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M");
+  assert.equal(first.result.evaluationAudit.promptTokens, 4087);
+  assert.equal(first.result.evaluationAudit.completionTokens, 308);
+  assert.equal(first.result.evaluationAudit.executionMs, 2157);
+  assert.equal(first.result.evaluationAudit.retryCount, 0);
+  assert.equal(first.result.evaluationAudit.transcriptCharacterCount, "Customer: Please call me back tomorrow.".length);
 
   const second = upsertEvaluationResult(first.studio, {
     importId: "import-july-7",
     runId: "run-1",
     templateId: template.id,
-    result: {
-      call_id: "call-1",
-      evaluation_goal: "callback_opportunity",
+    result: validCallbackResult({
       status: "insufficient_evidence",
       confidence: 0.42,
       evidence_availability: "partial",
       transcript_quality: "low",
-      manager_summary: "Callback signal is possible but transcript evidence is weak.",
-      findings: [{ field: "callback_requested", value: "possible", evidence: "call me", confidence: 0.42 }]
-    }
+      callback_state: "unknown",
+      next_action_channel: "unknown",
+      timing_raw: "",
+      customer_intent: "unknown",
+      evidence: [],
+      manager_review_recommended: true,
+      manager_summary: "Callback signal is possible but transcript evidence is weak."
+    })
   });
 
   const allResults = listEvaluationResults(second.studio, { importId: "import-july-7", includeSuperseded: true });
@@ -2067,6 +2232,37 @@ test("Evaluation Studio stores versioned evidence-backed model results", () => {
   assert.equal(latestResults[0].resultVersion, 2);
 });
 
+test("typed specialist contracts reject legacy placeholder values and enforce exact evidence", () => {
+  const transcript = "Customer: Please call me back tomorrow. Agent: I will call you tomorrow.";
+  const validated = validateTypedSpecialistResult({
+    result: validCallbackResult({
+      callback_state: "requested",
+      next_action_channel: "call",
+      timing_raw: "tomorrow",
+      evidence: [{ claim_type: "timing", speaker: "customer", quote: "Please call me back tomorrow." }]
+    }),
+    validationContext: { call: { transcript, transcriptQuality: "high" } }
+  }, "callback_opportunity");
+  assert.equal(validated.callback_state, "requested");
+
+  assert.throws(() => validateTypedSpecialistResult({
+    result: {
+      call_id: "call-1",
+      evaluation_goal: "callback_opportunity",
+      status: "usable",
+      confidence: 0.9,
+      evidence_availability: "available",
+      transcript_quality: "high",
+      findings: [{ field: "callback_timing", value: "number" }]
+    }
+  }, "callback_opportunity"), /schema_version must be callback_opportunity\.v2/);
+
+  assert.throws(() => validateTypedSpecialistResult({
+    result: validCallbackResult({ evidence: [{ claim_type: "timing", speaker: "customer", quote: "A fabricated callback quote." }] }),
+    validationContext: { call: { transcript, transcriptQuality: "high" } }
+  }, "callback_opportunity"), /was not found in the supplied transcript/);
+});
+
 test("Evaluation Studio builds safe manager-review correction prefill from allowed findings only", () => {
   const studio = createDefaultEvaluationStudio();
   const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity");
@@ -2074,45 +2270,21 @@ test("Evaluation Studio builds safe manager-review correction prefill from allow
     importId: "import-july-7",
     runId: "run-1",
     templateId: template.id,
-    result: {
-      call_id: "call-1",
-      evaluation_goal: "callback_opportunity",
-      status: "usable",
+    result: validCallbackResult({
       confidence: 0.82,
-      evidence_availability: "available",
-      transcript_quality: "high",
-      manager_summary: "Customer asked for a callback tomorrow.",
-      findings: [
-        {
-          field: "callback_requested",
-          value: true,
-          previous_display_value: "indeterminate",
-          evidence: "Customer: please call me back tomorrow.",
-          confidence: 0.82,
-          manager_review_recommended: true
-        },
-        {
-          field: "callback_timing",
-          value: "tomorrow afternoon",
-          evidence: "Customer: tomorrow afternoon works.",
-          confidence: 0.79
-        },
-        {
-          field: "objection_type",
-          value: "affordability",
-          evidence: "Customer: I cannot afford it today.",
-          confidence: 0.86
-        }
-      ]
-    }
+      timing_raw: "tomorrow afternoon",
+      evidence: [{ claim_type: "timing", speaker: "customer", quote: "please call me back tomorrow afternoon." }],
+      manager_summary: "Customer asked for a callback tomorrow afternoon."
+    }),
+    validationContext: { call: { transcript: "Customer: please call me back tomorrow afternoon.", transcriptQuality: "high" } }
   });
 
   const suggestions = buildManagerReviewPrefillCorrections(saved.result);
-  assert.equal(suggestions.length, 2);
-  assert.deepEqual(suggestions.map((item) => item.fieldName), ["follow_up_required", "follow_up_due_text"]);
+  assert.equal(suggestions.length, 4);
+  assert.deepEqual(suggestions.map((item) => item.fieldName), ["follow_up_required", "follow_up_status", "follow_up_channel", "follow_up_due_text"]);
   assert.equal(suggestions[0].managerSuggestedValue, "true");
-  assert.equal(suggestions[0].previousDisplayValue, "indeterminate");
-  assert.equal(suggestions[1].managerSuggestedValue, "tomorrow afternoon");
+  assert.equal(suggestions[0].previousDisplayValue, "");
+  assert.equal(suggestions[3].managerSuggestedValue, "tomorrow afternoon");
   assert.equal(suggestions.some((item) => item.fieldName === "objection_type"), false);
   assert.match(suggestions[0].note, /Suggested only/);
 });
@@ -2224,16 +2396,8 @@ test("Evaluation Studio result persistence updates run counts and evidence queue
     runId: run.id,
     templateId: template.id,
     jobId: "job-1",
-    result: {
-      call_id: "call-1",
-      evaluation_goal: "objection_handling",
-      status: "usable",
-      confidence: 0.81,
-      evidence_availability: "available",
-      transcript_quality: "high",
-      manager_summary: "Customer raised affordability and salesperson acknowledged it.",
-      findings: [{ field: "objection_type", value: "affordability", evidence: "Customer: I cannot afford it right now.", confidence: 0.81, manager_review_recommended: true }]
-    }
+    result: validObjectionResult(),
+    validationContext: { call: { transcript: "Customer: I cannot afford it right now. Agent: I understand that the timing is difficult.", transcriptQuality: "high" } }
   }, { storePath });
 
   assert.equal(saved.result.provenance, "evaluation_studio_local_model");
@@ -2266,52 +2430,37 @@ test("Evaluation Studio report rollups produce report-safe lead utilisation and 
     runId: "run-callback",
     templateId: callbackTemplate.id,
     jobId: "job-callback",
-    result: {
+    result: validCallbackResult({
       call_id: "call-callback",
-      evaluation_goal: "callback_opportunity",
-      status: "usable",
       confidence: 0.9,
-      evidence_availability: "available",
-      transcript_quality: "high",
+      objection: "I cannot afford it this week.",
       manager_summary: "Customer wanted a callback and gave an affordability objection.",
-      manager_review_recommended: true,
-      findings: [
-        { field: "callback_requested", value: true, evidence: "Customer: call me back tomorrow.", confidence: 0.9, manager_review_recommended: true },
-        { field: "objection_type", value: "budget_affordability", evidence: "Customer: I cannot afford it this week.", confidence: 0.86 },
-        { field: "lead_utilisation_status", value: "possible_under_utilised", evidence: "Customer: call me back tomorrow.", confidence: 0.82 }
+      evidence: [
+        { claim_type: "timing", speaker: "customer", quote: "call me back tomorrow." },
+        { claim_type: "objection", speaker: "customer", quote: "I cannot afford it this week." }
       ]
-    }
+    }),
+    validationContext: { call: { transcript: "Customer: call me back tomorrow. I cannot afford it this week.", transcriptQuality: "high" } }
   });
   const second = upsertEvaluationResult(first.studio, {
     importId: "import-july-7",
     runId: "run-coaching",
     templateId: coachingTemplate.id,
     jobId: "job-coaching",
-    result: {
-      call_id: "call-coaching",
-      evaluation_goal: "coaching_opportunity",
-      status: "usable",
-      confidence: 0.72,
-      evidence_availability: "partial",
-      transcript_quality: "medium",
-      manager_summary: "The close may need coaching review.",
-      findings: [
-        { field: "coaching_priority", value: "medium", evidence: "Agent ended without confirming next step.", confidence: 0.72 },
-        { field: "stage_failure", value: "close", evidence: "Agent: no worries, take care.", confidence: 0.7 }
-      ]
-    }
+    result: validProcedureResult(),
+    validationContext: { call: { transcript: "Agent: No worries, take care.", transcriptQuality: "medium" } }
   });
 
   const rollups = buildEvaluationStudioReportRollups(second.studio, { importId: "import-july-7" });
   assert.equal(rollups.totals.evaluatedCalls, 2);
   assert.equal(rollups.totals.callbackOpportunities, 1);
   assert.equal(rollups.totals.objectionsDetected, 1);
-  assert.equal(rollups.totals.possibleWasteIndicators, 1);
-  assert.equal(rollups.totals.coachingOpportunities, 2);
+  assert.equal(rollups.totals.possibleWasteIndicators, 0);
+  assert.equal(rollups.totals.coachingOpportunities, 1);
   assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "callbackOpportunities" }).map((row) => row.callId).join(","), "call-callback");
-  assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "possibleWasteIndicators" }).map((row) => row.callId).join(","), "call-callback");
+  assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "possibleWasteIndicators" }).length, 0);
   assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "coachingOpportunities" }).map((row) => row.callId).join(","), "call-coaching");
-  assert.equal(rollups.priorityExamples.some((row) => row.reportLanguage === "possible waste indicator"), true);
+  assert.equal(rollups.priorityExamples.some((row) => row.reportLanguage === "possible waste indicator"), false);
   assert.equal(rollups.warnings.some((warning) => /confirmed sales/i.test(warning)), true);
   assert.equal(/QTY ACTIONED|allocation coverage|stable lead-days/i.test(JSON.stringify(rollups)), false);
 });
