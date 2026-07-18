@@ -20,7 +20,8 @@
 - `src/leadHarvestAnalytics.js`: deterministic positive-response callback candidate queue using call/transcript evidence and stable-ID later-call checks.
 - `src/selfSourcingAttribution.js`: isolated New Business audit of long-held CRM records, historical imports, and salesperson-created records for attribution review only.
 - `src/weeklyLeadIntelligence.js`: attached weekly-report snapshot for lead supply mix, trend, and workflow-field catalogue; it never changes call metrics or commercial attribution.
-- `src/storage.js`: local ignored JSON store for imports, derived evaluation artifacts, alert lifecycle state/history, manager review correction/history state, and reports.
+- `src/storage.js`: local ignored state coordinator for imports, alert/review history, reports, and transparent Evaluation Studio SQLite hydration.
+- `src/evaluationStudioDatabase.js`: authoritative indexed SQLite store for Evaluation Studio knowledgebase, template, run, and result history.
 - `src/dashboardRenderer.js`: dashboard HTML, escaping, and table rendering.
 - `tests/analysis.test.js`: current automated verification.
 - `tests/storage.test.js`: persistence and report-library verification.

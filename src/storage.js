@@ -49,6 +49,12 @@ const {
   upsertEvaluationTemplate,
   upsertKnowledgebaseEntry
 } = require("./evaluationStudio");
+const {
+  evaluationStudioSqliteStub,
+  isEvaluationStudioSqliteStub,
+  loadEvaluationStudio,
+  syncEvaluationStudio
+} = require("./evaluationStudioDatabase");
 const { buildLeadUtilizationReport } = require("./leadUtilizationReport");
 const {
   UNTRUSTED_LEGACY_POLICY,
@@ -100,36 +106,50 @@ function readStore(options = {}) {
     return createEmptyStore();
   }
 
+  let parsed;
   try {
-    const parsed = JSON.parse(fs.readFileSync(storePath, "utf8"));
-    return {
-      ...createEmptyStore(),
-      ...parsed,
-      imports: Array.isArray(parsed.imports) ? parsed.imports : [],
-      alertEvents: Array.isArray(parsed.alertEvents) ? parsed.alertEvents : [],
-      badLeadClaims: Array.isArray(parsed.badLeadClaims) ? parsed.badLeadClaims : [],
-      managerReviews: Array.isArray(parsed.managerReviews) ? parsed.managerReviews.map(normalizeManagerReview) : [],
-      aiJobs: Array.isArray(parsed.aiJobs) ? parsed.aiJobs : [],
-      evaluationStudio: normalizeEvaluationStudio(parsed.evaluationStudio),
-      reports: Array.isArray(parsed.reports) ? parsed.reports : []
-    };
+    parsed = JSON.parse(fs.readFileSync(storePath, "utf8"));
   } catch (error) {
     const store = createEmptyStore();
     store.readError = error.message;
     return store;
   }
+  let evaluationStudio;
+  if (isEvaluationStudioSqliteStub(parsed.evaluationStudio)) {
+    const loaded = loadEvaluationStudio({ ...options, storePath });
+    evaluationStudio = loaded.studio;
+  } else {
+    evaluationStudio = normalizeEvaluationStudio(parsed.evaluationStudio);
+  }
+  return {
+    ...createEmptyStore(),
+    ...parsed,
+    imports: Array.isArray(parsed.imports) ? parsed.imports : [],
+    alertEvents: Array.isArray(parsed.alertEvents) ? parsed.alertEvents : [],
+    badLeadClaims: Array.isArray(parsed.badLeadClaims) ? parsed.badLeadClaims : [],
+    managerReviews: Array.isArray(parsed.managerReviews) ? parsed.managerReviews.map(normalizeManagerReview) : [],
+    aiJobs: Array.isArray(parsed.aiJobs) ? parsed.aiJobs : [],
+    evaluationStudio,
+    reports: Array.isArray(parsed.reports) ? parsed.reports : []
+  };
 }
 
 function writeStore(store, options = {}) {
   const storePath = resolveStorePath(options);
   ensureDirectory(storePath);
+  const evaluationStudioSync = syncEvaluationStudio(store.evaluationStudio, { ...options, storePath });
   const nextStore = {
     ...store,
     schemaVersion: STORE_SCHEMA_VERSION,
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    evaluationStudio: evaluationStudioSync.studio
+  };
+  const persistedStore = {
+    ...nextStore,
+    evaluationStudio: evaluationStudioSqliteStub(evaluationStudioSync)
   };
   const tempPath = `${storePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(nextStore, null, 2)}\n`, "utf8");
+  fs.writeFileSync(tempPath, `${JSON.stringify(persistedStore, null, 2)}\n`, "utf8");
   for (let attempt = 0; ; attempt += 1) {
     try {
       fs.renameSync(tempPath, storePath);

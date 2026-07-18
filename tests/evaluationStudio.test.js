@@ -881,7 +881,8 @@ test("Call Intelligence Foundation report keeps opportunity, measurement, effici
   assert.equal(report.totals.measurementEligible, 1);
   assert.equal(report.totals.actionableOpportunities, 1);
   assert.equal(report.totals.efficiencyGaps, 0);
-  assert.equal(report.totals.quotedAmounts.AUD, 550);
+  assert.equal(report.totals.quotedAmountCalls, 1);
+  assert.equal(report.totals.implausibleQuotedAmountCalls, 0);
   assert.equal(report.totals.noProductPitched, 0);
   assert.equal(report.byCalledOnBehalfOf[0].label, "SES Yearbook");
   assert.equal(report.bySalesperson[0].label, "Alex");
@@ -930,6 +931,54 @@ test("Offer Acceptance validation accepts explicit commitment and keeps conditio
   });
   assert.equal(conditional.category, 2);
   assert.equal(conditional.unresolved_condition, true);
+});
+
+test("Offer Acceptance reconciliation recognises a completed acceptance action but preserves unresolved or withdrawn outcomes", () => {
+  const template = createDefaultEvaluationStudio().evaluationTemplates.find((item) => item.evaluationGoal === OFFER_ACCEPTANCE_GOAL);
+  const baseOutput = (responseQuote) => validOfferAcceptanceResult({
+    category: 2,
+    classification: "interested_follow_up_only",
+    customer_commitment: "conditional_or_pending",
+    unresolved_condition: true,
+    offer_evidence: {
+      speaker: "salesperson",
+      quote: "The offer is $550.",
+      summary: "A priced offer was presented."
+    },
+    customer_response_evidence: {
+      speaker: "customer",
+      quote: responseQuote,
+      summary: "The customer had not yet completed acceptance."
+    },
+    manager_summary: "Follow-up was still required."
+  });
+  const acceptedTranscript = "Agent: The offer is $550. Reply to the email with I agree to accept it. Customer: Please send the email. Customer: I agree. There you go.";
+  const accepted = upsertEvaluationResult(createDefaultEvaluationStudio(), {
+    templateId: template.id,
+    result: baseOutput("Please send the email."),
+    validationContext: offerAcceptanceContext(acceptedTranscript)
+  }).result;
+  assert.equal(accepted.acceptanceAssessment.category, 3);
+  assert.equal(accepted.acceptanceAssessment.classification, "customer_accepted_offer");
+  assert.equal(accepted.acceptanceAssessment.customerCommitment, "acceptance_action_completed");
+  assert.equal(accepted.acceptanceAssessment.customerResponseEvidence.quote, "I agree. There you go.");
+  assert.equal(accepted.acceptanceAssessment.semanticAdjustments.some((item) => item.action === "completed_acceptance_action_overrode_follow_up_classification"), true);
+
+  const unresolvedTranscript = "Agent: The offer is $550. Reply to the email with I agree to accept it. Customer: Please send the email. Customer: I need to check with my partner first.";
+  const unresolved = upsertEvaluationResult(createDefaultEvaluationStudio(), {
+    templateId: template.id,
+    result: baseOutput("Please send the email."),
+    validationContext: offerAcceptanceContext(unresolvedTranscript)
+  }).result;
+  assert.equal(unresolved.acceptanceAssessment.category, 2);
+
+  const withdrawnTranscript = "Agent: The offer is $550. Reply to the email with I agree to accept it. Customer: Please send the email. Customer: I agree. Customer: Actually, I don't want to go ahead.";
+  const withdrawn = upsertEvaluationResult(createDefaultEvaluationStudio(), {
+    templateId: template.id,
+    result: baseOutput("Please send the email."),
+    validationContext: offerAcceptanceContext(withdrawnTranscript)
+  }).result;
+  assert.equal(withdrawn.acceptanceAssessment.category, 2);
 });
 
 test("Offer Acceptance storage reconciles category 2 as unresolved without weakening direct validation", () => {
@@ -1195,6 +1244,46 @@ test("Offer Acceptance reporting calculates acceptance rate and salesperson, sou
   assert.deepEqual(report.latestRun.failureReasons, [{ label: "Evidence quote exceeded 500 characters", count: 1 }]);
   assert.deepEqual(report.latestRun.failures, [{ callId: "", customerId: "Not available", category: "", reason: "Evidence quote exceeded 500 characters" }]);
   assert.equal(listEvaluationResults(studio, { acceptanceClassification: "customer_accepted_offer" }).length, 1);
+});
+
+test("Offer Acceptance reporting counts one authoritative result per call", () => {
+  const studio = normalizeEvaluationStudio({
+    evaluationResults: [
+      {
+        id: "older-rerun",
+        callId: "same-call",
+        importId: "report-import",
+        evaluationGoal: OFFER_ACCEPTANCE_GOAL,
+        templateVersion: 1,
+        acceptanceAssessment: { category: 2, classification: "interested_follow_up_only" },
+        updatedAt: "2026-07-18T10:00:00.000Z"
+      },
+      {
+        id: "newer-template",
+        callId: "same-call",
+        importId: "report-import",
+        evaluationGoal: OFFER_ACCEPTANCE_GOAL,
+        templateVersion: 2,
+        acceptanceAssessment: { category: 3, classification: "customer_accepted_offer" },
+        updatedAt: "2026-07-17T10:00:00.000Z"
+      },
+      {
+        id: "insufficient-result",
+        callId: "insufficient-call",
+        importId: "report-import",
+        evaluationGoal: OFFER_ACCEPTANCE_GOAL,
+        status: "insufficient_evidence",
+        evidenceAvailability: "unavailable",
+        acceptanceAssessment: { category: 1, classification: "no_sale_signal" },
+        updatedAt: "2026-07-18T11:00:00.000Z"
+      }
+    ]
+  });
+  const report = buildOfferAcceptanceReport(studio, { importId: "report-import" });
+  assert.equal(report.totals.classified, 1);
+  assert.equal(report.totals.accepted, 1);
+  assert.equal(report.resultBasis.duplicateRerunsExcluded, 1);
+  assert.equal(report.resultBasis.nonUsableOrUnclassifiedExcluded, 1);
 });
 
 test("Offer Acceptance results are normalized into visible Studio findings", () => {

@@ -45,6 +45,7 @@ It preserves the raw import in memory, profiles the call export, runs a local de
 - Evaluation Studio UI: `http://127.0.0.1:3040/evaluation-studio`
 - Evaluation Studio API: `http://127.0.0.1:3040/api/evaluation-studio`
 - Evaluation Studio selection preview API: `POST http://127.0.0.1:3040/api/evaluation-studio/selection-preview`
+- Evaluation Studio typed-specialist recovery API: `GET http://127.0.0.1:3040/api/evaluation-studio/specialist-recovery`
 - Evaluation Studio results API: `http://127.0.0.1:3040/api/evaluation-studio/results`
 - Evaluation Studio prompt tests API: `POST http://127.0.0.1:3040/api/evaluation-studio/prompt-tests`
 - Evaluation Studio run harvest API: `POST http://127.0.0.1:3040/api/evaluation-studio/runs/<run-id>/harvest`
@@ -53,7 +54,7 @@ It preserves the raw import in memory, profiles the call export, runs a local de
 - Evaluation Studio report rollups API: `http://127.0.0.1:3040/api/evaluation-studio/report-rollups`
 - Evaluation Studio result review handoff: `POST http://127.0.0.1:3040/api/evaluation-studio/results/<result-id>/review`
 - Lead Harvest API: `http://127.0.0.1:3040/api/lead-harvest`
-- Store path: `data/store/state.json` by default, or `SALES_DASHBOARD_STORE_PATH`
+- Store path: `data/store/state.json` by default, or `SALES_DASHBOARD_STORE_PATH`; Evaluation Studio history is authoritative in adjacent `data/store/evaluation-studio.sqlite` (override with `SALES_DASHBOARD_EVALUATION_STUDIO_DB_PATH`).
 
 ## Success Criteria
 - The July 1 CSV can be loaded without copying sensitive source data into the repository.

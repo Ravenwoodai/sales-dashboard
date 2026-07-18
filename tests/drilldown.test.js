@@ -2747,6 +2747,38 @@ test("Evaluation Studio presents lead-record results as a concise decision with 
   assert.match(html, /It is not the probability that payment or fulfilment occurred/);
 });
 
+test("Evaluation Studio labels historical untyped specialists without inventing a pass or lead-record decision", () => {
+  const analysis = analyzeCsvText(csv([row({
+    call_id: "legacy-specialist-display",
+    transcription_text: "Customer: Please call tomorrow. Agent: I will call tomorrow."
+  })]));
+  const html = renderEvaluationStudioPage(analysis, {
+    studioView: {
+      summary: { results: 1 },
+      knowledgebaseEntries: [],
+      evaluationTemplates: [],
+      evaluationRuns: [],
+      evidenceQueue: [],
+      reportRollups: { totals: {}, signalRows: [], priorityExamples: [] },
+      resultQuery: { matchingResults: 1, offset: 0, limit: 25 },
+      evaluationResults: [{
+        id: "legacy-callback-result",
+        callId: "legacy-specialist-display",
+        evaluationGoal: "callback_opportunity",
+        status: "usable",
+        evidenceAvailability: "available",
+        managerSummary: "Legacy callback output.",
+        evaluationAudit: { validationStatus: "legacy_generic_contract" },
+        findings: [{ field: "callback", value: "string", evidence: "Customer: Please call tomorrow." }]
+      }]
+    }
+  });
+  assert.match(html, /Historical untyped result/);
+  assert.match(html, /Rerun with active v2 before reporting/);
+  assert.match(html, /must not be read as evaluated-clear or issue-found/);
+  assert.doesNotMatch(html, /Lead record decision/);
+});
+
 test("Evaluation Studio presents Offer Acceptance outcomes and reportable rates instead of generic audit fields", () => {
   const analysis = analyzeCsvText(csv([
     row({

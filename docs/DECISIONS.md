@@ -295,3 +295,29 @@ Consequences:
 - stable-ID follow-up matching stores the matched fields and later call context as `later_attempt_observed`; completion/payment stay not established without separate evidence
 - normal result UI uses evidence-strength bands; numeric model confidence remains uncalibrated audit metadata
 - seeded Callback, Procedure, and Objection evaluators use typed v2 contracts with exact evidence, while historical generic results and safe user-created custom templates remain compatible
+
+## ADR-025 - Use Unique-Call Typed Baselines For Evaluation Reporting
+Date: 2026-07-18
+Status: Accepted
+Decision: Management reports count one authoritative result per unique call, preferring the highest template version and latest stored result. Foundation reporting uses the active template baseline when it has results. Historical generic Callback, Procedure, and Objection outputs remain audit history but do not count as current typed specialist completion.
+Context: The store contains legitimate reruns, older template generations, and 1,073 generic specialist results whose placeholder contract cannot support present-day pass/fail reporting. Counting result rows inflated denominators, while summing transcript-extracted quoted options created a misleading value total.
+Consequences:
+- reruns and older template results remain visible but cannot inflate accepted, classified, Foundation, or specialist-completion totals
+- active Foundation v6 is the management baseline; older Foundation-only results remain available in result history
+- generic historical specialists are labelled `evaluated_legacy_untyped`, never evaluated-clear or issue-found
+- a specialist route is complete only when its current typed assessment is present
+- quoted-price calls are counted, cross-call price totals are suppressed, and unusually large transcript amounts are flagged for review without silent correction
+- deterministic acceptance-action reconciliation may create a new versioned result only when an explicit requested action is later completed by the customer and no later condition or withdrawal controls the final position
+
+## ADR-026 - Recover Missing Typed Specialists Before Foundation And Store Studio History In SQLite
+Date: 2026-07-19
+Status: Accepted
+Decision: The overnight controller must derive missing specialist work from current typed schema contracts and active Foundation routes, recover that work in bounded batches before submitting more Foundation calls, and halt on any recovery quality failure. Evaluation Studio knowledgebase, template, run, and result history is authoritative in a dedicated SQLite database rather than embedded in `state.json`.
+Context: The accuracy audit found 967 missing current typed checks across 551 calls even though historical generic specialist rows existed. Embedded Studio history had also grown `state.json` to 54.7 MB, increasing rewrite and startup cost before planned higher volume.
+Consequences:
+- legacy generic rows remain auditable but never satisfy a current typed route
+- recovery defaults to at most 100 exact calls for one specialist goal per run and re-derives the backlog after each clean terminal boundary
+- any failed call, partial run, stored error, or planned/completed mismatch halts new overnight submissions until investigated
+- the existing 22:00-06:00 Melbourne, 04:30 cutoff, 10-minute idle, 4 GB RAM, and single-controller gates remain authoritative
+- SQLite uses WAL, full synchronous durability, indexed operational fields, per-record hashes, and incremental upserts; existing code receives a transparently hydrated Studio object
+- the live migration keeps a timestamped pre-migration JSON rollback copy and verifies record counts plus `PRAGMA integrity_check`

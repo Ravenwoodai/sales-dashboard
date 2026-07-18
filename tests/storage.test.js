@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { DatabaseSync } = require("node:sqlite");
 const { analyzeCsvText } = require("../src/analysis");
 const { loadAnalysis } = require("../src/main");
 const {
@@ -80,6 +81,38 @@ test("writeStore retries transient Windows rename contention without losing the 
   assert.equal(attempts, 3);
   assert.equal(readStore({ storePath }).reports[0].id, "rename-retry-proof");
   assert.equal(fs.readdirSync(path.dirname(storePath)).some((name) => name.endsWith(".tmp")), false);
+});
+
+test("writeStore keeps Evaluation Studio history in SQLite and hydrates it transparently", () => {
+  const storePath = tempStorePath();
+  const store = createEmptyStore();
+  const expectedTemplateCount = store.evaluationStudio.evaluationTemplates.length;
+  writeStore(store, { storePath });
+
+  const raw = JSON.parse(fs.readFileSync(storePath, "utf8"));
+  assert.equal(raw.evaluationStudio.storage.mode, "sqlite");
+  assert.equal(raw.evaluationStudio.evaluationTemplates, undefined);
+  assert.equal(raw.evaluationStudio.evaluationRuns, undefined);
+  assert.equal(raw.evaluationStudio.evaluationResults, undefined);
+  assert.equal(fs.existsSync(path.join(path.dirname(storePath), "evaluation-studio.sqlite")), true);
+
+  const hydrated = readStore({ storePath });
+  assert.equal(hydrated.evaluationStudio.evaluationTemplates.length, expectedTemplateCount);
+  assert.deepEqual(hydrated.evaluationStudio.evaluationRuns, []);
+  assert.deepEqual(hydrated.evaluationStudio.evaluationResults, []);
+});
+
+test("readStore fails closed when a stored Evaluation Studio payload hash is invalid", () => {
+  const storePath = tempStorePath();
+  writeStore(createEmptyStore(), { storePath });
+  const db = new DatabaseSync(path.join(path.dirname(storePath), "evaluation-studio.sqlite"));
+  try {
+    const templateId = db.prepare("SELECT id FROM evaluation_templates ORDER BY sort_order LIMIT 1").get().id;
+    db.prepare("UPDATE evaluation_templates SET payload_json = ? WHERE id = ?").run('{"id":"tampered"}', templateId);
+  } finally {
+    db.close();
+  }
+  assert.throws(() => readStore({ storePath }), /payload hash does not match/);
 });
 
 function sampleCsv() {

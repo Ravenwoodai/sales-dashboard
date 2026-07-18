@@ -44,7 +44,8 @@ The MVP avoids a database and external AI calls so the first version is private,
 - `src/leadHarvestAnalytics.js`: deterministic positive-response callback candidate queue with possible name/timing extraction and stable-ID later-call labels.
 - `src/selfSourcingAttribution.js`: isolated long-held-record and historical-import attribution-review model; it does not accept Crystal Report files as a source.
 - `src/weeklyLeadIntelligence.js`: supplied weekly-report supply/trend/workflow snapshot; it is not an active call or commercial metric source.
-- `src/storage.js`: local JSON store, import artifact writer, generated report saver, alert lifecycle persistence, manager review correction/history persistence, and active report visibility.
+- `src/storage.js`: local state-store coordinator, import artifact writer, generated report saver, alert lifecycle persistence, manager review correction/history persistence, and transparent Evaluation Studio SQLite hydration.
+- `src/evaluationStudioDatabase.js`: authoritative SQLite persistence for Evaluation Studio knowledgebase entries, templates, runs, and results, with WAL, indexed query fields, content hashes, and incremental upserts.
 - `src/aiExecutionLayer.js`: optional client for local Execution Layer status, job submission, and job polling.
 - `src/dashboardRenderer.js`: HTML rendering and escaping.
 - `tests/analysis.test.js`: parser, privacy, excluded-legacy-field invariance, and follow-up-linking coverage.
@@ -74,10 +75,10 @@ The MVP avoids a database and external AI calls so the first version is private,
 - Batch creation submits at most 12 jobs concurrently and retries transient submission failures up to three times with an unchanged idempotency key. Automatic reconciliation harvests at most 100 unfinished jobs per pass, ignores already handled terminal jobs, and repeats on later Studio/API reads until every batch job is terminal.
 - Stored reports can remain in local history, but normal report APIs and UI expose only active reports and hide parked/stale allocation-like report content.
 - Local model jobs are submitted only through the Execution Layer API; Sales Dashboard stores job references, not raw model outputs.
-- Overnight backlog ownership is split deliberately: `scripts/run-overnight-evaluations.js` selects, submits, harvests, validates, and advances one 500-call Foundation boundary; Windows Task Scheduler supplies the daily trigger; the AI Execution Layer owns per-job time/idle/memory admission. The controller never calls Ollama directly, never cancels an in-flight job, and never starts a new parent after 04:30 Melbourne time.
+- Overnight backlog ownership is split deliberately: `scripts/run-overnight-evaluations.js` first derives and drains missing current typed specialist checks in batches of at most 100 by default, then selects and advances one 500-call Foundation boundary; Windows Task Scheduler supplies the daily trigger; the AI Execution Layer owns per-job time/idle/memory admission. Any recovery failure, partial completion, stored error, or count mismatch halts new submissions. The controller never calls Ollama directly, never cancels an in-flight job, and never starts a new batch after 04:30 Melbourne time.
 
 ## Future Architecture
-The next architecture step should replace the JSON store with SQLite only when concurrent users, large import history, or richer filtering makes file-backed state too limited.
+Evaluation Studio history moved to SQLite on 19 July 2026. The next persistence step, only when scale requires it, is to query paginated result subsets directly instead of hydrating the full Studio object for compatibility with existing domain functions.
 Future data-model candidates:
 - raw import archive outside Git
 - canonical calls table

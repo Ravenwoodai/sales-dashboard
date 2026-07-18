@@ -2062,7 +2062,15 @@ function authoritativeOfferAcceptanceContext(row = {}) {
   return null;
 }
 
+function isLegacyUntypedSpecialist(row = {}) {
+  return ["callback_opportunity", "procedure_adherence", "objection_handling"].includes(row.evaluationGoal)
+    && (!row.specialistAssessment || row.evaluationAudit?.validationStatus === "legacy_generic_contract");
+}
+
 function evaluationRecordSummary(row = {}) {
+  if (isLegacyUntypedSpecialist(row)) {
+    return "Historical untyped specialist result. Its excerpts may help an audit, but it is not a current typed pass/fail classification; rerun this call with the active v2 specialist template.";
+  }
   const authoritative = authoritativeOfferAcceptanceContext(row);
   if (authoritative) {
     const outcome = offerAcceptanceOutcome({ acceptanceAssessment: authoritative.acceptanceAssessment });
@@ -2121,7 +2129,8 @@ function renderFoundationReport(report = {}) {
       ${metricCard("No product pitched", formatNumber(totals.noProductPitched || 0), "The represented organisation or product was not reached or stated", totals.noProductPitched ? "warn" : "good", evaluationResultsUrl({ ...foundationBase, foundationCalledOnBehalfOf: "No product pitched" }))}
       ${metricCard("Specialist checks", `${formatNumber(totals.completedSpecialistChecks || 0)} / ${formatNumber(totals.routedSpecialistChecks || 0)}`, rates.specialistCompletionRate === null || rates.specialistCompletionRate === undefined ? "No routed checks yet" : `${formatRatioPercent(rates.specialistCompletionRate)} completed`, totals.routedSpecialistChecks > totals.completedSpecialistChecks ? "warn" : "good", evaluationResultsUrl(foundationBase))}
     </div>
-    <p class="muted small">Quoted amounts observed: AUD ${formatNumber(totals.quotedAmounts?.AUD || 0)}; NZD ${formatNumber(totals.quotedAmounts?.NZD || 0)} across ${aggregateResultLink(formatNumber(totals.quotedAmountCalls || 0), { ...foundationBase, foundationQuotedAmountAvailable: "true" }, `View ${totals.quotedAmountCalls || 0} Foundation results with a quoted amount`)} calls. These are transcript context only—not sales, revenue, realised value, or source ROI.</p>
+    <p class="muted small">A quoted price was captured in ${aggregateResultLink(formatNumber(totals.quotedAmountCalls || 0), { ...foundationBase, foundationQuotedAmountAvailable: "true" }, `View ${totals.quotedAmountCalls || 0} Foundation results with a quoted amount`)} unique calls${totals.implausibleQuotedAmountCalls ? `; ${formatNumber(totals.implausibleQuotedAmountCalls)} unusually large transcript amounts require review` : ""}. Prices are not totalled because offered options are not accepted value or revenue, and speech transcription can distort numbers.</p>
+    ${report.resultBasis?.duplicateOrHistoricalResultsExcluded ? `<p class="muted small">Reporting baseline: active ${escapeHtml(report.resultBasis.templateId || "Foundation template")}, one result per unique call. ${formatNumber(report.resultBasis.duplicateOrHistoricalResultsExcluded)} older-template or rerun results remain available in the audit view but are excluded from these totals.</p>` : ""}
     ${routing ? `<p class="muted small">Latest routing: ${formatNumber(routing.requestedChecks || 0)} requested specialist checks across ${formatNumber((routing.childRuns || []).length)} child runs${(routing.errors || []).length ? `; ${formatNumber(routing.errors.length)} routing errors` : ""}.</p>` : ""}
     <div class="offer-breakdown-grid">
       <div><h4>By salesperson</h4>${table(breakdownColumns("Salesperson"), (report.bySalesperson || []).slice(0, 25), "Run Call Intelligence Foundation to build salesperson intelligence.")}</div>
@@ -2162,6 +2171,8 @@ function renderOfferAcceptanceReport(report = {}) {
       ${metricCard("No sale signal", formatNumber(totals.noSaleSignal || 0), "No acceptance or qualifying follow-up signal", "info", evaluationResultsUrl({ ...offerBase, acceptanceClassification: "no_sale_signal" }))}
       ${metricCard("Latest run failures", formatNumber(latestRun?.failed || 0), latestRun ? `${formatNumber(latestRun.classified || 0)} classified from ${formatNumber(latestRun.planned || 0)} planned; failure details are listed below` : "No Offer Acceptance run yet", latestRun?.failed ? "risk" : "good", latestRun?.failed ? "#offer-latest-failures" : evaluationResultsUrl(offerBase))}
     </div>
+    ${report.resultBasis?.duplicateRerunsExcluded ? `<p class="muted small">These totals count one authoritative result per unique call. ${formatNumber(report.resultBasis.duplicateRerunsExcluded)} rerun or older-template results remain available in the audit view but do not inflate the denominator.</p>` : ""}
+    ${report.resultBasis?.nonUsableOrUnclassifiedExcluded ? `<p class="muted small">${formatNumber(report.resultBasis.nonUsableOrUnclassifiedExcluded)} stored result${report.resultBasis.nonUsableOrUnclassifiedExcluded === 1 ? " is" : "s are"} excluded because the call was not usable or successfully classified.</p>` : ""}
     ${latestRun?.failed ? `<div class="window-warning warning offer-failure-summary" id="offer-latest-failures"><strong>Why the latest run had ${formatNumber(latestRun.failed)} failures</strong><p class="muted small">${escapeHtml(failureReasons || "The failed outputs did not pass evidence validation.")}</p>${failedCallRows ? `<ul class="result-evidence-list">${failedCallRows}</ul>` : ""}<a class="filter-link" href="#runs">Open the latest run record</a></div>` : ""}
     <div class="offer-breakdown-grid">
       <div><h4>By salesperson</h4>${table(breakdownColumns("Salesperson"), (report.bySalesperson || []).slice(0, 25), "No classified Offer Acceptance results for this salesperson filter.")}</div>
@@ -2274,6 +2285,26 @@ function renderEvaluationResultDetails(row = {}) {
       <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
     </details>`;
   }
+  if (isLegacyUntypedSpecialist(row)) {
+    const evidenceSnippets = [];
+    const seen = new Set();
+    for (const finding of row.findings || []) {
+      const excerpt = String(finding.evidence || finding.note || "").replace(/\s+/g, " ").trim();
+      const key = excerpt.toLowerCase();
+      if (!excerpt || seen.has(key)) continue;
+      seen.add(key);
+      evidenceSnippets.push(excerpt);
+      if (evidenceSnippets.length >= 3) break;
+    }
+    const evidence = evidenceSnippets.map((excerpt) => `<li>${escapeHtml(excerpt)}</li>`).join("");
+    return `<details class="compact-details result-details legacy-specialist-details"><summary>View historical result</summary>
+      <div class="result-decision"><span>${escapeHtml(humanizeSlug(row.evaluationGoal))}</span><strong>Historical untyped result</strong><p>This older result did not use the current specialist schema and must not be read as evaluated-clear or issue-found.</p></div>
+      ${evidence ? `<div class="result-proof"><strong>Historical evidence excerpts</strong><ul class="result-evidence-list">${evidence}</ul></div>` : `<p class="muted small">No reliable evidence excerpt was stored.</p>`}
+      <p class="muted small">Rerun with the active v2 specialist template before using this call in pass/fail, coaching, or callback reporting.</p>
+      ${evaluationAuditMarkup(row)}
+      <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a></div>
+    </details>`;
+  }
   const facets = evaluationResultFacets(row);
   const evidenceSnippets = [];
   const seenEvidence = new Set();
@@ -2326,6 +2357,9 @@ function evaluationResultOutcomeMarkup(row = {}, options = {}) {
     const opportunity = lenses.opportunity_status || "unknown";
     const tone = opportunity === "accepted" ? "notice" : ["possible", "actionable"].includes(opportunity) ? "warning" : "neutral";
     return `${linkedBadge(`${humanizeSlug(opportunity)} opportunity`, tone, evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationOpportunityStatus: opportunity }))}<span class="muted small">${hrefDataLink(humanizeSlug(lenses.measurement_eligibility || "not supplied"), evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationMeasurementEligibility: lenses.measurement_eligibility }))} · ${hrefDataLink(humanizeSlug(lenses.efficiency_status || "not supplied"), evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationEfficiencyStatus: lenses.efficiency_status }))}</span>`;
+  }
+  if (isLegacyUntypedSpecialist(row)) {
+    return `${badge("Historical untyped result", "warning")}<span class="muted small">Rerun with active v2 before reporting</span>`;
   }
   if (row.evaluationGoal === "lead_validity_utilisation" && row.sharedFoundationContext?.customerOutcome === "long_term_nurture") {
     return `${badge("Long-term nurture", "neutral")}<span class="muted small">Current transcript context · archived evaluation retained</span>`;

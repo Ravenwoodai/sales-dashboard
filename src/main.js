@@ -55,6 +55,10 @@ const {
   normalizeEvaluationStudio
 } = require("./evaluationStudio");
 const { normalizeManagerReview, resolveManagerReviewActor } = require("./managerReview");
+const {
+  buildTypedSpecialistRecoveryBacklog,
+  selectTypedSpecialistRecoveryBatch
+} = require("./overnightEvaluationAutomation");
 const { renderCallPage, renderDashboard, renderDrilldownPage, renderEmptyState, renderEvaluationStudioPage, renderReportPage } = require("./dashboardRenderer");
 const { readTabularFile } = require("./sourceFile");
 const {
@@ -706,10 +710,11 @@ function evaluationStudioOvernightStatus(storePath) {
     installed: true,
     schedule: "22:00-06:00 Australia/Melbourne",
     submissionCutoff: "04:30 Australia/Melbourne",
-    batchSize: 500,
+    foundationBatchSize: Math.min(500, Math.max(1, Number(process.env.SALES_DASHBOARD_OVERNIGHT_BATCH_SIZE || 500))),
+    specialistRecoveryBatchSize: Math.min(250, Math.max(1, Number(process.env.SALES_DASHBOARD_OVERNIGHT_SPECIALIST_BATCH_SIZE || 100))),
     idleRequiredSeconds: 600,
     memoryFloorGb: 4,
-    behavior: "One Foundation batch at a time, followed by all recommended specialist evaluations.",
+    behavior: "Missing current typed specialist checks are recovered first in bounded batches; any recovery quality failure halts submissions. Foundation resumes only after that backlog is empty.",
     runtime
   };
 }
@@ -2708,6 +2713,31 @@ function createServer(options = {}) {
             transcriptQuality: call.transcriptQuality,
             durationSeconds: call.durationSeconds
           }))
+        });
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message });
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/specialist-recovery" && request.method === "GET") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) {
+          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
+          return;
+        }
+        const store = readStore({ storePath });
+        const importId = url.searchParams.get("importId") || state.importRecord.id;
+        const availableCallIds = new Set((state.analysis.drilldownRows || [])
+          .filter((call) => String(call.transcript || "").trim())
+          .map((call) => String(call.callId || "").trim())
+          .filter(Boolean));
+        const backlog = buildTypedSpecialistRecoveryBacklog(store.evaluationStudio, { importId, availableCallIds });
+        const batchSize = normalizeLimit(url.searchParams.get("limit"), 100, 250);
+        sendJson(response, 200, {
+          ok: true,
+          backlog,
+          nextBatch: selectTypedSpecialistRecoveryBatch(backlog, batchSize)
         });
       } catch (error) {
         sendJson(response, error.statusCode || 400, { ok: false, error: error.message });

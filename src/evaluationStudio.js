@@ -2422,6 +2422,26 @@ function offerAcceptanceFinalPositionOverride(context, responseQuote) {
   return override;
 }
 
+function completedOfferAcceptanceAction(context) {
+  const turns = parseTranscriptTurns(context.transcript || "");
+  const actionRequest = /\b(?:repl(?:y|ying|ied)|respond(?:ing|ed)?)\b.{0,180}\b(?:i\s+agree|agree)\b|\b(?:click|select|press|tap|tick)\b.{0,140}\b(?:i\s+agree|agree|accept|confirmation)\b|\b(?:type|write|send)\b.{0,140}\b(?:i\s+agree|agree)\b/i;
+  const actionCompleted = /\bi\s+agree\b|\bi\s+(?:just\s+)?(?:replied|responded|sent\s+it)\b|\b(?:done|just\s+did\s+it|clicked\s+it|pressed\s+it|ticked\s+it)\b/i;
+  let requestIndex = -1;
+  turns.forEach((turn, index) => {
+    if (transcriptSpeakerType(turn) === "salesperson" && actionRequest.test(clean(turn.text))) requestIndex = index;
+  });
+  if (requestIndex < 0) return null;
+  for (let index = requestIndex + 1; index < turns.length; index += 1) {
+    const turn = turns[index];
+    if (transcriptSpeakerType(turn) !== "customer") continue;
+    const quote = clean(turn.text);
+    if (!actionCompleted.test(quote)) continue;
+    const finalPosition = offerAcceptanceFinalPositionOverride(context, quote);
+    if (!finalPosition) return { quote: quote.slice(0, 500) };
+  }
+  return null;
+}
+
 function reconcileOfferAcceptanceOutput(record = {}) {
   const source = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
   const output = JSON.parse(JSON.stringify(source));
@@ -2514,6 +2534,32 @@ function reconcileOfferAcceptanceOutput(record = {}) {
         to: output.classification,
         action: "final_customer_position_overrode_earlier_acceptance",
         reason: "A later customer withdrawal or unresolved condition controls the call outcome."
+      });
+    }
+  }
+  if (Number(output.category) === 2
+    && output.status === "usable"
+    && output.evidence_availability === "available"
+    && output.offer_presented === true) {
+    const completedAction = completedOfferAcceptanceAction(context);
+    if (completedAction) {
+      const previousClassification = output.classification;
+      output.category = 3;
+      output.classification = "customer_accepted_offer";
+      output.customer_commitment = "acceptance_action_completed";
+      output.unresolved_condition = false;
+      output.customer_response_evidence = {
+        speaker: "customer",
+        quote: completedAction.quote,
+        summary: "The customer completed the salesperson's explicit acceptance action during the call."
+      };
+      output.manager_summary = "The customer completed the requested acceptance action during the call. This is an accepted-offer signal; payment and fulfilment remain unverified.";
+      adjustments.push({
+        field: "classification",
+        from: previousClassification,
+        to: output.classification,
+        action: "completed_acceptance_action_overrode_follow_up_classification",
+        reason: "The salesperson requested a specific acceptance action and a later customer turn explicitly completed it."
       });
     }
   }
@@ -3680,6 +3726,26 @@ function offerAcceptanceFailureLabel(value) {
   return error.replace(/^Offer Acceptance evaluation output is invalid:\s*/i, "") || "Classification failed validation";
 }
 
+function authoritativeResultsPerCall(results = []) {
+  const byCall = new Map();
+  for (const result of results) {
+    const callId = clean(result.callId);
+    if (!callId) continue;
+    const current = byCall.get(callId);
+    if (!current) {
+      byCall.set(callId, result);
+      continue;
+    }
+    const versionDifference = Number(result.templateVersion || 0) - Number(current.templateVersion || 0);
+    const resultVersionDifference = Number(result.resultVersion || 0) - Number(current.resultVersion || 0);
+    const isNewer = String(result.updatedAt || result.createdAt || "") > String(current.updatedAt || current.createdAt || "");
+    if (versionDifference > 0 || (versionDifference === 0 && (resultVersionDifference > 0 || (resultVersionDifference === 0 && isNewer)))) {
+      byCall.set(callId, result);
+    }
+  }
+  return Array.from(byCall.values());
+}
+
 function buildOfferAcceptanceReport(studio = {}, options = {}) {
   const normalized = normalizeEvaluationStudio(studio);
   const importId = clean(options.importId);
@@ -3688,11 +3754,14 @@ function buildOfferAcceptanceReport(studio = {}, options = {}) {
     : null;
   const calls = Array.isArray(options.calls) ? options.calls : [];
   const callLookup = new Map(calls.map((call) => [clean(call.callId || call.call_id), call]));
-  const results = listEvaluationResults(normalized, {
+  const allResults = listEvaluationResults(normalized, {
     importId,
     callIds,
     evaluationGoal: OFFER_ACCEPTANCE_GOAL
   });
+  const reportableResults = allResults.filter((result) => result.status === "usable"
+    && OFFER_ACCEPTANCE_CLASSIFICATIONS.has(Number(result.acceptanceAssessment?.category)));
+  const results = authoritativeResultsPerCall(reportableResults);
   const totals = {
     classified: 0,
     accepted: 0,
@@ -3751,7 +3820,13 @@ function buildOfferAcceptanceReport(studio = {}, options = {}) {
   }
   return {
     schemaVersion: "sales_dashboard_offer_acceptance_report.v1",
-    definition: "Offer acceptance rate = calls classified as customer accepted offer divided by all successfully classified Offer Acceptance calls. Failed or unclassified calls are excluded.",
+    definition: "Offer acceptance rate = unique calls classified as customer accepted offer divided by all unique, successfully classified Offer Acceptance calls. The highest template version and latest result wins per call; failed, unclassified, and superseded reruns are excluded.",
+    resultBasis: {
+      uniqueCalls: results.length,
+      storedLatestResults: allResults.length,
+      duplicateRerunsExcluded: Math.max(0, reportableResults.length - results.length),
+      nonUsableOrUnclassifiedExcluded: Math.max(0, allResults.length - reportableResults.length)
+    },
     totals,
     bySalesperson: sortBreakdown(groupMaps.salesperson),
     bySource: sortBreakdown(groupMaps.source),
@@ -3782,14 +3857,31 @@ function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
     : null;
   const calls = Array.isArray(options.calls) ? options.calls : [];
   const callLookup = new Map(calls.map((call) => [clean(call.callId || call.call_id), call]));
-  const foundationResults = listEvaluationResults(normalized, {
+  const allFoundationResults = listEvaluationResults(normalized, {
     importId,
     callIds,
     evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL
   }).filter((result) => result.foundationAssessment);
+  const activeFoundationTemplate = normalized.evaluationTemplates
+    .filter((template) => template.isActive && template.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL)
+    .sort((left, right) => Number(right.version || 0) - Number(left.version || 0))[0] || null;
+  const currentFoundationResults = activeFoundationTemplate
+    ? allFoundationResults.filter((result) => result.templateId === activeFoundationTemplate.id)
+    : [];
+  const reportFoundationResults = currentFoundationResults.length ? currentFoundationResults : allFoundationResults;
+  const foundationResults = authoritativeResultsPerCall(reportFoundationResults);
   const specialistResults = listEvaluationResults(normalized, { importId, callIds })
     .filter((result) => FOUNDATION_SPECIALIST_GOALS.includes(result.evaluationGoal));
-  const specialistResultKeys = new Set(specialistResults.map((result) => `${result.callId}::${result.evaluationGoal}`));
+  const reportableSpecialistResults = specialistResults.filter((result) => {
+    if (result.evaluationGoal === OFFER_ACCEPTANCE_GOAL) return Boolean(result.acceptanceAssessment);
+    if (result.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL) return Boolean(result.auditAssessment);
+    if ([CALLBACK_OPPORTUNITY_GOAL, PROCEDURE_ADHERENCE_GOAL, OBJECTION_HANDLING_GOAL].includes(result.evaluationGoal)) {
+      return Boolean(result.specialistAssessment)
+        && result.evaluationAudit?.validationStatus !== "legacy_generic_contract";
+    }
+    return false;
+  });
+  const specialistResultKeys = new Set(reportableSpecialistResults.map((result) => `${result.callId}::${result.evaluationGoal}`));
   const totals = {
     evaluated: 0,
     usable: 0,
@@ -3802,8 +3894,8 @@ function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
     offerPresented: 0,
     routedSpecialistChecks: 0,
     completedSpecialistChecks: 0,
-    quotedAmounts: { AUD: 0, NZD: 0, unknown: 0 },
     quotedAmountCalls: 0,
+    implausibleQuotedAmountCalls: 0,
     noProductPitched: 0
   };
   const groupMaps = { salesperson: new Map(), source: new Map(), date: new Map(), calledOnBehalfOf: new Map() };
@@ -3853,12 +3945,9 @@ function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
       if (specialistResultKeys.has(`${result.callId}::${goal}`)) totals.completedSpecialistChecks += 1;
     });
     const amount = assessment.commercialContext?.quoted_amount;
-    const currency = ["AUD", "NZD"].includes(assessment.commercialContext?.currency)
-      ? assessment.commercialContext.currency
-      : "unknown";
     if (assessment.commercialContext?.quoted_amount_available && Number.isFinite(Number(amount))) {
-      totals.quotedAmounts[currency] += Number(amount);
       totals.quotedAmountCalls += 1;
+      if (Number(amount) >= 10000) totals.implausibleQuotedAmountCalls += 1;
     }
     const call = callLookup.get(result.callId) || {};
     incrementGroup(groupMaps.salesperson, call.salesperson, assessment);
@@ -3879,7 +3968,14 @@ function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
     .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0] || null;
   return {
     schemaVersion: "sales_dashboard_call_intelligence_foundation_report.v1",
-    definition: "Foundation results are neutral evidence records used for routing and three independent lenses. Specialist evaluators remain authoritative for acceptance, callback details, record validity, objections, and procedure coaching.",
+    definition: "Foundation results are neutral evidence records used for routing and three independent lenses. This report counts one result per unique call from the active Foundation template when available; reruns and older template baselines do not inflate totals. Specialist evaluators remain authoritative for acceptance, callback details, record validity, objections, and procedure coaching.",
+    resultBasis: {
+      templateId: activeFoundationTemplate?.id || "highest available per call",
+      templateVersion: activeFoundationTemplate?.version || null,
+      uniqueCalls: foundationResults.length,
+      storedLatestResults: allFoundationResults.length,
+      duplicateOrHistoricalResultsExcluded: Math.max(0, allFoundationResults.length - foundationResults.length)
+    },
     totals,
     rates: {
       measurementEligibilityRate: totals.evaluated ? totals.measurementEligible / totals.evaluated : null,

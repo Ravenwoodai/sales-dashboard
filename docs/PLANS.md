@@ -244,6 +244,15 @@ This file tracks execution plans for Sales Dashboard.
 - Verification: `node --test tests/*.test.js` passes 198/198, including long-transcript final-turn preservation and later-withdrawal precedence. Live call 48544948 shows Customer ID 16830601, authoritative accepted-offer state, AUD 450 quoted context, customer-stated payment intention resolving from `next Wednesday` to `2026-07-08`, payment not verified, revenue/CRM unknown, an explicit Foundation-specialist resolution rule, and exact offer/acceptance evidence.
 - Status: complete.
 
+### Evaluation Accuracy And Reporting-Baseline Audit
+- Goal: verify that stored Evaluation Studio decisions, evidence, and management totals remain accurate after multiple prompt/template generations and reruns.
+- Scope shipped: report totals now count one authoritative result per unique call, preferring the highest template version and latest result; Foundation management metrics use the active v6 baseline when available; quoted prices are counted but no longer summed as value; unusually large transcript amounts are marked for review; historical generic Callback/Procedure/Objection outputs are labelled untyped and cannot appear as evaluated-clear; and completed email/text acceptance actions are reconciled to accepted-offer only when the salesperson explicitly requested the action, the customer later completed it, and no later condition or withdrawal controls the final position.
+- Audit evidence: all 4,451 active Foundation v6 excerpts, 1,014 Offer v2 excerpts, and 318 Lead Audit v4 excerpts matched the source transcripts after documented normalisation. Historical generic specialist contracts contain 3,249 placeholder values and are retained only as audit history. Current active Foundation routes total 1,394; only 427 have a current typed specialist result, leaving 967 typed checks across 551 calls for controlled recovery (315 Callback, 543 Procedure, 107 Objection, and 2 Offer Acceptance).
+- Data correction: calls 48544276 and 48542377 now have version-2 deterministic reconciliation results with exact final customer proof; their original Qwen results remain superseded and auditable. Store-wide there are 462 unique usable classified calls (6 accepted, 240 follow-up only, 216 no-sale signal); the active import shown in Studio has 368 classified (6 accepted, 215 follow-up only, 147 no-sale signal; 1.63%). One unavailable-evidence result is retained but excluded from the denominator.
+- Risks handled: no historical result was deleted, no quoted amount was silently corrected, no legacy specialist output was promoted to a typed decision, and no missing specialist work was launched during daytime validation.
+- Verification: `node --test tests/*.test.js` passes 203/203; live Execution Layer health shows queue/running zero and protected admission correctly closed outside 22:00-06:00 Melbourne time.
+- Status: complete; typed-specialist recovery remains a controlled overnight backlog.
+
 ## Planning Rules
 - Keep the MVP grounded in current CSV evidence.
 - Do not add sales/revenue claims until reliable fields exist.
@@ -252,4 +261,11 @@ This file tracks execution plans for Sales Dashboard.
 - Goal: finish all transcript-bearing calls through Call Intelligence Foundation and every recommended specialist without degrading normal daytime PC performance.
 - Scope shipped: daily 22:00-06:00 Melbourne wake-capable task, system-awake/display-off controller lifetime, one 500-call parent at a time, automatic specialist completion, 04:30 submission cutoff, durable status/log, duplicate-controller lock, service preflight/recovery, Studio status panel, and fail-closed 2% Foundation/specialist quality boundaries.
 - Execution safety: the Execution Layer admits the next protected job only in-window, after 600 seconds of user inactivity, and with at least 4 GB available physical memory. Running work finishes; no new protected claim is made when a gate closes.
-- Status: complete and enabled for the 18 July 2026 22:00 window.
+- Status: complete and enabled daily.
+
+### Typed Specialist Recovery And SQLite Studio History
+- Goal: recover the 967 missing current typed specialist checks before more Foundation work and remove the 54.7 MB embedded Studio history from the JSON state file before higher volume.
+- Scope shipped: deterministic backlog derivation from active Foundation routes and current typed schema contracts; priority-ordered exact-call recovery batches capped at 100 by default; existing idle, RAM, time-window, cutoff, and single-controller gates; a hard stop for any failed, partial, errored, or count-mismatched recovery run; recovery API/status telemetry; indexed WAL-mode SQLite storage for knowledgebase entries, templates, runs, and results; transparent compatibility hydration; incremental hashed upserts; and an explicit backup/verified migration command.
+- Live verification: backlog reproduces 967 checks across 551 calls (2 Offer, 315 Callback, 107 Objection, 543 Procedure); migration preserved 19 knowledgebase entries, 20 templates, 114 runs, and 3,694 results; SQLite `PRAGMA integrity_check` returns `ok`; state JSON reduced from 54.7 MB to 14.5 MB; app restarted healthy on port 3040 with the same active import; full suite passes 207/207.
+- Operating rule: investigate any `halted_on_specialist_recovery_quality_failure` state before resuming. Foundation submission remains blocked until the derived missing-check count is zero.
+- Status: complete and enabled for the next 22:00 Melbourne window.

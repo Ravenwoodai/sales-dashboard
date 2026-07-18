@@ -4,10 +4,12 @@ const fs = require("fs");
 const path = require("path");
 const {
   FOUNDATION_GOAL,
+  SPECIALIST_RECOVERY_SOURCE_TYPE,
   activeRuns,
   appendJsonLine,
   beforeSubmissionCutoff,
   latestFoundationBoundary,
+  latestSpecialistRecoveryBoundary,
   melbourneClock,
   withinOvernightWindow,
   writeJsonAtomic
@@ -20,6 +22,7 @@ const STATE_PATH = process.env.SALES_DASHBOARD_OVERNIGHT_STATE_PATH || path.join
 const LOG_PATH = process.env.SALES_DASHBOARD_OVERNIGHT_LOG_PATH || path.join(ROOT, "runtime", "evaluation-overnight.log");
 const LOCK_PATH = process.env.SALES_DASHBOARD_OVERNIGHT_LOCK_PATH || path.join(ROOT, "runtime", "evaluation-overnight.lock");
 const BATCH_SIZE = Math.min(500, Math.max(1, Number(process.env.SALES_DASHBOARD_OVERNIGHT_BATCH_SIZE || 500)));
+const SPECIALIST_BATCH_SIZE = Math.min(250, Math.max(1, Number(process.env.SALES_DASHBOARD_OVERNIGHT_SPECIALIST_BATCH_SIZE || 100)));
 const POLL_SECONDS = Math.max(10, Number(process.env.SALES_DASHBOARD_OVERNIGHT_POLL_SECONDS || 30));
 const ONCE = process.argv.includes("--once");
 
@@ -46,6 +49,7 @@ function safeState(patch = {}) {
     dashboardBaseUrl: DASHBOARD_BASE_URL,
     executionBaseUrl: EXECUTION_BASE_URL,
     batchSize: BATCH_SIZE,
+    specialistBatchSize: SPECIALIST_BATCH_SIZE,
     ...patch
   };
   writeJsonAtomic(STATE_PATH, value);
@@ -88,6 +92,27 @@ async function tick() {
   }
 
   const boundary = latestFoundationBoundary(studio, importId);
+  const recoveryBoundary = latestSpecialistRecoveryBoundary(studio, importId);
+  if (!recoveryBoundary.safe) {
+    const status = recoveryBoundary.waiting ? "waiting_for_specialist_recovery" : "halted_on_specialist_recovery_quality_failure";
+    safeState({
+      status,
+      localTime: clock.display,
+      importId,
+      reason: recoveryBoundary.reason,
+      recoveryRunId: recoveryBoundary.run?.id || null,
+      recoveryQuality: {
+        planned: recoveryBoundary.planned ?? null,
+        completed: recoveryBoundary.completed ?? null,
+        failed: recoveryBoundary.failed ?? null,
+        errorCount: recoveryBoundary.errorCount ?? null
+      },
+      admission
+    });
+    log(status, { reason: recoveryBoundary.reason, recoveryRunId: recoveryBoundary.run?.id || null });
+    return { stop: !recoveryBoundary.waiting, status };
+  }
+
   if (!boundary.safe) {
     const status = boundary.waiting ? "waiting_for_clean_boundary" : "halted_on_quality_gate";
     safeState({ status, localTime: clock.display, importId, reason: boundary.reason, parentRunId: boundary.parent?.id || null, admission });
@@ -102,6 +127,57 @@ async function tick() {
   if (!admission.eligible) {
     safeState({ status: "paused_for_pc", localTime: clock.display, importId, reason: admission.reason, admission });
     return { status: "paused_for_pc" };
+  }
+
+  const recovery = await requestJson(
+    `${DASHBOARD_BASE_URL}/api/evaluation-studio/specialist-recovery?importId=${encodeURIComponent(importId)}&limit=${SPECIALIST_BATCH_SIZE}`,
+    { timeoutMs: 120000 }
+  );
+  if (recovery.nextBatch) {
+    const template = (studio.evaluationTemplates || []).find((item) =>
+      item.isActive && !item.containsUntrustedLegacyData && item.evaluationGoal === recovery.nextBatch.goal
+    );
+    if (!template) throw new Error(`No active specialist template is available for ${recovery.nextBatch.goal}.`);
+    const selection = {
+      templateId: template.id,
+      importId,
+      evaluationState: "all",
+      selectionMode: "call_ids",
+      callIds: recovery.nextBatch.callIds.join(","),
+      limit: recovery.nextBatch.selectedCount
+    };
+    const submitted = await requestJson(`${DASHBOARD_BASE_URL}/api/evaluation-studio/runs`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...selection,
+        submitNow: true,
+        autoRouteSpecialists: false,
+        callSelection: {
+          sourceType: SPECIALIST_RECOVERY_SOURCE_TYPE,
+          specialistGoal: recovery.nextBatch.goal
+        }
+      }),
+      timeoutMs: 300000
+    });
+    const runId = submitted.evaluationRun?.id || null;
+    safeState({
+      status: "specialist_recovery_submitted",
+      localTime: clock.display,
+      importId,
+      recoveryRunId: runId,
+      recoveryGoal: recovery.nextBatch.goal,
+      selectedCount: recovery.nextBatch.selectedCount,
+      remainingMissingChecksBeforeBatch: recovery.backlog.totalMissingChecks,
+      admission
+    });
+    log("specialist_recovery_batch_submitted", {
+      importId,
+      runId,
+      goal: recovery.nextBatch.goal,
+      selectedCount: recovery.nextBatch.selectedCount,
+      remainingMissingChecksBeforeBatch: recovery.backlog.totalMissingChecks
+    });
+    return { status: "specialist_recovery_submitted" };
   }
 
   const template = (studio.evaluationTemplates || []).find((item) =>

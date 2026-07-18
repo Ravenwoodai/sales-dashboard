@@ -53,6 +53,7 @@ if (-not $dashboardHealth) {
     }
     $node = (Get-Command node -ErrorAction Stop).Source
     $dashboardArguments = 'src/main.js --csv "{0}"' -f $csv.FullName
+    $env:PORT = "3040"
     Start-Process -FilePath $node `
         -ArgumentList $dashboardArguments `
         -WorkingDirectory $repoRoot `

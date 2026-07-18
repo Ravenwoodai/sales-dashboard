@@ -5,8 +5,11 @@ const assert = require("node:assert/strict");
 const {
   activeRuns,
   beforeSubmissionCutoff,
+  buildTypedSpecialistRecoveryBacklog,
   latestFoundationBoundary,
+  latestSpecialistRecoveryBoundary,
   melbourneClock,
+  selectTypedSpecialistRecoveryBatch,
   withinOvernightWindow
 } = require("../src/overnightEvaluationAutomation");
 
@@ -92,4 +95,86 @@ test("once automation starts, a newer manual Foundation run cannot replace its q
   const boundary = latestFoundationBoundary({ evaluationRuns: [automated, manual] }, "import-1");
   assert.equal(boundary.parent.id, "automated");
   assert.equal(boundary.reason, "specialist_routing_errors");
+});
+
+test("typed specialist recovery derives missing checks from Foundation routes and ignores legacy placeholders", () => {
+  const studio = {
+    evaluationRuns: [],
+    evaluationResults: [
+      {
+        id: "foundation-result-1",
+        runId: "foundation-1",
+        importId: "import-1",
+        callId: "call-1",
+        templateId: "template_call_intelligence_foundation_v6",
+        evaluationGoal: "call_intelligence_foundation",
+        status: "usable",
+        isLatest: true,
+        foundationAssessment: {
+          specialistRoutes: {
+            offer_acceptance_classification: true,
+            callback_opportunity: true,
+            objection_handling: false,
+            procedure_adherence: true,
+            lead_record_disposition_evidence_audit: false
+          }
+        }
+      },
+      {
+        id: "legacy-callback",
+        runId: "legacy-run",
+        importId: "import-1",
+        callId: "call-1",
+        templateId: "template_callback_opportunity_v1",
+        evaluationGoal: "callback_opportunity",
+        status: "usable",
+        isLatest: true,
+        findings: [{ field: "callback_opportunity", value: "not_supplied" }]
+      },
+      {
+        id: "typed-offer",
+        runId: "offer-run",
+        importId: "import-1",
+        callId: "call-1",
+        templateId: "template_offer_acceptance_classification_v3",
+        evaluationGoal: "offer_acceptance_classification",
+        status: "usable",
+        isLatest: true,
+        acceptanceAssessment: { schemaVersion: "offer_acceptance_classification.v1" }
+      }
+    ]
+  };
+  const backlog = buildTypedSpecialistRecoveryBacklog(studio, { importId: "import-1" });
+  assert.equal(backlog.totalMissingChecks, 2);
+  assert.equal(backlog.affectedCallCount, 1);
+  assert.deepEqual(backlog.groups.filter((group) => group.count).map((group) => [group.goal, group.callIds]), [
+    ["callback_opportunity", ["call-1"]],
+    ["procedure_adherence", ["call-1"]]
+  ]);
+  assert.deepEqual(selectTypedSpecialistRecoveryBatch(backlog, 1), {
+    goal: "callback_opportunity",
+    callIds: ["call-1"],
+    selectedCount: 1,
+    remainingForGoalAfterBatch: 0
+  });
+});
+
+test("specialist recovery boundary stops on any failed or incomplete call", () => {
+  const clean = {
+    id: "recovery-1",
+    importId: "import-1",
+    status: "completed",
+    createdAt: "2026-07-18T14:00:00Z",
+    plannedCallCount: 10,
+    completedCallCount: 10,
+    failedCallCount: 0,
+    errors: [],
+    callSelection: { sourceType: "overnight_specialist_recovery" }
+  };
+  assert.equal(latestSpecialistRecoveryBoundary({ evaluationRuns: [clean] }, "import-1").safe, true);
+  const failed = latestSpecialistRecoveryBoundary({ evaluationRuns: [{ ...clean, failedCallCount: 1, completedCallCount: 9 }] }, "import-1");
+  assert.equal(failed.safe, false);
+  assert.equal(failed.reason, "specialist_recovery_quality_failure");
+  const partial = latestSpecialistRecoveryBoundary({ evaluationRuns: [{ ...clean, status: "partially_completed" }] }, "import-1");
+  assert.equal(partial.reason, "specialist_recovery_quality_failure");
 });

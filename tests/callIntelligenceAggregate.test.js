@@ -154,6 +154,25 @@ test("specialist routing distinguishes not routed, pending, evaluated clear, and
   assert.equal(aggregate.routing.lead_record_disposition_evidence_audit.state, "not_routed_no_trigger");
 });
 
+test("historical untyped specialist results are not presented as evaluated clear", () => {
+  const results = referenceResults().filter((result) => result.evaluationGoal !== "procedure_adherence");
+  results.push({
+    id: "legacy-procedure",
+    callId: "48544948",
+    evaluationGoal: "procedure_adherence",
+    status: "usable",
+    isLatest: true,
+    evaluationAudit: { validationStatus: "legacy_generic_contract" },
+    findings: [{ field: "result", value: "string" }]
+  });
+  const aggregate = buildCallIntelligenceAggregate({
+    results,
+    foundationContext: { ...results[0].foundationAssessment, sourceResultId: results[0].id },
+    call: { date: "02/07/2026" }
+  });
+  assert.equal(aggregate.routing.procedure_adherence.state, "evaluated_legacy_untyped");
+});
+
 test("Australian source dates are parsed as DD/MM/YYYY and relative weekdays retain ambiguity metadata", () => {
   assert.equal(parseSourceDate({ date: "02/07/2026" }).toISOString().slice(0, 10), "2026-07-02");
   const resolved = resolveRelativeDate("next Wednesday", { date: "02/07/2026", time: "11:08:32" });
@@ -172,4 +191,18 @@ test("unknown timing remains unknown rather than becoming a negative commercial 
   assert.equal(aggregate.commercialState.quotedValue, null);
   assert.equal(aggregate.commercialState.intendedPaymentDateResolved, "");
   assert.equal(aggregate.authoritativeResult.evaluationGoal, "none");
+});
+
+test("implausibly large transcript amounts remain raw context but require review", () => {
+  const results = referenceResults();
+  results[0].foundationAssessment.commercialContext.quoted_amount = 990000;
+  const aggregate = buildCallIntelligenceAggregate({
+    results,
+    foundationContext: { ...results[0].foundationAssessment, sourceResultId: results[0].id },
+    call: { date: "02/07/2026", transcript: "Salesperson: The quoted amount is $990,000. Customer: Sure, we'll do it." }
+  });
+  assert.equal(aggregate.commercialState.quotedValue, 990000);
+  assert.equal(aggregate.commercialState.quotedValueReviewRequired, true);
+  assert.equal(aggregate.provenanceClaims.find((claim) => claim.claimType === "quoted_value").validationStatus, "implausible_transcript_amount_review_required");
+  assert.match(aggregate.authoritativeResult.summary, /requires review before use/i);
 });

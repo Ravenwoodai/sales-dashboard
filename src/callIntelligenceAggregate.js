@@ -191,6 +191,10 @@ function routingState(goal, foundation, result) {
   if (result) {
     if (result.status === "failed") return "failed";
     if (result.status === "insufficient_evidence") return "evaluated_insufficient_evidence";
+    if (["callback_opportunity", "procedure_adherence", "objection_handling"].includes(goal)
+      && (!result.specialistAssessment || result.evaluationAudit?.validationStatus === "legacy_generic_contract")) {
+      return "evaluated_legacy_untyped";
+    }
     return specialistHasIssue(result) ? "evaluated_issue_found" : "evaluated_clear";
   }
   if (!foundation) return "not_evaluated";
@@ -247,6 +251,7 @@ function buildCommercialState({ foundation, offerResult, call }) {
     acceptanceStrength: acceptanceStrength(offerResult),
     quotedValue: quotedAmountAvailable ? Number(commercial.quoted_amount) : null,
     quotedValueState: quotedAmountAvailable ? "quoted_transcript_context" : "unknown",
+    quotedValueReviewRequired: quotedAmountAvailable && Number(commercial.quoted_amount) >= 10000,
     quotedCurrency: quotedAmountAvailable ? currency : "unknown",
     currencyBasis: quotedAmountAvailable ? (currencyExplicit ? "explicit" : currency === "unknown" ? "unknown" : "metadata_inferred") : "unknown",
     paymentState: accepted && timing.raw ? "customer_stated_intention" : "not_established",
@@ -292,8 +297,8 @@ function buildCallIntelligenceAggregate({ results = [], call = {}, foundationCon
   } : null;
   const commercialState = buildCommercialState({ foundation, offerResult, call });
   const strongestEvidence = strongestTranscriptEvidence(call, commercialState.quotedValue);
-  const acceptanceEvidence = strongestEvidence.acceptance || offerResult?.acceptanceAssessment?.customerResponseEvidence?.quote || "";
-  const offerEvidence = strongestEvidence.offer || offerResult?.acceptanceAssessment?.offerEvidence?.quote || "";
+  const acceptanceEvidence = offerResult?.acceptanceAssessment?.customerResponseEvidence?.quote || strongestEvidence.acceptance || "";
+  const offerEvidence = offerResult?.acceptanceAssessment?.offerEvidence?.quote || strongestEvidence.offer || "";
   const timingEvidence = (foundation?.evidence || []).find((item) => item.supports === "follow_up_timing")?.quote || "";
   const routing = Object.fromEntries(SPECIALIST_GOALS.map((goal) => {
     const specialist = resultForGoal(results, goal);
@@ -309,14 +314,19 @@ function buildCallIntelligenceAggregate({ results = [], call = {}, foundationCon
     evidenceClaim({ claimType: "salesperson", value: call.salesperson || "Not available", sourceType: "call_metadata", sourceReference: "Salesperson", explicit: true }),
     evidenceClaim({ claimType: "source", value: call.source || call.customerImportSource || "Not available", sourceType: "call_metadata", sourceReference: "CustomerImportSource", explicit: true }),
     evidenceClaim({ claimType: "accepted_offer", value: commercialState.offerState, sourceType: offerResult ? "specialist_result" : "foundation_result", sourceReference: offerResult?.id || foundation?.sourceResultId || "", evidence: acceptanceEvidence, explicit: Boolean(acceptanceEvidence), validationStatus: acceptanceEvidence ? "exact_transcript_excerpt" : "unverified" }),
-    evidenceClaim({ claimType: "quoted_value", value: commercialState.quotedValue, sourceType: "foundation_result", sourceReference: foundation?.sourceResultId || "", evidence: offerEvidence, explicit: commercialState.quotedValue !== null, validationStatus: commercialState.quotedValue !== null ? "transcript_context" : "unknown" }),
+    evidenceClaim({ claimType: "quoted_value", value: commercialState.quotedValue, sourceType: "foundation_result", sourceReference: foundation?.sourceResultId || "", evidence: offerEvidence, explicit: commercialState.quotedValue !== null, validationStatus: commercialState.quotedValueReviewRequired ? "implausible_transcript_amount_review_required" : commercialState.quotedValue !== null ? "transcript_context" : "unknown" }),
     evidenceClaim({ claimType: "payment_state", value: commercialState.paymentState, sourceType: "deterministic_derivation", sourceReference: foundation?.sourceResultId || "", evidence: timingEvidence, explicit: false, validationStatus: timingEvidence ? "derived_from_exact_transcript_excerpt" : "unknown" }),
     evidenceClaim({ claimType: "intended_payment_date", value: commercialState.intendedPaymentDateResolved || "unknown", sourceType: "deterministic_derivation", sourceReference: commercialState.intendedPaymentDateResolution.method, evidence: commercialState.intendedPaymentDateRaw, explicit: false, validationStatus: commercialState.intendedPaymentDateResolution.resolutionStatus })
   ];
   const accepted = commercialState.offerState === "accepted_offer_signal";
   const date = commercialState.intendedPaymentDateResolved;
+  const quotedValueSummary = commercialState.quotedValue === null
+    ? ""
+    : commercialState.quotedValueReviewRequired
+      ? ` Transcript-extracted quoted amount ${commercialState.quotedCurrency === "unknown" ? "" : `${commercialState.quotedCurrency} `}${commercialState.quotedValue} requires review before use.`
+      : ` Quoted value ${commercialState.quotedCurrency === "unknown" ? "" : `${commercialState.quotedCurrency} `}${commercialState.quotedValue}.`;
   const authoritativeSummary = accepted
-    ? `Accepted offer — payment pending verification.${commercialState.quotedValue !== null ? ` Quoted value ${commercialState.quotedCurrency === "unknown" ? "" : `${commercialState.quotedCurrency} `}${commercialState.quotedValue}.` : ""}${date ? ` Customer-stated payment timing resolves to ${date}.` : ""} Payment receipt, invoicing, fulfilment, revenue and CRM closure are not established.`
+    ? `Accepted offer — payment pending verification.${quotedValueSummary}${date ? ` Customer-stated payment timing resolves to ${date}.` : ""} Payment receipt, invoicing, fulfilment, revenue and CRM closure are not established.`
     : offerResult?.managerSummary || foundationResult?.managerSummary || "No authoritative commercial outcome is established.";
   return {
     schemaVersion: CALL_INTELLIGENCE_AGGREGATE_SCHEMA_VERSION,
