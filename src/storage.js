@@ -60,6 +60,12 @@ const {
 } = require("./untrustedLegacyFields");
 
 const STORE_SCHEMA_VERSION = "sales_dashboard_store.v1";
+const TRANSIENT_STORE_RENAME_ERRORS = new Set(["EACCES", "EBUSY", "EPERM"]);
+const STORE_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 250, 400];
+
+function waitSynchronously(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
 
 function resolveStorePath(options = {}) {
   if (options.storePath) return path.resolve(options.storePath);
@@ -122,9 +128,25 @@ function writeStore(store, options = {}) {
     schemaVersion: STORE_SCHEMA_VERSION,
     updatedAt: new Date().toISOString()
   };
-  const tempPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = `${storePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
   fs.writeFileSync(tempPath, `${JSON.stringify(nextStore, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, storePath);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(tempPath, storePath);
+      break;
+    } catch (error) {
+      const retryDelay = STORE_RENAME_RETRY_DELAYS_MS[attempt];
+      if (!TRANSIENT_STORE_RENAME_ERRORS.has(error?.code) || retryDelay === undefined) {
+        try {
+          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        } catch {
+          // Preserve the original persistence error.
+        }
+        throw error;
+      }
+      waitSynchronously(retryDelay);
+    }
+  }
   return nextStore;
 }
 
@@ -576,8 +598,7 @@ function bulkUpdateManagerReviews(reviewIds = [], input = {}, options = {}) {
   };
 }
 
-function saveAiJobReference(job, options = {}) {
-  const now = new Date().toISOString();
+function aiJobReferenceRecord(job, now = new Date().toISOString()) {
   const jobId = String(job.jobId || job.job_id || "").trim();
   if (!jobId) {
     throw new Error("jobId is required for AI job reference");
@@ -597,17 +618,86 @@ function saveAiJobReference(job, options = {}) {
     createdAt: job.createdAt || now,
     updatedAt: now
   };
+  return record;
+}
 
+function saveAiJobReferences(jobs = [], options = {}) {
+  const now = new Date().toISOString();
+  const records = jobs.map((job) => aiJobReferenceRecord(job, now));
+  if (!records.length) {
+    return { aiJobs: [], store: readStore(options) };
+  }
+  const recordIds = new Set(records.map((record) => record.id));
   const store = updateStore((currentStore) => ({
     ...currentStore,
     aiJobs: [
-      record,
-      ...currentStore.aiJobs.filter((item) => item.id !== id)
+      ...records,
+      ...currentStore.aiJobs.filter((item) => !recordIds.has(item.id))
     ].slice(0, 10000)
   }), options);
+  return { aiJobs: records, store };
+}
+
+function saveAiJobReference(job, options = {}) {
+  const saved = saveAiJobReferences([job], options);
 
   return {
-    aiJob: record,
+    aiJob: saved.aiJobs[0],
+    store: saved.store
+  };
+}
+
+function saveEvaluationHarvestBatch(input = {}, options = {}) {
+  const now = new Date().toISOString();
+  const aiJobRecords = (Array.isArray(input.aiJobs) ? input.aiJobs : [])
+    .map((job) => aiJobReferenceRecord(job, now));
+  const evaluationResults = Array.isArray(input.evaluationResults) ? input.evaluationResults : [];
+  const savedResults = [];
+  const resultErrors = [];
+  const store = updateStore((currentStore) => {
+    let studio = normalizeEvaluationStudio(currentStore.evaluationStudio);
+    for (const candidate of evaluationResults) {
+      const jobId = String(candidate.jobId || candidate.job_id || "").trim();
+      const callId = String(candidate.callId || candidate.call_id || "").trim();
+      const runId = String(candidate.runId || candidate.evaluationRunId || candidate.evaluation_run_id || "").trim();
+      const existing = (studio.evaluationResults || []).find((result) =>
+        result.isLatest !== false
+        && result.runId === runId
+        && result.callId === callId
+        && (!jobId || result.jobId === jobId)
+      );
+      if (existing) {
+        savedResults.push({ jobId, callId, runId, result: existing, alreadyStored: true });
+        continue;
+      }
+      try {
+        const saved = upsertEvaluationResult(studio, candidate);
+        studio = saved.studio;
+        savedResults.push({ jobId, callId, runId, result: saved.result, alreadyStored: false });
+      } catch (error) {
+        resultErrors.push({
+          jobId,
+          callId,
+          runId,
+          error,
+          statusCode: Number(error?.statusCode || error?.status || 0),
+          message: String(error?.message || error).slice(0, 1000)
+        });
+      }
+    }
+    const recordIds = new Set(aiJobRecords.map((record) => record.id));
+    return {
+      ...currentStore,
+      aiJobs: aiJobRecords.length
+        ? [...aiJobRecords, ...currentStore.aiJobs.filter((item) => !recordIds.has(item.id))].slice(0, 10000)
+        : currentStore.aiJobs,
+      evaluationStudio: studio
+    };
+  }, options);
+  return {
+    aiJobs: aiJobRecords,
+    results: savedResults,
+    resultErrors,
     store
   };
 }
@@ -962,6 +1052,8 @@ module.exports = {
   saveBadLeadClaim,
   updateBadLeadClaim,
   saveAiJobReference,
+  saveAiJobReferences,
+  saveEvaluationHarvestBatch,
   saveEvaluationKnowledgebaseEntry,
   archiveEvaluationKnowledgebaseEntry,
   saveEvaluationTemplate,

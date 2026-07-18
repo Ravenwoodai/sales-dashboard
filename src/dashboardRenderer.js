@@ -8,11 +8,13 @@ const {
   reviewStatusLabel,
   reviewStatusTone
 } = require("./managerReview");
-const { EVALUATION_GOALS, evaluationResultFacets } = require("./evaluationStudio");
+const { CALL_INTELLIGENCE_FOUNDATION_GOAL, EVALUATION_GOALS, OFFER_ACCEPTANCE_GOAL, evaluationResultFacets } = require("./evaluationStudio");
 const {
   formatAestDateTime,
   formatSourceDateTimeValue,
-  formatSourceDateValue
+  formatSourceDateValue,
+  isoDateFromParts,
+  parseSourceDateParts
 } = require("./dateTimeFormat");
 
 function escapeHtml(value) {
@@ -227,6 +229,18 @@ function dataLink(metric, value, filters = {}) {
   return `<a class="data-link" href="${escapeHtml(drilldownUrl(metric, filters))}">${escapeHtml(value)}</a>`;
 }
 
+function sourceDateFilters(value) {
+  const isoDate = isoDateFromParts(parseSourceDateParts(value) || {});
+  return isoDate ? { dateFrom: isoDate, dateTo: isoDate } : {};
+}
+
+function hrefDataLink(value, href, label = "") {
+  const ariaLabel = label ? ` aria-label="${escapeHtml(label)}"` : "";
+  return href
+    ? `<a class="data-link" href="${escapeHtml(href)}"${ariaLabel}>${escapeHtml(value)}</a>`
+    : escapeHtml(value);
+}
+
 function callLink(callId, label = callId) {
   if (!callId) return "";
   return `<a class="data-link mono" href="/calls/${encodeURIComponent(callId)}">${escapeHtml(label)}</a>`;
@@ -257,6 +271,12 @@ function customerIdCell(row, href = "") {
 
 function badge(label, tone = "neutral") {
   return `<span class="badge ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function linkedBadge(label, tone = "neutral", href = "") {
+  return href
+    ? `<a class="badge ${tone}" href="${escapeHtml(href)}">${escapeHtml(label)}</a>`
+    : badge(label, tone);
 }
 
 function provenanceTone(label) {
@@ -557,7 +577,32 @@ function metricCard(label, value, detail, tone = "", href = "") {
     <div class="metric-detail">${escapeHtml(detail)}</div>`;
   return href
     ? `<a class="metric ${tone}" href="${escapeHtml(href)}">${content}</a>`
-    : `<article class="metric ${tone}">${content}</article>`;
+    : `<article class="metric ${tone}" data-drilldown="not-applicable" title="No row-level drill-down is available for this status or configuration value.">${content}</article>`;
+}
+
+function evaluationResultsUrl(filters = {}) {
+  const query = new URLSearchParams();
+  Object.entries({ limit: 100, offset: 0, ...filters }).forEach(([key, value]) => {
+    if (value === "" || value === null || value === undefined) return;
+    query.set(key, String(value));
+  });
+  return `/evaluation-studio?${query.toString()}#results`;
+}
+
+function evaluationBreakdownFilters(dimension, label) {
+  if (dimension === "Salesperson") return { salesperson: label };
+  if (dimension === "Source") return { customerImportSource: label };
+  if (dimension === "Called on behalf of") return { foundationCalledOnBehalfOf: label };
+  if (dimension === "Date") {
+    const isoDate = isoDateFromParts(parseSourceDateParts(label) || {});
+    return isoDate ? { dateFrom: isoDate, dateTo: isoDate } : {};
+  }
+  return {};
+}
+
+function aggregateResultLink(value, filters = {}, label = "") {
+  const accessibleLabel = label || `View the ${formatNumber(value)} contributing evaluation results`;
+  return `<a class="aggregate-drill-link" href="${escapeHtml(evaluationResultsUrl(filters))}" aria-label="${escapeHtml(accessibleLabel)}">${escapeHtml(value)}</a>`;
 }
 
 function table(headers, rows, emptyMessage = "No rows to show") {
@@ -568,7 +613,7 @@ function table(headers, rows, emptyMessage = "No rows to show") {
   return `<div class="table-wrap"><table>
     <thead><tr>${headers.map(renderTableHeading).join("")}</tr></thead>
     <tbody>
-      ${rows.map((row) => `<tr>${headers.map((header) => `<td>${header.render ? header.render(row) : escapeHtml(row[header.key])}</td>`).join("")}</tr>`).join("")}
+      ${rows.map((row) => `<tr>${headers.map((header) => `<td data-label="${escapeHtml(header.label || header.key || "Value")}">${header.render ? header.render(row) : escapeHtml(row[header.key])}</td>`).join("")}</tr>`).join("")}
     </tbody>
   </table></div>`;
 }
@@ -754,8 +799,21 @@ function renderMarkdownTable(lines) {
   const [headers, ...bodyRows] = rows;
   return `<div class="table-wrap report-table"><table>
     <thead><tr>${headers.map(renderTableHeading).join("")}</tr></thead>
-    <tbody>${bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
+    <tbody>${bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${renderSafeReportInline(cell)}</td>`).join("")}</tr>`).join("")}</tbody>
   </table></div>`;
+}
+
+function renderSafeReportInline(value) {
+  const text = String(value || "");
+  const linkPattern = /\[([^\]]+)\]\((\/[^\s)]+)\)/g;
+  let html = "";
+  let cursor = 0;
+  for (const match of text.matchAll(linkPattern)) {
+    html += escapeHtml(text.slice(cursor, match.index));
+    html += `<a class="data-link" href="${escapeHtml(match[2])}">${escapeHtml(match[1])}</a>`;
+    cursor = Number(match.index) + match[0].length;
+  }
+  return html + escapeHtml(text.slice(cursor));
 }
 
 function renderReportDrilldownPanel(report) {
@@ -1478,10 +1536,12 @@ function pipelineBar(label, value, percent, tone = "primary", href = "") {
 function datasetFact(label, value, options = {}) {
   const tag = options.mono ? "strong" : "strong";
   const className = options.mono ? "mono" : "";
-  return `<div class="dataset-fact">
+  const content = `
     <span>${escapeHtml(label)}</span>
-    <${tag} class="${className}">${escapeHtml(value)}</${tag}>
-  </div>`;
+    <${tag} class="${className}">${escapeHtml(value)}</${tag}>`;
+  return options.href
+    ? `<a class="dataset-fact" href="${escapeHtml(options.href)}">${content}</a>`
+    : `<div class="dataset-fact" data-drilldown="not-applicable" title="No record-level drill-down is available for this summary or configuration value.">${content}</div>`;
 }
 
 function renderDataWindowWarnings(data) {
@@ -1505,6 +1565,8 @@ function renderDatasetBanner(data, persistence) {
   if (!data || !data.totals || !(data.filterSummary?.totalRecords || data.totals.uniqueCalls)) return "";
   const totals = data.datasetTotals || data.totals || {};
   const importId = persistence?.currentImportId || "Current import";
+  const importHref = persistence?.currentImportId ? `/imports/${encodeURIComponent(persistence.currentImportId)}` : "";
+  const allCallsHref = drilldownUrl("calls.unique");
   const duplicateCount = Number(totals.duplicateCallIds || 0);
   const lastProcessed = persistence?.importHistory?.find((row) => row.id === importId)?.lastImportedAt || data.generatedAt;
   return `<section class="panel dataset-context" id="dataset-context">
@@ -1515,25 +1577,25 @@ function renderDatasetBanner(data, persistence) {
         <p class="muted small">${escapeHtml(formatDateRange(data.dateRange))}</p>
       </div>
       <div class="stack">
-        ${badge(`${formatNumber(totals.uniqueCalls || 0)} calls`, "notice")}
-        ${badge("Active call data only", "success")}
+        ${linkedBadge(`${formatNumber(totals.uniqueCalls || 0)} calls`, "notice", allCallsHref)}
+        ${linkedBadge("Active call data only", "success", allCallsHref)}
       </div>
     </div>
     <div class="panel-body">
       <div class="dataset-grid dataset-grid-primary">
-        ${datasetFact("Source file", safeSourceFilename(data.sourceName))}
-        ${datasetFact("Deduplicated calls", formatNumber(totals.uniqueCalls || 0), { mono: true })}
-        ${datasetFact("Active range", formatDateRange(data.dateRange))}
-        ${datasetFact("Last processed", formatDateTime(lastProcessed))}
+        ${datasetFact("Source file", safeSourceFilename(data.sourceName), { href: importHref })}
+        ${datasetFact("Deduplicated calls", formatNumber(totals.uniqueCalls || 0), { mono: true, href: allCallsHref })}
+        ${datasetFact("Active range", formatDateRange(data.dateRange), { href: allCallsHref })}
+        ${datasetFact("Last processed", formatDateTime(lastProcessed), { href: importHref })}
       </div>
       ${renderDataWindowWarnings(data)}
       <details class="context-details">
         <summary>Import details and data handling</summary>
         <div class="dataset-grid context-details-grid">
-          ${datasetFact("Import ID", importId, { mono: true })}
-          ${datasetFact("File hash", shortHash(data.inputHash), { mono: true })}
-          ${datasetFact("Imported rows", formatNumber(totals.rawRows || 0), { mono: true })}
-          ${datasetFact("Duplicate rows ignored", formatNumber(duplicateCount), { mono: true })}
+          ${datasetFact("Import ID", importId, { mono: true, href: importHref })}
+          ${datasetFact("File hash", shortHash(data.inputHash), { mono: true, href: importHref })}
+          ${datasetFact("Imported rows", formatNumber(totals.rawRows || 0), { mono: true, href: importHref })}
+          ${datasetFact("Duplicate rows ignored", formatNumber(duplicateCount), { mono: true, href: importHref })}
         </div>
       </details>
     </div>
@@ -1618,10 +1680,10 @@ function renderGlobalFilters(data, renderOptions = {}) {
     </div>
     <div class="panel-body">
       <div class="dataset-grid">
-        ${datasetFact("Filtered calls", formatNumber(summary.filteredRecords || 0), { mono: true })}
-        ${datasetFact("Total calls", formatNumber(summary.totalRecords || 0), { mono: true })}
+        ${datasetFact("Filtered calls", formatNumber(summary.filteredRecords || 0), { mono: true, href: drilldownUrl("calls.unique", filterState.query || {}) })}
+        ${datasetFact("Total calls", formatNumber(summary.totalRecords || 0), { mono: true, href: drilldownUrl("calls.unique") })}
         ${datasetFact("Records excluded", formatNumber(summary.excludedRecords || 0), { mono: true })}
-        ${datasetFact("Included", formatPercent(summary.includedRate || 0), { mono: true })}
+        ${datasetFact("Included", formatPercent(summary.includedRate || 0), { mono: true, href: drilldownUrl("calls.unique", filterState.query || {}) })}
       </div>
       ${warnings.length ? `<div class="window-warnings">${warnings.map((warning) => `<div class="window-warning ${escapeHtml(warning.severity || "notice")}">
         <strong>${escapeHtml(warning.code.replace(/_/g, " "))}</strong>
@@ -1696,6 +1758,13 @@ function renderProcessingStatePanel(data, persistence = {}, intelligenceTotals =
   const managerReviewNeeded = Number(reviewGovernance.reviewNeededCalls || persistence.counts?.currentManagerReviewNeededCalls || 0);
   const managerEscalated = Number(reviewGovernance.escalatedCalls || persistence.counts?.currentManagerEscalatedCalls || 0);
   const lowUnusable = Number(processing.lowOrUnusableTranscriptCount || 0);
+  const filterQuery = data.filterState?.query || {};
+  const reviewedStatuses = ["reviewed_confirmed", "reviewed_corrected", "dismissed", "escalated"].join(",");
+  const intelligenceQueueUrl = (filters = {}) => dashboardFilterUrl({
+    ...filterQuery,
+    view: "intelligence",
+    ...filters
+  }, "intelligence-queue");
   return `<section class="panel" id="provenance">
     <div class="panel-header">
       <div>
@@ -1706,22 +1775,22 @@ function renderProcessingStatePanel(data, persistence = {}, intelligenceTotals =
     </div>
     <div class="panel-body">
       <div class="metrics">
-        ${metricCard("Total calls", formatNumber(totalCalls), "Active deduplicated call rows", "info")}
-        ${metricCard("Transcripts available", formatNumber(data.totals.transcriptAvailable || 0), `${formatPercent(data.rates.transcriptCoverage || 0)} of calls`, "info")}
-        ${metricCard("Deterministic evaluations", formatNumber(processing.deterministicEvaluationsCompleted || totalCalls), "Rules-based local evaluation completed", "good")}
-        ${metricCard("LLM-reviewed", formatNumber(llmCompleted), `${formatNumber(llmNotRequested)} not requested, ${formatNumber(llmFailed)} failed`, "info")}
-        ${metricCard("Manager-reviewed", formatNumber(managerReviewed), `${formatPercent(reviewGovernance.coverageRate || percentOf(managerReviewed, totalCalls))} coverage`, "good")}
-        ${metricCard("Manager-corrected", formatNumber(managerCorrected), `${formatPercent(reviewGovernance.correctionRate || percentOf(managerCorrected, totalCalls))} of filtered calls`, managerCorrected ? "warn" : "good")}
-        ${metricCard("Review needed", formatNumber(managerReviewNeeded), "System or manager marked for review", managerReviewNeeded ? "warn" : "good")}
-        ${metricCard("Escalated", formatNumber(managerEscalated), "Manager-escalated review items", managerEscalated ? "risk" : "good")}
+        ${metricCard("Total calls", formatNumber(totalCalls), "Active deduplicated call rows", "info", drilldownUrl("calls.unique", filterQuery))}
+        ${metricCard("Transcripts available", formatNumber(data.totals.transcriptAvailable || 0), `${formatPercent(data.rates.transcriptCoverage || 0)} of calls`, "info", drilldownUrl("calls.transcriptAvailable", filterQuery))}
+        ${metricCard("Deterministic evaluations", formatNumber(processing.deterministicEvaluationsCompleted || totalCalls), "Rules-based local evaluation completed", "good", drilldownUrl("calls.unique", filterQuery))}
+        ${metricCard("LLM-reviewed", formatNumber(llmCompleted), `${formatNumber(llmNotRequested)} not requested, ${formatNumber(llmFailed)} failed`, "info", intelligenceQueueUrl({ intelligenceQueue: "llm_completed", llmStatus: "completed" }))}
+        ${metricCard("Manager-reviewed", formatNumber(managerReviewed), `${formatPercent(reviewGovernance.coverageRate || percentOf(managerReviewed, totalCalls))} coverage`, "good", drilldownUrl("calls.unique", { ...filterQuery, managerReviewStatus: reviewedStatuses }))}
+        ${metricCard("Manager-corrected", formatNumber(managerCorrected), `${formatPercent(reviewGovernance.correctionRate || percentOf(managerCorrected, totalCalls))} of filtered calls`, managerCorrected ? "warn" : "good", drilldownUrl("calls.unique", { ...filterQuery, managerReviewStatus: "reviewed_corrected" }))}
+        ${metricCard("Review needed", formatNumber(managerReviewNeeded), "System or manager marked for review", managerReviewNeeded ? "warn" : "good", drilldownUrl("calls.unique", { ...filterQuery, managerReviewStatus: "review_needed" }))}
+        ${metricCard("Escalated", formatNumber(managerEscalated), "Manager-escalated review items", managerEscalated ? "risk" : "good", drilldownUrl("calls.unique", { ...filterQuery, managerReviewStatus: "escalated" }))}
         ${metricCard("Unprocessed", formatNumber(processing.unprocessedCalls || 0), "No deterministic evaluation available", "warn")}
-        ${metricCard("Transcript-derived coverage", formatPercent(processing.transcriptDerivedMetricsCoverageRate || data.rates.transcriptUsableForCoaching || 0), "Usable for coaching-style conclusions", "info")}
-        ${metricCard("Low/unusable transcripts", formatNumber(lowUnusable), "Review-only unless supported by stronger evidence", lowUnusable ? "warn" : "good")}
+        ${metricCard("Transcript-derived coverage", formatPercent(processing.transcriptDerivedMetricsCoverageRate || data.rates.transcriptUsableForCoaching || 0), "Usable for coaching-style conclusions", "info", drilldownUrl("calls.transcriptUsableForCoaching", filterQuery))}
+        ${metricCard("Low/unusable transcripts", formatNumber(lowUnusable), "Review-only unless supported by stronger evidence", lowUnusable ? "warn" : "good", drilldownUrl("calls.lowOrUnusableTranscript", filterQuery))}
       </div>
       <div class="guardrails" style="margin-top: 12px;">
         <div class="note">
           <h3>Confidence mix</h3>
-          <p class="muted small">High: ${countRate(confidence.high || 0, totalCalls)}<br />Medium: ${countRate(confidence.medium || 0, totalCalls)}<br />Low: ${countRate(confidence.low || 0, totalCalls)}<br />Unusable: ${countRate(confidence.unusable || 0, totalCalls)}<br />Unavailable: ${countRate(confidence.unknown || 0, totalCalls)}</p>
+          <p class="muted small">High: ${dataLink("calls.unique", countRate(confidence.high || 0, totalCalls), { ...filterQuery, confidenceBand: "high" })}<br />Medium: ${dataLink("calls.unique", countRate(confidence.medium || 0, totalCalls), { ...filterQuery, confidenceBand: "medium" })}<br />Low: ${dataLink("calls.unique", countRate(confidence.low || 0, totalCalls), { ...filterQuery, confidenceBand: "low" })}<br />Unusable: ${dataLink("calls.unique", countRate(confidence.unusable || 0, totalCalls), { ...filterQuery, confidenceBand: "unusable" })}<br />Unavailable: ${dataLink("calls.unique", countRate(confidence.unknown || 0, totalCalls), { ...filterQuery, confidenceBand: "unknown" })}</p>
         </div>
         <div class="note">
           <h3>Guardrail</h3>
@@ -1825,7 +1894,9 @@ function renderEvaluationRunActions(row = {}) {
   const status = String(row.status || "queued");
   const jobs = Array.isArray(row.queuedJobs) ? row.queuedJobs : [];
   const hasJob = jobs.some((job) => String(job.jobId || job.job_id || "").trim());
-  if (!id || status === "completed") return `<span class="muted small">Results available</span>`;
+  if (!id) return `<span class="muted small">No run identifier</span>`;
+  const resultsLink = `<a class="filter-link" href="${escapeHtml(evaluationResultsUrl({ runId: id }))}">View run results</a>`;
+  if (status === "completed") return resultsLink;
   const returnTo = "/evaluation-studio";
   const harvestForm = status === "quarantined" ? "" : `<form class="inline-alert-form" method="post" action="/evaluation-studio/runs/${encodeURIComponent(id)}/harvest">
     <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}" />
@@ -1852,11 +1923,40 @@ function renderEvaluationRunActions(row = {}) {
           : "Waiting to start";
   return `<div class="run-action-stack">
     <span class="muted small">${statusMessage}</span>
+    ${Number(row.completedCallCount || 0) ? resultsLink : ""}
     <details class="advanced-run-actions">
       <summary>Advanced</summary>
       <div class="alert-actions">${harvestForm}${quarantineForm}${resumeForm}</div>
     </details>
   </div>`;
+}
+
+function evaluationRunFailureLabel(value) {
+  const error = String(value || "").trim();
+  if (/quote must be 500 characters or fewer/i.test(error)) return "Evidence quote exceeded 500 characters";
+  if (/quote was not found in the supplied transcript/i.test(error)) return "Evidence quote was not one exact contiguous transcript excerpt";
+  if (/category must be integer/i.test(error)) return "Category used the retired string format";
+  return error.replace(/^Offer Acceptance evaluation output is invalid:\s*/i, "") || "Evaluation failed validation";
+}
+
+function renderEvaluationRunFailureSummary(row = {}, callLookup = new Map()) {
+  const errors = Array.isArray(row.errors) ? row.errors : [];
+  if (!errors.length) return "";
+  const counts = new Map();
+  errors.forEach((entry) => {
+    const label = evaluationRunFailureLabel(entry.error);
+    counts.set(label, (counts.get(label) || 0) + 1);
+  });
+  const affected = errors.map((entry) => {
+    const callId = String(entry.callId || "").trim();
+    const call = callLookup.get(callId) || {};
+    return `<li>${callId ? `${callLink(callId)} · ` : ""}<strong>Customer ID: <span class="mono">${escapeHtml(customerIdValue(call))}</span></strong> · ${escapeHtml(evaluationRunFailureLabel(entry.error))}</li>`;
+  }).join("");
+  return `<details class="compact-details run-failure-details" id="run-failures-${escapeHtml(row.id || "unknown")}">
+    <summary>Why ${formatNumber(errors.length)} failed</summary>
+    ${affected ? `<strong class="small">Affected records</strong><ul class="result-evidence-list">${affected}</ul>` : ""}
+    <ul class="result-evidence-list">${Array.from(counts, ([label, count]) => `<li>${formatNumber(count)} × ${escapeHtml(label)}</li>`).join("")}</ul>
+  </details>`;
 }
 
 function selectedOption(current, value) {
@@ -1924,7 +2024,206 @@ function evaluationSummaryLabel(value) {
     .replace(/manager-reviewed/gi, "manually reviewed");
 }
 
+function offerAcceptanceOutcome(row = {}) {
+  const assessment = row.acceptanceAssessment || {};
+  const classification = String(assessment.classification || "").toLowerCase();
+  const outcomes = {
+    customer_accepted_offer: { label: "Customer accepted offer", tone: "success", short: "Accepted" },
+    interested_follow_up_only: { label: "Interested — follow-up only", tone: "warning", short: "Follow-up only" },
+    no_sale_signal: { label: "No sale signal", tone: "neutral", short: "No sale signal" }
+  };
+  return outcomes[classification] || { label: "Not classified", tone: "critical", short: "Not classified" };
+}
+
+function authoritativeOfferAcceptanceContext(row = {}) {
+  if (row.sharedOfferAcceptanceContext?.acceptanceAssessment) return row.sharedOfferAcceptanceContext;
+  if (row.acceptanceAssessment) {
+    return {
+      sourceResultId: row.id || "",
+      acceptanceAssessment: row.acceptanceAssessment,
+      managerSummary: row.managerSummary,
+      confidence: row.confidence,
+      confidenceBand: row.confidenceBand,
+      evidenceAvailability: row.evidenceAvailability,
+      status: row.status,
+      updatedAt: row.updatedAt || row.createdAt
+    };
+  }
+  return null;
+}
+
+function evaluationRecordSummary(row = {}) {
+  const authoritative = authoritativeOfferAcceptanceContext(row);
+  if (authoritative) {
+    const outcome = offerAcceptanceOutcome({ acceptanceAssessment: authoritative.acceptanceAssessment });
+    const summary = evaluationSummaryLabel(authoritative.managerSummary || row.managerSummary);
+    const evaluatorSummary = evaluationSummaryLabel(row.managerSummary);
+    const distinctEvaluatorSummary = row.evaluationGoal !== OFFER_ACCEPTANCE_GOAL
+      && evaluatorSummary.toLowerCase() !== summary.toLowerCase()
+      ? ` This ${humanizeSlug(row.evaluationGoal || "evaluation")} evaluation also found: ${evaluatorSummary}`
+      : "";
+    const boundary = authoritative.acceptanceAssessment?.classification === "customer_accepted_offer"
+      ? "This records acceptance of the offer; payment and fulfilment are not yet confirmed."
+      : "This is the authoritative Offer Acceptance classification for the call.";
+    return `${outcome.label}. ${summary} ${boundary}${distinctEvaluatorSummary}`;
+  }
+  if (row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL || row.foundationAssessment) {
+    const assessment = row.foundationAssessment || {};
+    const opportunity = humanizeSlug(assessment.intelligenceLenses?.opportunity_status || "not classified");
+    const routed = assessment.specialistRoutes?.offer_acceptance_classification === true;
+    const status = routed
+      ? `Foundation identified an ${opportunity} opportunity and routed it to Offer Acceptance; no authoritative Offer Acceptance result is stored yet.`
+      : `Foundation classified this as an ${opportunity} opportunity.`;
+    return `${status} ${evaluationSummaryLabel(row.managerSummary)}`;
+  }
+  return evaluationSummaryLabel(row.managerSummary);
+}
+
+function renderFoundationReport(report = {}) {
+  const totals = report.totals || {};
+  const rates = report.rates || {};
+  const latestRun = report.latestRun || null;
+  const foundationBase = { evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL };
+  const breakdownColumns = (dimension) => [
+    { label: dimension, description: `The ${dimension.toLowerCase()} attached to the Foundation-evaluated call. Select it to inspect every contributing result.`, render: (row) => { const filters = { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label) }; const value = dimension === "Date" ? formatSourceDate(row.label) : row.label || "Not supplied"; return aggregateResultLink(value, filters, `View all Foundation results for ${value}`); } },
+    { label: "Evaluated", description: "Calls with a stored Call Intelligence Foundation result. Select the count to inspect those results.", render: (row) => { const filters = { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label) }; return aggregateResultLink(formatNumber(row.evaluated || 0), filters, `View ${row.evaluated || 0} evaluated calls for ${row.label}`); } },
+    { label: "Eligible", description: "Live sales conversations suitable for denominator-based performance measurement. Select the count to inspect them.", render: (row) => { const filters = { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label), foundationMeasurementEligibility: "eligible" }; return aggregateResultLink(formatNumber(row.measurementEligible || 0), filters, `View ${row.measurementEligible || 0} measurement-eligible calls for ${row.label}`); } },
+    { label: "Opportunities", description: "Accepted or actionable Foundation opportunities. Select the count to inspect the contributing results.", render: (row) => { const filters = { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label), foundationOpportunityStatus: "actionable_or_accepted" }; return aggregateResultLink(formatNumber(row.actionableOpportunities || 0), filters, `View ${row.actionableOpportunities || 0} actionable or accepted opportunities for ${row.label}`); } },
+    { label: "Offer shown", description: "Calls where transcript evidence supports that an offer was presented. Select the count to inspect them.", render: (row) => { const filters = { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label), foundationOfferPresented: "true" }; return aggregateResultLink(formatNumber(row.offerPresented || 0), filters, `View ${row.offerPresented || 0} calls with an offer presented for ${row.label}`); } },
+    { label: "Efficiency gaps", description: "Meaningful calls with an evidence-backed next-step or process gap; not proof of salesperson fault. Select the count to inspect them.", render: (row) => { const filters = { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label), foundationEfficiencyStatus: "actionable_gap" }; return aggregateResultLink(formatNumber(row.efficiencyGaps || 0), filters, `View ${row.efficiencyGaps || 0} efficiency-gap calls for ${row.label}`); } },
+    { label: "Opportunity rate", description: "Actionable opportunities divided by measurement-eligible calls. Select the rate to inspect all Foundation results in this group.", render: (row) => row.opportunityRate === null || row.opportunityRate === undefined ? "n/a" : aggregateResultLink(formatRatioPercent(row.opportunityRate), { ...foundationBase, ...evaluationBreakdownFilters(dimension, row.label) }, `View the calls behind the ${formatRatioPercent(row.opportunityRate)} opportunity rate for ${row.label}`) }
+  ];
+  const routing = latestRun?.specialistRouting || null;
+  return `<section class="studio-library foundation-report" id="foundation-report" aria-labelledby="foundation-report-heading">
+    <div class="studio-section-heading">
+      <div>
+        <p class="page-kicker">Daily intelligence foundation</p>
+        <h3 id="foundation-report-heading">Opportunity, Measurement & Efficiency</h3>
+        <p class="muted small">These are independent evidence lenses, not one overall score. Foundation identifies and routes candidates; the five specialist evaluators remain authoritative for their decisions.</p>
+      </div>
+      ${linkedBadge(`${formatNumber(totals.evaluated || 0)} evaluated`, "notice", evaluationResultsUrl(foundationBase))}
+    </div>
+    <div class="metrics foundation-metrics">
+      ${metricCard("Measurement eligible", formatNumber(totals.measurementEligible || 0), rates.measurementEligibilityRate === null || rates.measurementEligibilityRate === undefined ? "No Foundation results yet" : formatRatioPercent(rates.measurementEligibilityRate), "info", evaluationResultsUrl({ ...foundationBase, foundationMeasurementEligibility: "eligible" }))}
+      ${metricCard("Actionable opportunities", formatNumber(totals.actionableOpportunities || 0), rates.opportunityRate === null || rates.opportunityRate === undefined ? "Eligible-call rate unavailable" : `${formatRatioPercent(rates.opportunityRate)} of eligible calls`, totals.actionableOpportunities ? "warn" : "info", evaluationResultsUrl({ ...foundationBase, foundationOpportunityStatus: "actionable_or_accepted" }))}
+      ${metricCard("Efficiency gaps", formatNumber(totals.efficiencyGaps || 0), rates.efficiencyGapRate === null || rates.efficiencyGapRate === undefined ? "Eligible-call rate unavailable" : `${formatRatioPercent(rates.efficiencyGapRate)} of eligible calls`, totals.efficiencyGaps ? "warn" : "good", evaluationResultsUrl({ ...foundationBase, foundationEfficiencyStatus: "actionable_gap" }))}
+      ${metricCard("Offer presented", formatNumber(totals.offerPresented || 0), rates.offerPresentationRate === null || rates.offerPresentationRate === undefined ? "Eligible-call rate unavailable" : `${formatRatioPercent(rates.offerPresentationRate)} of eligible calls`, "info", evaluationResultsUrl({ ...foundationBase, foundationOfferPresented: "true" }))}
+      ${metricCard("No product pitched", formatNumber(totals.noProductPitched || 0), "The represented organisation or product was not reached or stated", totals.noProductPitched ? "warn" : "good", evaluationResultsUrl({ ...foundationBase, foundationCalledOnBehalfOf: "No product pitched" }))}
+      ${metricCard("Specialist checks", `${formatNumber(totals.completedSpecialistChecks || 0)} / ${formatNumber(totals.routedSpecialistChecks || 0)}`, rates.specialistCompletionRate === null || rates.specialistCompletionRate === undefined ? "No routed checks yet" : `${formatRatioPercent(rates.specialistCompletionRate)} completed`, totals.routedSpecialistChecks > totals.completedSpecialistChecks ? "warn" : "good", evaluationResultsUrl(foundationBase))}
+    </div>
+    <p class="muted small">Quoted amounts observed: AUD ${formatNumber(totals.quotedAmounts?.AUD || 0)}; NZD ${formatNumber(totals.quotedAmounts?.NZD || 0)} across ${aggregateResultLink(formatNumber(totals.quotedAmountCalls || 0), { ...foundationBase, foundationQuotedAmountAvailable: "true" }, `View ${totals.quotedAmountCalls || 0} Foundation results with a quoted amount`)} calls. These are transcript context only—not sales, revenue, realised value, or source ROI.</p>
+    ${routing ? `<p class="muted small">Latest routing: ${formatNumber(routing.requestedChecks || 0)} requested specialist checks across ${formatNumber((routing.childRuns || []).length)} child runs${(routing.errors || []).length ? `; ${formatNumber(routing.errors.length)} routing errors` : ""}.</p>` : ""}
+    <div class="offer-breakdown-grid">
+      <div><h4>By salesperson</h4>${table(breakdownColumns("Salesperson"), (report.bySalesperson || []).slice(0, 25), "Run Call Intelligence Foundation to build salesperson intelligence.")}</div>
+      <div><h4>By source</h4>${table(breakdownColumns("Source"), (report.bySource || []).slice(0, 25), "Run Call Intelligence Foundation to build source intelligence.")}</div>
+      <div><h4>By call date</h4>${table(breakdownColumns("Date"), (report.byDate || []).slice(0, 31), "Run Call Intelligence Foundation to build daily intelligence.")}</div>
+      <div><h4>By represented organisation</h4>${table(breakdownColumns("Called on behalf of"), (report.byCalledOnBehalfOf || []).slice(0, 50), "Run the current Call Intelligence Foundation to identify who each salesperson called on behalf of.")}</div>
+    </div>
+  </section>`;
+}
+
+function renderOfferAcceptanceReport(report = {}) {
+  const totals = report.totals || {};
+  const latestRun = report.latestRun || null;
+  const offerBase = { evaluationGoal: OFFER_ACCEPTANCE_GOAL };
+  const breakdownColumns = (dimension) => [
+    { label: dimension, description: `The ${dimension.toLowerCase()} attached to the evaluated call. Select it to inspect every contributing result.`, render: (row) => { const filters = { ...offerBase, ...evaluationBreakdownFilters(dimension, row.label) }; const value = dimension === "Date" ? formatSourceDate(row.label) : row.label || "Not supplied"; return aggregateResultLink(value, filters, `View all Offer Acceptance results for ${value}`); } },
+    { label: "Classified", description: "Offer Acceptance calls with a stored category 1, 2, or 3 result. Select the count to inspect them.", render: (row) => aggregateResultLink(formatNumber(row.classified || 0), { ...offerBase, ...evaluationBreakdownFilters(dimension, row.label) }, `View ${row.classified || 0} classified calls for ${row.label}`) },
+    { label: "Accepted", description: "Calls classified as Customer accepted offer under the configured transcript definition. Select the count to inspect them.", render: (row) => aggregateResultLink(formatNumber(row.accepted || 0), { ...offerBase, ...evaluationBreakdownFilters(dimension, row.label), acceptanceClassification: "customer_accepted_offer" }, `View ${row.accepted || 0} accepted calls for ${row.label}`) },
+    { label: "Follow-up only", description: "Calls where the customer showed interest but had not committed to the offer. Select the count to inspect them.", render: (row) => aggregateResultLink(formatNumber(row.followUpOnly || 0), { ...offerBase, ...evaluationBreakdownFilters(dimension, row.label), acceptanceClassification: "interested_follow_up_only" }, `View ${row.followUpOnly || 0} follow-up-only calls for ${row.label}`) },
+    { label: "No sale signal", description: "Calls with no qualifying acceptance or follow-up-only signal. Select the count to inspect them.", render: (row) => aggregateResultLink(formatNumber(row.noSaleSignal || 0), { ...offerBase, ...evaluationBreakdownFilters(dimension, row.label), acceptanceClassification: "no_sale_signal" }, `View ${row.noSaleSignal || 0} no-sale-signal calls for ${row.label}`) },
+    { label: "Acceptance rate", description: "Accepted divided by successfully classified Offer Acceptance calls. Failed calls are excluded. Select the rate to inspect the denominator.", render: (row) => row.acceptanceRate === null || row.acceptanceRate === undefined ? "n/a" : aggregateResultLink(formatRatioPercent(row.acceptanceRate), { ...offerBase, ...evaluationBreakdownFilters(dimension, row.label) }, `View the calls behind the ${formatRatioPercent(row.acceptanceRate)} acceptance rate for ${row.label}`) }
+  ];
+  const failureReasons = (latestRun?.failureReasons || []).map((reason) => `${formatNumber(reason.count)} × ${reason.label}`).join("; ");
+  const failedCallRows = (latestRun?.failures || []).map((failure) => `<li>${failure.callId ? `<a class="data-link mono" href="/calls/${encodeURIComponent(failure.callId)}">${escapeHtml(failure.callId)}</a> · ` : ""}<strong>Customer ID: <span class="mono">${escapeHtml(failure.customerId || "Not available")}</span></strong> · ${escapeHtml(failure.reason || "Evaluation failed validation")}</li>`).join("");
+  return `<section class="studio-library offer-acceptance-report" id="offer-acceptance-report" aria-labelledby="offer-acceptance-report-heading">
+    <div class="studio-section-heading">
+      <div>
+        <p class="page-kicker">Offer outcome reporting</p>
+        <h3 id="offer-acceptance-report-heading">Offer Acceptance Performance</h3>
+        <p class="muted small">Acceptance rate is Accepted ÷ Classified. Failed calls are shown separately and are not counted in the rate. “Accepted” is transcript evidence of acceptance under this evaluator, not proof of payment or recognised revenue.</p>
+      </div>
+      ${linkedBadge(`${formatNumber(totals.classified || 0)} classified`, "notice", evaluationResultsUrl(offerBase))}
+    </div>
+    <div class="metrics offer-acceptance-metrics">
+      ${metricCard("Offer acceptance rate", totals.acceptanceRate === null || totals.acceptanceRate === undefined ? "n/a" : formatRatioPercent(totals.acceptanceRate), `${formatNumber(totals.accepted || 0)} accepted / ${formatNumber(totals.classified || 0)} classified`, totals.accepted ? "good" : "info", evaluationResultsUrl(offerBase))}
+      ${metricCard("Accepted", formatNumber(totals.accepted || 0), "Customer committed to the presented offer", totals.accepted ? "good" : "info", evaluationResultsUrl({ ...offerBase, acceptanceClassification: "customer_accepted_offer" }))}
+      ${metricCard("Follow-up only", formatNumber(totals.followUpOnly || 0), "Interest shown; decision still unresolved", totals.followUpOnly ? "warn" : "info", evaluationResultsUrl({ ...offerBase, acceptanceClassification: "interested_follow_up_only" }))}
+      ${metricCard("No sale signal", formatNumber(totals.noSaleSignal || 0), "No acceptance or qualifying follow-up signal", "info", evaluationResultsUrl({ ...offerBase, acceptanceClassification: "no_sale_signal" }))}
+      ${metricCard("Latest run failures", formatNumber(latestRun?.failed || 0), latestRun ? `${formatNumber(latestRun.classified || 0)} classified from ${formatNumber(latestRun.planned || 0)} planned; failure details are listed below` : "No Offer Acceptance run yet", latestRun?.failed ? "risk" : "good", latestRun?.failed ? "#offer-latest-failures" : evaluationResultsUrl(offerBase))}
+    </div>
+    ${latestRun?.failed ? `<div class="window-warning warning offer-failure-summary" id="offer-latest-failures"><strong>Why the latest run had ${formatNumber(latestRun.failed)} failures</strong><p class="muted small">${escapeHtml(failureReasons || "The failed outputs did not pass evidence validation.")}</p>${failedCallRows ? `<ul class="result-evidence-list">${failedCallRows}</ul>` : ""}<a class="filter-link" href="#runs">Open the latest run record</a></div>` : ""}
+    <div class="offer-breakdown-grid">
+      <div><h4>By salesperson</h4>${table(breakdownColumns("Salesperson"), (report.bySalesperson || []).slice(0, 25), "No classified Offer Acceptance results for this salesperson filter.")}</div>
+      <div><h4>By source</h4>${table(breakdownColumns("Source"), (report.bySource || []).slice(0, 25), "No classified Offer Acceptance results for this source filter.")}</div>
+      <div><h4>By call date</h4>${table(breakdownColumns("Date"), (report.byDate || []).slice(0, 31), "No classified Offer Acceptance results for this date filter.")}</div>
+    </div>
+  </section>`;
+}
+
 function renderEvaluationResultDetails(row = {}) {
+  if (row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL || row.foundationAssessment) {
+    const assessment = row.foundationAssessment || {};
+    const lenses = assessment.intelligenceLenses || {};
+    const authoritative = authoritativeOfferAcceptanceContext(row);
+    const authoritativeOutcome = authoritative
+      ? offerAcceptanceOutcome({ acceptanceAssessment: authoritative.acceptanceAssessment })
+      : null;
+    const routes = Object.entries(assessment.specialistRoutes || {}).filter(([, enabled]) => enabled).map(([goal]) => humanizeSlug(goal));
+    const evidence = (assessment.evidence || []).map((item) => `<li><strong>${escapeHtml(humanizeSlug(item.supports || "evidence"))}:</strong> ${escapeHtml(item.quote || "")}</li>`).join("");
+    return `<details class="compact-details result-details foundation-result-details">
+      <summary>View result</summary>
+      ${authoritativeOutcome ? `<div class="result-decision authoritative-offer-decision">
+        <span>Authoritative Offer Acceptance result</span>
+        <strong>${escapeHtml(authoritativeOutcome.label)}</strong>
+        <p>${escapeHtml(evaluationSummaryLabel(authoritative.managerSummary))}</p>
+      </div>` : ""}
+      <div class="result-decision">
+        <span>Foundation intelligence</span>
+        <strong>${escapeHtml(humanizeSlug(lenses.opportunity_status || "not classified"))} opportunity</strong>
+        <p>${escapeHtml(evaluationSummaryLabel(row.managerSummary))}</p>
+      </div>
+      <dl class="result-answer-list">
+        <div><dt>Measurement</dt><dd>${escapeHtml(humanizeSlug(lenses.measurement_eligibility || "not supplied"))}</dd></div>
+        <div><dt>Efficiency</dt><dd>${escapeHtml(humanizeSlug(lenses.efficiency_status || "not supplied"))}</dd></div>
+        <div><dt>Conversation stage</dt><dd>${escapeHtml(humanizeSlug(assessment.conversationStage || "not supplied"))}</dd></div>
+        <div><dt>Called on behalf of</dt><dd>${escapeHtml(assessment.calledOnBehalfOf || "Not captured (older Foundation version)")}</dd></div>
+        <div><dt>Customer outcome</dt><dd>${escapeHtml(humanizeSlug(assessment.customerOutcome || "not supplied"))}</dd></div>
+        <div><dt>Next step</dt><dd>${escapeHtml(humanizeSlug(assessment.nextStepStatus || "not supplied"))}</dd></div>
+        <div><dt>Callback timing</dt><dd>${escapeHtml(assessment.followUpTiming || "Not supplied")}</dd></div>
+        <div><dt>Specialist routing</dt><dd>${escapeHtml(routes.join(", ") || "No specialist check required")}</dd></div>
+      </dl>
+      ${evidence ? `<div class="result-proof"><strong>Transcript evidence</strong><ul class="result-evidence-list">${evidence}</ul></div>` : `<p class="muted small">No transcript excerpt was stored for this result.</p>`}
+      <p class="muted small">Foundation accepted signals are candidates only. Offer Acceptance remains authoritative for accepted-offer reporting.</p>
+      <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
+    </details>`;
+  }
+  if (row.evaluationGoal === OFFER_ACCEPTANCE_GOAL || row.acceptanceAssessment) {
+    const assessment = row.acceptanceAssessment || {};
+    const outcome = offerAcceptanceOutcome(row);
+    const offerEvidence = assessment.offerEvidence || {};
+    const responseEvidence = assessment.customerResponseEvidence || {};
+    const proof = [
+      offerEvidence.quote ? `<li><strong>Offer:</strong> ${escapeHtml(offerEvidence.quote)}</li>` : "",
+      responseEvidence.quote ? `<li><strong>Customer:</strong> ${escapeHtml(responseEvidence.quote)}</li>` : ""
+    ].filter(Boolean).join("");
+    return `<details class="compact-details result-details offer-result-details">
+      <summary>View result</summary>
+      <div class="result-decision">
+        <span>Offer acceptance result</span>
+        <strong>${escapeHtml(outcome.label)}</strong>
+        <p>${escapeHtml(evaluationSummaryLabel(row.managerSummary))}</p>
+      </div>
+      <dl class="result-answer-list">
+        <div><dt>Offer presented</dt><dd>${assessment.offerPresented ? "Yes" : "No"}</dd></div>
+        <div><dt>Customer response</dt><dd>${escapeHtml(responseEvidence.summary || humanizeSlug(assessment.customerCommitment || "not supplied"))}</dd></div>
+        <div><dt>Unresolved condition</dt><dd>${assessment.unresolvedCondition ? "Yes — this prevents an accepted classification" : "No"}</dd></div>
+        <div><dt>Evidence quality</dt><dd>${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)} · ${escapeHtml(humanizeSlug(row.evidenceAvailability || "unavailable"))} evidence</dd></div>
+      </dl>
+      ${proof ? `<div class="result-proof"><strong>Transcript evidence</strong><ul class="result-evidence-list">${proof}</ul></div>` : `<p class="muted small">No transcript excerpt was stored for this result.</p>`}
+      <div class="stack"><a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript proof</a>${row.jobId ? `<span class="mono muted">Job ${escapeHtml(String(row.jobId).slice(0, 18))}</span>` : ""}</div>
+    </details>`;
+  }
   const facets = evaluationResultFacets(row);
   const evidenceSnippets = [];
   const seenEvidence = new Set();
@@ -1961,19 +2260,203 @@ function renderEvaluationResultDetails(row = {}) {
   </details>`;
 }
 
+function evaluationResultOutcomeMarkup(row = {}, options = {}) {
+  const authoritative = authoritativeOfferAcceptanceContext(row);
+  if (authoritative && (!options.preferOwnEvaluation || row.evaluationGoal === OFFER_ACCEPTANCE_GOAL)) {
+    const outcome = offerAcceptanceOutcome({ acceptanceAssessment: authoritative.acceptanceAssessment });
+    const foundationOpportunity = row.foundationAssessment?.intelligenceLenses?.opportunity_status;
+    const secondary = row.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+      ? humanizeSlug(authoritative.acceptanceAssessment?.customerCommitment || "not supplied")
+      : `Authoritative Offer Acceptance${foundationOpportunity ? ` · Foundation: ${humanizeSlug(foundationOpportunity)} opportunity` : ""}`;
+    return `${linkedBadge(outcome.label, outcome.tone, evaluationResultsUrl({ evaluationGoal: OFFER_ACCEPTANCE_GOAL, acceptanceClassification: authoritative.acceptanceAssessment?.classification }))}<span class="muted small">${escapeHtml(secondary)}</span>`;
+  }
+  if (row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL || row.foundationAssessment) {
+    const lenses = row.foundationAssessment?.intelligenceLenses || {};
+    const opportunity = lenses.opportunity_status || "unknown";
+    const tone = opportunity === "accepted" ? "notice" : ["possible", "actionable"].includes(opportunity) ? "warning" : "neutral";
+    return `${linkedBadge(`${humanizeSlug(opportunity)} opportunity`, tone, evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationOpportunityStatus: opportunity }))}<span class="muted small">${hrefDataLink(humanizeSlug(lenses.measurement_eligibility || "not supplied"), evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationMeasurementEligibility: lenses.measurement_eligibility }))} · ${hrefDataLink(humanizeSlug(lenses.efficiency_status || "not supplied"), evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationEfficiencyStatus: lenses.efficiency_status }))}</span>`;
+  }
+  if (row.evaluationGoal === "lead_validity_utilisation" && row.sharedFoundationContext?.customerOutcome === "long_term_nurture") {
+    return `${badge("Long-term nurture", "neutral")}<span class="muted small">Current transcript context · archived evaluation retained</span>`;
+  }
+  const facets = evaluationResultFacets(row);
+  return `<strong>${hrefDataLink(evaluationRecordAssessmentLabel(facets.recordClassification), evaluationResultsUrl({ evaluationGoal: row.evaluationGoal, recordClassification: facets.recordClassification }))}</strong><span class="muted small">${facets.recordReason && facets.recordReason !== "none" ? hrefDataLink(humanizeSlug(facets.recordReason), evaluationResultsUrl({ evaluationGoal: row.evaluationGoal, recordReason: facets.recordReason })) : escapeHtml(evaluationLeadDecisionLabel(facets))}</span>`;
+}
+
+function evaluationResultExplanationMarkup(row = {}, options = {}) {
+  const longTermCorrection = row.evaluationGoal === "lead_validity_utilisation" && row.sharedFoundationContext?.customerOutcome === "long_term_nurture"
+    ? `<strong>Current correction:</strong> Final agreed timing is ${escapeHtml(row.sharedFoundationContext.followUpTiming || "long-term nurture")}; this supersedes the earlier provisional callback request.<br /><span class="muted small">Historical evaluator summary preserved below.</span><br />`
+    : "";
+  if (row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL || row.foundationAssessment || row.evaluationGoal === OFFER_ACCEPTANCE_GOAL || row.acceptanceAssessment || row.sharedOfferAcceptanceContext) {
+    const summary = options.preferOwnEvaluation ? evaluationSummaryLabel(row.managerSummary) : evaluationRecordSummary(row);
+    return `<span class="evidence">${escapeHtml(summary)}</span>`;
+  }
+  const facets = evaluationResultFacets(row);
+  return `${longTermCorrection}<span class="evidence">${escapeHtml(evaluationSummaryLabel(row.managerSummary))}</span><span class="muted small">${escapeHtml(evaluationRecommendationLabel(facets.recommendation))}</span>`;
+}
+
+function renderEvaluationResultCard(row = {}, options = {}) {
+  const call = row.callContext || {};
+  const customerId = customerIdValue({ ...row, ...call });
+  const foundation = row.sharedFoundationContext || null;
+  const authoritativeOffer = options.grouped && row.evaluationGoal !== OFFER_ACCEPTANCE_GOAL
+    ? null
+    : authoritativeOfferAcceptanceContext(row);
+  const timing = foundation?.followUpTiming
+    ? hrefDataLink(foundation.followUpTiming, evaluationResultsUrl({ evaluationGoal: row.evaluationGoal, foundationFollowUpTiming: foundation.followUpTiming }), `View results with callback timing ${foundation.followUpTiming}`)
+    : `<span class="muted">${foundation ? "No timing captured" : "Awaiting Foundation evaluation"}</span>`;
+  const primaryConfidence = authoritativeOffer?.confidence ?? row.confidence;
+  const primaryStatus = authoritativeOffer?.status || row.status;
+  const primaryEvidenceAvailability = authoritativeOffer?.evidenceAvailability || row.evidenceAvailability;
+  const primaryConfidenceBand = authoritativeOffer?.confidenceBand || row.confidenceBand;
+  const confidence = primaryConfidence === null || primaryConfidence === undefined ? "Unavailable" : formatRatioPercent(primaryConfidence);
+  const evidenceStatus = primaryStatus === "usable" ? "Evidence sufficient" : humanizeSlug(primaryStatus || "evidence status unavailable");
+  const confidenceContext = authoritativeOffer && row.evaluationGoal !== OFFER_ACCEPTANCE_GOAL
+    ? `Offer Acceptance evidence · Foundation confidence ${row.confidence === null || row.confidence === undefined ? "unavailable" : formatRatioPercent(row.confidence)}`
+    : `${evidenceStatus} · ${humanizeSlug(primaryEvidenceAvailability || "unavailable")}`;
+  const confidenceHref = evaluationResultsUrl({
+    evaluationGoal: authoritativeOffer ? OFFER_ACCEPTANCE_GOAL : row.evaluationGoal,
+    confidenceBand: primaryConfidenceBand
+  });
+  return `<article class="evaluation-result-card"${options.grouped ? ` data-grouped="true"` : ""} role="listitem" id="evaluation-result-${escapeHtml(row.id || row.callId || "result")}">
+    <header class="evaluation-result-card-header">
+      <div>
+        <span class="result-card-label">Call</span>
+        <a class="data-link mono evaluation-result-call" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "unknown")}</a>
+        <p class="muted small"><strong>Customer ID: <span class="mono">${escapeHtml(customerId)}</span></strong><br />${call.salesperson ? hrefDataLink(call.salesperson, evaluationResultsUrl({ evaluationGoal: row.evaluationGoal, salesperson: call.salesperson })) : "Salesperson not supplied"} · ${call.source ? hrefDataLink(call.source, evaluationResultsUrl({ evaluationGoal: row.evaluationGoal, customerImportSource: call.source })) : "Source not supplied"}<br />${(call.sourceTime || call.date) ? hrefDataLink(call.sourceTime || call.date, evaluationResultsUrl({ evaluationGoal: row.evaluationGoal, ...sourceDateFilters(call.date || call.sourceTime) })) : "Call date not supplied"}</p>
+      </div>
+      <div class="evaluation-result-type">
+        <span class="result-card-label">Evaluation type</span>
+        ${hrefDataLink(row.evaluationTypeLabel || "Evaluation", evaluationResultsUrl({ evaluationGoal: row.evaluationGoal }), `View all ${row.evaluationTypeLabel || "evaluation"} results`)}
+        <span class="muted small">${escapeHtml(row.evaluationRunType === "prompt_test" ? "One-call test" : row.evaluationRunType === "batch" ? "Batch evaluation" : "Stored result")} · Template v${formatNumber(row.templateVersion || 1)}</span>
+      </div>
+      <a class="filter-link evaluation-result-proof-link" href="/calls/${encodeURIComponent(row.callId || "")}">Open transcript</a>
+    </header>
+    <div class="evaluation-result-facts">
+      <div><span class="result-card-label">Called on behalf of</span><strong>${foundation?.calledOnBehalfOf ? hrefDataLink(foundation.calledOnBehalfOf, evaluationResultsUrl({ evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, foundationCalledOnBehalfOf: foundation.calledOnBehalfOf })) : escapeHtml(foundation ? "Not captured" : "Awaiting Foundation evaluation")}</strong></div>
+      <div><span class="result-card-label">Callback timing</span>${timing}</div>
+      <div class="evaluation-result-outcome"><span class="result-card-label">Result</span>${evaluationResultOutcomeMarkup(row, { preferOwnEvaluation: options.grouped })}</div>
+      <div><span class="result-card-label">Confidence</span><strong>${hrefDataLink(confidence, confidenceHref)}</strong><span class="muted small">${escapeHtml(confidenceContext)}</span></div>
+    </div>
+    <div class="evaluation-result-explanation">
+      <span class="result-card-label">Record summary</span>
+      ${evaluationResultExplanationMarkup(row, { preferOwnEvaluation: options.grouped })}
+    </div>
+    <div class="evaluation-result-updated"><span class="result-card-label">Updated</span><span>${formatDateTime(row.updatedAt || row.createdAt)}</span></div>
+    ${renderEvaluationResultDetails(row)}
+  </article>`;
+}
+
+function groupEvaluationDisplayRows(rows = []) {
+  const groups = [];
+  const lookup = new Map();
+  rows.forEach((row) => {
+    const key = String(row.callId || "unknown");
+    if (!lookup.has(key)) {
+      const group = { callId: key, rows: [] };
+      lookup.set(key, group);
+      groups.push(group);
+    }
+    lookup.get(key).rows.push(row);
+  });
+  return groups;
+}
+
+function renderEvaluationCallGroup(group = {}) {
+  const priority = (row) => row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+    ? 0
+    : row.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+      ? 1
+      : 2;
+  const rows = (group.rows || []).slice().sort((left, right) => priority(left) - priority(right)
+    || String(left.evaluationTypeLabel || left.evaluationGoal).localeCompare(String(right.evaluationTypeLabel || right.evaluationGoal)));
+  const offerRow = rows.find((row) => row.evaluationGoal === OFFER_ACCEPTANCE_GOAL && row.acceptanceAssessment);
+  const primary = offerRow
+    || rows.find((row) => authoritativeOfferAcceptanceContext(row))
+    || rows.find((row) => row.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL)
+    || rows[0]
+    || {};
+  const call = rows.find((row) => Object.keys(row.callContext || {}).length)?.callContext || primary.callContext || {};
+  const customerId = customerIdValue({ ...primary, ...call });
+  const authoritative = authoritativeOfferAcceptanceContext(primary);
+  const outcomeConfidence = authoritative?.confidence ?? primary.confidence;
+  const types = Array.from(new Set(rows.map((row) => row.evaluationTypeLabel || humanizeSlug(row.evaluationGoal || "evaluation"))));
+  const sourceTime = call.sourceTime || call.date;
+  const salesperson = call.salesperson
+    ? hrefDataLink(call.salesperson, evaluationResultsUrl({ salesperson: call.salesperson }), `View all evaluated calls for ${call.salesperson}`)
+    : "Salesperson not supplied";
+  const source = call.source
+    ? hrefDataLink(call.source, evaluationResultsUrl({ customerImportSource: call.source }), `View all evaluated calls from ${call.source}`)
+    : "Source not supplied";
+  const callDate = sourceTime
+    ? hrefDataLink(formatSourceTime(call), evaluationResultsUrl(sourceDateFilters(call.date || sourceTime)), `View all evaluated calls from ${formatSourceTime(call)}`)
+    : "Call date not supplied";
+  return `<article class="evaluation-call-group" role="listitem" data-call-id="${escapeHtml(group.callId || "unknown")}">
+    <header class="evaluation-call-group-header">
+      <div class="evaluation-call-identity">
+        <span class="result-card-label">Call</span>
+        <a class="data-link mono" href="/calls/${encodeURIComponent(group.callId || "")}">${escapeHtml(group.callId || "unknown")}</a>
+        <strong class="small">Customer ID: <span class="mono">${escapeHtml(customerId)}</span></strong>
+        <span class="muted small">${salesperson} · ${source}<br />${callDate}</span>
+      </div>
+      <div class="evaluation-call-current-outcome">
+        <span class="result-card-label">Current call outcome</span>
+        ${evaluationResultOutcomeMarkup(primary)}
+        ${outcomeConfidence === null || outcomeConfidence === undefined ? "" : `<span class="muted small">Outcome confidence ${formatRatioPercent(outcomeConfidence)}</span>`}
+      </div>
+      <div class="evaluation-call-count">
+        ${badge(`${formatNumber(rows.length)} evaluation${rows.length === 1 ? "" : "s"}`, rows.length > 1 ? "notice" : "neutral")}
+        <a class="filter-link" href="/calls/${encodeURIComponent(group.callId || "")}">Open transcript</a>
+      </div>
+    </header>
+    <div class="evaluation-call-summary">
+      <span class="result-card-label">Record summary</span>
+      <p>${escapeHtml(evaluationRecordSummary(primary))}</p>
+    </div>
+    <details class="evaluation-call-evaluations">
+      <summary>View ${formatNumber(rows.length)} evaluation${rows.length === 1 ? "" : "s"}: ${escapeHtml(types.join(", "))}</summary>
+      <div class="evaluation-result-list grouped-results" role="list">${rows.map((row) => renderEvaluationResultCard(row, { grouped: true })).join("")}</div>
+    </details>
+  </article>`;
+}
+
 function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
   const studio = options.studioView || persistence.evaluationStudio || {};
   const summary = studio.summary || {};
   const knowledgebaseRows = (studio.knowledgebaseEntries || []).slice(0, 50);
   const templateRows = (studio.evaluationTemplates || []).slice(0, 50);
   const runRows = (studio.evaluationRuns || []).slice(0, 8);
+  const activeRunStatuses = new Set(["queued", "running", "partially_completed"]);
+  const evaluationRunHasPendingJobs = (run) => Number(run.queuedJobCount || 0) > 0
+    || (run.queuedJobs || []).some((job) => {
+      if (!String(job.jobId || job.job_id || "").trim()) return false;
+      const status = String(job.status || "queued").toLowerCase();
+      if (["completed", "succeeded", "success", "cancelled", "canceled"].includes(status)) return false;
+      if (["failed", "error"].includes(status)) return !job.terminalHandledAt;
+      return true;
+    });
+  const activeRunSnapshot = (studio.evaluationRuns || [])
+    .filter((run) => activeRunStatuses.has(String(run.status || "").toLowerCase()))
+    .filter(evaluationRunHasPendingJobs)
+    .map((run) => [String(run.id || ""), [
+      String(run.status || "queued"),
+      Number(run.completedCallCount || 0),
+      Number(run.failedCallCount || 0),
+      Number(run.queuedJobCount || 0),
+      String(run.updatedAt || "")
+    ].join("|")]);
   const resultRows = studio.evaluationResults || [];
   const evidenceRows = (studio.evidenceQueue || []).slice(0, 8);
   const reportRollups = studio.reportRollups || {};
+  const foundationReport = studio.foundationReport || {};
+  const offerAcceptanceReport = studio.offerAcceptanceReport || {};
   const reportTotals = reportRollups.totals || {};
   const reportSignalRows = (reportRollups.signalRows || []).slice(0, 8);
   const reportExampleRows = (reportRollups.priorityExamples || []).slice(0, 8);
-  const templateOptions = templateRows.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)} (${escapeHtml(template.evaluationGoal || "goal")})</option>`).join("");
+  const defaultTemplateId = templateRows.find((template) => template.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL)?.id
+    || templateRows[0]?.id
+    || "";
+  const templateOptions = templateRows.map((template) => `<option value="${escapeHtml(template.id)}"${template.id === defaultTemplateId ? " selected" : ""}>${escapeHtml(template.name)} (${escapeHtml(template.evaluationGoal || "goal")})</option>`).join("");
   const goalDatalist = Array.from(EVALUATION_GOALS || [])
     .sort()
     .map((goal) => `<option value="${escapeHtml(goal)}">${escapeHtml(humanizeSlug(goal))}</option>`)
@@ -1988,12 +2471,58 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
   }, null, 2);
   const currentImportId = persistence.currentImportId || "";
   const resultFilters = options.resultFilters || {};
+  const advancedResultFiltersActive = [
+    "runId", "reportSignal",
+    "resultStatus", "recordClassification", "recordReason", "operationalClassification", "allegationAssessment",
+    "recommendation", "foundationOpportunityStatus", "foundationMeasurementEligibility", "foundationEfficiencyStatus",
+    "foundationCalledOnBehalfOf", "foundationFollowUpTiming", "foundationSpecialistRoute", "foundationOfferPresented", "foundationQuotedAmountAvailable",
+    "confidenceBand", "evidenceAvailability", "reviewRecommended"
+  ].some((key) => String(resultFilters[key] || "").trim());
   const resultQuery = studio.resultQuery || {};
-  const availableCalls = (data.drilldownRows || []).filter((call) => String(call.transcript || "").trim());
+  const allCalls = data.drilldownRows || [];
+  const availableCalls = allCalls.filter((call) => String(call.transcript || "").trim());
   const salespersonOptions = Array.from(new Set(availableCalls.map((call) => call.salesperson).filter(Boolean))).sort();
   const sourceOptions = Array.from(new Set(availableCalls.map((call) => call.source).filter(Boolean))).sort();
   const contactOptions = Array.from(new Set(availableCalls.map((call) => call.contactClassification).filter(Boolean))).sort();
   const qualityOptions = Array.from(new Set(availableCalls.map((call) => call.transcriptQuality).filter(Boolean))).sort();
+  const callLookup = new Map(allCalls.map((call) => [String(call.callId || ""), call]));
+  const withCallIdentity = (row) => {
+    const call = callLookup.get(String(row?.callId || "")) || {};
+    return {
+      ...row,
+      customerId: customerIdValue({ ...row, ...call }),
+      callContext: call
+    };
+  };
+  const evidenceDisplayRows = evidenceRows.map(withCallIdentity);
+  const reportExampleDisplayRows = reportExampleRows.map(withCallIdentity);
+  const runLookup = new Map((studio.evaluationRuns || []).map((run) => [String(run.id || ""), run]));
+  const templateLookup = new Map(templateRows.map((template) => [String(template.id || ""), template]));
+  const resultDisplayRows = resultRows.map((row) => {
+    const run = runLookup.get(String(row.runId || "")) || {};
+    const template = templateLookup.get(String(row.templateId || "")) || {};
+    return {
+      ...row,
+      callContext: { customerId: row.customerId, ...(callLookup.get(String(row.callId || "")) || {}) },
+      sharedFoundationContext: row.foundationContext || row.foundationAssessment || null,
+      sharedOfferAcceptanceContext: row.offerAcceptanceContext || (row.acceptanceAssessment ? {
+        sourceResultId: row.id || "",
+        acceptanceAssessment: row.acceptanceAssessment,
+        managerSummary: row.managerSummary,
+        confidence: row.confidence,
+        confidenceBand: row.confidenceBand,
+        evidenceAvailability: row.evidenceAvailability,
+        status: row.status,
+        updatedAt: row.updatedAt || row.createdAt
+      } : null),
+      evaluationTypeLabel: run.templateSnapshot?.name || template.name || humanizeSlug(row.evaluationGoal || "evaluation"),
+      evaluationRunType: run.runType || "stored_result"
+    };
+  });
+  const resultCallGroups = groupEvaluationDisplayRows(resultDisplayRows);
+  const matchingCallCount = Number.isFinite(Number(resultQuery.matchingCalls))
+    ? Number(resultQuery.matchingCalls)
+    : new Set(resultRows.map((row) => String(row.callId || "unknown"))).size;
   const resultPageUrl = (offset) => {
     const query = new URLSearchParams();
     Object.entries(resultFilters).forEach(([key, value]) => {
@@ -2003,6 +2532,16 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
     return `/evaluation-studio?${query.toString()}#results`;
   };
   const seededFrom = (summary.seededFrom || []).join(", ") || "Neuron and LatentPulse patterns";
+  const overnight = studio.overnightAutomation || {};
+  const overnightRuntime = overnight.runtime || {};
+  const overnightStatus = humanizeSlug(overnightRuntime.status || (overnight.installed ? "scheduled" : "not installed"));
+  const overnightTone = overnightRuntime.status === "complete"
+    ? "success"
+    : overnightRuntime.status === "halted_on_quality_gate" || overnightRuntime.status === "retrying_after_error"
+      ? "danger"
+      : overnightRuntime.status === "processing" || overnightRuntime.status === "submitted"
+        ? "notice"
+        : "neutral";
   return `<section class="panel" id="evaluation-studio">
     <div class="panel-header">
       <div>
@@ -2013,13 +2552,31 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
     </div>
     <div class="panel-body">
       <div class="metrics">
-        ${metricCard("Knowledgebase", formatNumber(summary.activeKnowledgebaseEntries || 0), `${formatNumber(summary.approvedKnowledgebaseEntries || 0)} included, ${formatNumber(summary.pendingApprovalKnowledgebaseEntries || 0)} drafts`, "info")}
-        ${metricCard("Evaluation goals", formatNumber(summary.activeTemplates || 0), `${formatNumber(summary.archivedTemplates || 0)} archived templates`, "info")}
-        ${metricCard("Batch runs", formatNumber(summary.runs || 0), summary.lastRun ? `Latest: ${escapeHtml(summary.lastRun.status || "queued")}` : "No run queued yet", "warn")}
-        ${metricCard("Evaluation results", formatNumber(summary.results || 0), `${formatNumber(summary.reviewRecommendedResults || 0)} suggest a manual check`, summary.reviewRecommendedResults ? "warn" : "info")}
-        ${metricCard("Evidence gaps", formatNumber(summary.evidenceUnavailableResults || 0), "Model output labelled evidence unavailable", summary.evidenceUnavailableResults ? "warn" : "good")}
-        ${metricCard("Ready to evaluate", formatNumber(availableCalls.length), "Calls with transcript text in the current view", "good")}
+        ${metricCard("Knowledgebase", formatNumber(summary.activeKnowledgebaseEntries || 0), `${formatNumber(summary.approvedKnowledgebaseEntries || 0)} included, ${formatNumber(summary.pendingApprovalKnowledgebaseEntries || 0)} drafts`, "info", "#knowledgebase")}
+        ${metricCard("Evaluation goals", formatNumber(summary.activeTemplates || 0), `${formatNumber(summary.archivedTemplates || 0)} archived templates`, "info", "#templates")}
+        ${metricCard("Batch runs", formatNumber(summary.runs || 0), summary.lastRun ? `Latest: ${escapeHtml(summary.lastRun.status || "queued")}` : "No run queued yet", "warn", "#runs")}
+        ${metricCard("Evaluation results", formatNumber(summary.results || 0), `${formatNumber(summary.reviewRecommendedResults || 0)} suggest a manual check`, summary.reviewRecommendedResults ? "warn" : "info", evaluationResultsUrl())}
+        ${metricCard("Evidence gaps", formatNumber(summary.evidenceUnavailableResults || 0), "Model output labelled evidence unavailable", summary.evidenceUnavailableResults ? "warn" : "good", evaluationResultsUrl({ evidenceAvailability: "unavailable" }))}
+        ${metricCard("Ready to evaluate", formatNumber(availableCalls.length), "Calls with transcript text in the current view", "good", drilldownUrl("calls.transcriptAvailable", data.filterState?.query || {}))}
       </div>
+
+      <section class="studio-library" id="overnight-evaluations" aria-labelledby="overnight-evaluations-heading">
+        <div class="studio-section-heading">
+          <div>
+            <p class="page-kicker">Automatic backlog processing</p>
+            <h3 id="overnight-evaluations-heading">Overnight evaluations</h3>
+            <p class="muted small">Runs ${escapeHtml(overnight.schedule || "22:00-06:00 Australia/Melbourne")}; pauses before the next call when you use the PC or available memory falls below ${escapeHtml(overnight.memoryFloorGb ?? 4)} GB.</p>
+          </div>
+          ${badge(overnightStatus, overnightTone)}
+        </div>
+        <div class="result-answer-list">
+          <div><dt>Processing</dt><dd>${escapeHtml(overnight.behavior || "One Foundation batch and its recommended specialists at a time.")}</dd></div>
+          <div><dt>Safety boundary</dt><dd>Next batch starts only below 2% Foundation and specialist failure rates, with specialist routing complete.</dd></div>
+          <div><dt>New batch cutoff</dt><dd>${escapeHtml(overnight.submissionCutoff || "04:30 Australia/Melbourne")} so the current cycle has time to finish before 06:00.</dd></div>
+          <div><dt>Last update</dt><dd>${escapeHtml(overnightRuntime.updatedAt ? formatDateTime(overnightRuntime.updatedAt) : "Scheduled for the next overnight window")}</dd></div>
+          <div><dt>Current reason</dt><dd>${escapeHtml(overnightRuntime.reason || overnightRuntime.error || "Waiting for the overnight window")}</dd></div>
+        </div>
+      </section>
 
       <section class="studio-library" id="knowledgebase" aria-labelledby="knowledgebase-heading">
         <div class="studio-section-heading">
@@ -2124,6 +2681,7 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
           <label class="studio-field">Maximum calls<input name="limit" type="number" min="1" max="50000" value="100" required /></label>
           <label class="studio-field">Search<input name="search" placeholder="Call ID, salesperson, source or outcome" /></label>
           <label class="studio-field studio-field-full">Specific call IDs<textarea name="callIds" rows="3" placeholder="Paste call IDs separated by commas, spaces or new lines"></textarea></label>
+          <label class="studio-field studio-field-full"><span><input name="autoRouteSpecialists" type="checkbox" value="true" checked /> Automatically route Foundation results to the five specialist evaluators</span><span class="muted small">Used only when Call Intelligence Foundation is selected. Existing specialist results are not overwritten.</span></label>
           <div class="evaluation-submit-row">
             <button type="button" class="secondary-button" data-selection-preview>Preview selection</button>
             <button type="submit">Run evaluation</button>
@@ -2145,10 +2703,10 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
 
       <h3 id="runs" class="section-anchor" style="margin-top: 16px;">Recent Evaluation Runs</h3>
       ${table([
-        { label: "Run", render: (row) => `<span class="mono">${escapeHtml(String(row.id || "").slice(0, 18))}</span><br /><span class="muted small">${escapeHtml(row.templateSnapshot?.name || row.templateId || "")}</span>` },
+        { label: "Run", render: (row) => `${hrefDataLink(String(row.id || "").slice(0, 18), evaluationResultsUrl({ runId: row.id }), `View results from run ${row.id}`)}<br /><span class="muted small">${escapeHtml(row.templateSnapshot?.name || row.templateId || "")}</span>` },
         { label: "Type", render: (row) => badge(String(row.runType || "batch").replace(/_/g, " "), row.runType === "prompt_test" ? "notice" : "neutral") },
-        { label: "Status", render: (row) => `<span data-evaluation-run-id="${escapeHtml(row.id || "")}" data-evaluation-run-status="${escapeHtml(row.status || "queued")}" data-evaluation-run-has-job="${Array.isArray(row.queuedJobs) && row.queuedJobs.some((job) => String(job.jobId || job.job_id || "").trim()) ? "true" : "false"}">${badge(String(row.status || "queued").replace(/_/g, " "), row.status === "failed" || row.status === "quarantined" ? "critical" : row.status === "running" ? "notice" : row.status === "completed" ? "success" : "neutral")}<br /><span class="muted small">${escapeHtml(row.quarantineReason || (row.resumeCount ? `${formatNumber(row.resumeCount)} resumes` : ""))}</span></span>` },
-        { label: "Calls", render: (row) => `${formatNumber(row.plannedCallCount || 0)} planned<br /><span class="muted small">${formatNumber(row.queuedJobCount || 0)} queued, ${formatNumber(row.failedCallCount || 0)} failed</span>` },
+        { label: "Status", render: (row) => `<span data-evaluation-run-id="${escapeHtml(row.id || "")}" data-evaluation-run-status="${escapeHtml(row.status || "queued")}" data-evaluation-run-has-pending-job="${evaluationRunHasPendingJobs(row) ? "true" : "false"}">${badge(String(row.status || "queued").replace(/_/g, " "), row.status === "failed" || row.status === "quarantined" ? "critical" : row.status === "running" ? "notice" : row.status === "completed" ? "success" : "neutral")}<br /><span class="muted small">${escapeHtml(row.quarantineReason || (row.resumeCount ? `${formatNumber(row.resumeCount)} resumes` : ""))}</span></span>` },
+        { label: "Calls", render: (row) => `${formatNumber(row.plannedCallCount || 0)} planned<br /><span class="muted small">${aggregateResultLink(formatNumber(row.completedCallCount || 0), { runId: row.id }, `View ${row.completedCallCount || 0} classified results from this run`)} classified, ${formatNumber(row.queuedJobCount || 0)} queued, ${row.failedCallCount ? hrefDataLink(`${formatNumber(row.failedCallCount)} failed`, `#run-failures-${row.id}`, `Review ${row.failedCallCount} failures from this run`) : "0 failed"}</span>${renderEvaluationRunFailureSummary(row, callLookup)}` },
         { label: "Versions", render: (row) => `Template v${formatNumber(row.templateVersion || 1)}<br /><span class="muted small">${formatNumber((row.knowledgebaseSnapshot || []).length)} KB entries</span>` },
         { label: "Updated", render: (row) => `${formatDateTime(row.updatedAt || row.createdAt)}<br /><span class="muted small">${formatNumber((row.runHistory || []).length)} history events</span>` },
         { label: "Actions", render: (row) => renderEvaluationRunActions(row) }
@@ -2158,6 +2716,7 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
       <p class="muted small" style="margin: 4px 0 10px;">Results appear here when the evaluator suggests a manual check. This is optional local review, not an approval queue.</p>
       ${table([
         { label: "Call", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "Unknown")}</a><br /><span class="muted small">${escapeHtml(row.evaluationGoal || "evaluation")}</span>` },
+        { label: "Customer ID", render: (row) => customerIdCell(row) },
         { label: "Status", render: (row) => `${badge(String(row.status || "usable").replace(/_/g, " "), row.status === "failed" ? "critical" : row.status === "insufficient_evidence" ? "warning" : "success")}<br />${badge(String(row.provenance || "evaluation_studio_local_model").replace(/_/g, " "), "notice")}` },
         { label: "Confidence", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(String(row.confidenceBand || "confidence_unavailable").replace(/_/g, " "))}</span>` },
         { label: "Evidence", render: (row) => {
@@ -2166,58 +2725,88 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
         } },
         { label: "Check", render: (row) => row.managerReviewRecommended ? badge("Manual check suggested", "warn") : badge("Optional", "neutral") },
         { label: "Open", render: (row) => `<a class="filter-link" href="/calls/${encodeURIComponent(row.callId || "")}">Transcript proof</a>` }
-      ], evidenceRows, "No results currently suggest a manual check.")}
+      ], evidenceDisplayRows, "No results currently suggest a manual check.")}
 
       <h3 id="rollups" class="section-anchor" style="margin-top: 16px;">Report-Safe Evaluation Rollups</h3>
       <p class="muted small" style="margin: 4px 0 10px;">Counts below come from labelled Evaluation Studio findings. They are process-review signals with evidence and confidence, not confirmed sales, revenue, conversion, or disciplinary proof.</p>
       <div class="metrics">
-        ${metricCard("Evaluated calls", formatNumber(reportTotals.evaluatedCalls || 0), `${formatNumber(reportTotals.evaluatedResults || 0)} stored local-model results`, "info")}
-        ${metricCard("Callback opportunities", formatNumber(reportTotals.callbackOpportunities || 0), "Evidence-backed follow-up leakage review signals", "warn")}
-        ${metricCard("Possible waste indicators", formatNumber(reportTotals.possibleWasteIndicators || 0), "Lead utilisation issue signals requiring proof review", "risk")}
-        ${metricCard("Coaching opportunities", formatNumber(reportTotals.coachingOpportunities || 0), "Procedure or call-stage coaching signals", "notice")}
+        ${metricCard("Evaluated calls", formatNumber(reportTotals.evaluatedCalls || 0), `${formatNumber(reportTotals.evaluatedResults || 0)} stored local-model results`, "info", evaluationResultsUrl())}
+        ${metricCard("Callback opportunities", formatNumber(reportTotals.callbackOpportunities || 0), "Evidence-backed follow-up leakage review signals", "warn", evaluationResultsUrl({ reportSignal: "callbackOpportunities" }))}
+        ${metricCard("Possible waste indicators", formatNumber(reportTotals.possibleWasteIndicators || 0), "Lead utilisation issue signals requiring proof review", "risk", evaluationResultsUrl({ reportSignal: "possibleWasteIndicators" }))}
+        ${metricCard("Coaching opportunities", formatNumber(reportTotals.coachingOpportunities || 0), "Procedure or call-stage coaching signals", "notice", evaluationResultsUrl({ reportSignal: "coachingOpportunities" }))}
       </div>
       ${table([
-        { label: "Signal", render: (row) => escapeHtml(row.label || row.signal || "Signal") },
-        { label: "Count", render: (row) => formatNumber(row.count || 0) },
+        { label: "Signal", render: (row) => aggregateResultLink(row.label || row.signal || "Signal", { reportSignal: row.signal }, `View results contributing to ${row.label || row.signal}`) },
+        { label: "Count", render: (row) => aggregateResultLink(formatNumber(row.count || 0), { reportSignal: row.signal }, `View results contributing to ${row.count || 0} ${row.label || row.signal} findings`) },
         { label: "Use", render: (row) => `<span class="muted small">${escapeHtml(row.signal === "possibleWasteIndicators" ? "Review as possible waste indicators only." : row.signal === "coachingOpportunities" ? "Use as coaching opportunities." : "Use as evidence-backed signals.")}</span>` }
       ], reportSignalRows, "No report-safe Evaluation Studio rollups yet.")}
       ${table([
         { label: "Call", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "Unknown")}</a><br /><span class="muted small">${escapeHtml(row.signalLabel || "signal")}</span>` },
+        { label: "Customer ID", render: (row) => customerIdCell(row) },
         { label: "Finding", render: (row) => `${escapeHtml(row.field || "finding")}<br /><span class="muted small">${escapeHtml(row.value || "Not supplied")}</span>` },
         { label: "Confidence", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Confidence unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(String(row.confidenceBand || "confidence_unavailable").replace(/_/g, " "))}</span>` },
         { label: "Proof", render: (row) => `<span class="evidence">${escapeHtml(row.evidence || "Evidence unavailable")}</span>` }
-      ], reportExampleRows, "No priority report examples yet.")}
+      ], reportExampleDisplayRows, "No priority report examples yet.")}
+
+      ${renderFoundationReport(foundationReport)}
+
+      ${renderOfferAcceptanceReport(offerAcceptanceReport)}
 
       <section class="studio-library" id="results" aria-labelledby="results-heading">
-      <div class="studio-section-heading">
-        <div><p class="page-kicker">Browse output</p><h3 id="results-heading">Evaluation Results</h3><p class="muted small">Filter by what the evaluator identified, then open the stored evidence and transcript proof.</p></div>
-        <span class="muted small">${formatNumber(resultQuery.matchingResults || resultRows.length)} matching results</span>
+      <div class="studio-section-heading" data-evaluation-studio-progress data-active-runs="${escapeHtml(JSON.stringify(activeRunSnapshot))}">
+        <div><p class="page-kicker">Browse output</p><h3 id="results-heading">Evaluation Results Grouped by Call</h3><p class="muted small">Each call appears once with its Customer ID, authoritative current outcome and summary. Expand the call to inspect its Foundation and specialist evaluations. Confidence describes evidence strength. It is not the probability that payment or fulfilment occurred.</p></div>
+        <div class="studio-result-progress">
+          ${hrefDataLink(`${formatNumber(matchingCallCount)} calls · ${formatNumber(resultQuery.matchingResults || resultRows.length)} evaluations`, resultPageUrl(0), "Open the first page of matching evaluated calls")}
+          <span class="muted small">${activeRunSnapshot.length ? "Live updates every 5 seconds while evaluations run" : "Current stored results"}</span>
+        </div>
       </div>
-      <form class="result-filter-form" method="get" action="/evaluation-studio">
+      ${(resultFilters.runId || resultFilters.reportSignal) ? `<div class="active-filters" aria-label="Aggregate drill-down filters">
+        ${resultFilters.runId ? `<span class="filter-chip"><span>Run: ${escapeHtml(String(resultFilters.runId).slice(0, 24))}</span></span><input form="evaluation-result-filters" type="hidden" name="runId" value="${escapeHtml(resultFilters.runId)}" />` : ""}
+        ${resultFilters.reportSignal ? `<span class="filter-chip"><span>Signal: ${escapeHtml(humanizeSlug(resultFilters.reportSignal))}</span></span><input form="evaluation-result-filters" type="hidden" name="reportSignal" value="${escapeHtml(resultFilters.reportSignal)}" />` : ""}
+      </div>` : ""}
+      <form id="evaluation-result-filters" class="result-filter-form" method="get" action="/evaluation-studio">
         <label>Goal<select name="evaluationGoal"><option value="">All goals</option>${Array.from(EVALUATION_GOALS || []).sort().map((value) => `<option value="${escapeHtml(value)}" ${selectedOption(resultFilters.evaluationGoal, value)}>${escapeHtml(humanizeSlug(value))}</option>`).join("")}</select></label>
-        <label>Status<select name="resultStatus"><option value="">All statuses</option>${["usable", "insufficient_evidence", "failed"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.resultStatus, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
-        <label>Record assessment<select name="recordClassification"><option value="">All assessments</option>${["supported_invalidity", "supported_operational_unusability", "contradictory_evidence", "no_supporting_evidence", "untestable", "insufficient_evidence"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.recordClassification, value)}>${escapeHtml(evaluationRecordAssessmentLabel(value))}</option>`).join("")}</select></label>
-        <label>Reason<input name="recordReason" value="${escapeHtml(resultFilters.recordReason || "")}" placeholder="e.g. wrong_number" /></label>
-        <label>Operational issue<select name="operationalClassification"><option value="">All operational findings</option>${["none", "do_not_contact", "unsafe_abusive"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.operationalClassification, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
-        <label>Allegation<select name="allegationAssessment"><option value="">All allegation states</option>${["absent", "supported", "contradicted", "untestable"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.allegationAssessment, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
-        <label>Recommendation<input name="recommendation" value="${escapeHtml(resultFilters.recommendation || "")}" placeholder="e.g. retry_contact" /></label>
-        <label>Confidence<select name="confidenceBand"><option value="">All confidence bands</option>${["high", "medium", "low", "unusable", "confidence_unavailable"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.confidenceBand, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
-        <label>Evidence<select name="evidenceAvailability"><option value="">All evidence states</option>${["available", "partial", "unavailable"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.evidenceAvailability, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
-        <label>Page size<select name="limit">${[10,25,50,100].map((value) => `<option value="${value}" ${selectedOption(resultFilters.limit || "25", value)}>${value}</option>`).join("")}</select></label>
+        <label>Offer outcome<select name="acceptanceClassification"><option value="">All offer outcomes</option>${[
+          ["customer_accepted_offer", "Customer accepted offer"],
+          ["interested_follow_up_only", "Interested — follow-up only"],
+          ["no_sale_signal", "No sale signal"]
+        ].map(([value, label]) => `<option value="${value}" ${selectedOption(resultFilters.acceptanceClassification, value)}>${escapeHtml(label)}</option>`).join("")}</select></label>
+        <label>Salesperson<select name="salesperson"><option value="">All salespeople</option>${salespersonOptions.map((value) => `<option value="${escapeHtml(value)}" ${selectedOption(resultFilters.salesperson, value)}>${escapeHtml(value)}</option>`).join("")}</select></label>
+        <label>Source<select name="customerImportSource"><option value="">All sources</option>${sourceOptions.map((value) => `<option value="${escapeHtml(value)}" ${selectedOption(resultFilters.customerImportSource, value)}>${escapeHtml(value)}</option>`).join("")}</select></label>
+        <label>From call date<input name="dateFrom" type="date" value="${escapeHtml(resultFilters.dateFrom || "")}" /></label>
+        <label>To call date<input name="dateTo" type="date" value="${escapeHtml(resultFilters.dateTo || "")}" /></label>
+        <label>Calls per page<select name="limit">${[10,25,50,100].map((value) => `<option value="${value}" ${selectedOption(resultFilters.limit || "25", value)}>${value}</option>`).join("")}</select></label>
+        <details class="result-filter-advanced"${advancedResultFiltersActive ? " open" : ""}>
+          <summary>Other evaluator filters</summary>
+          <div class="result-filter-advanced-grid">
+            <label>Evidence status<select name="resultStatus"><option value="">All evidence statuses</option>${["usable", "insufficient_evidence", "failed"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.resultStatus, value)}>${value === "usable" ? "Evidence sufficient" : humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Record assessment<select name="recordClassification"><option value="">All assessments</option>${["supported_invalidity", "supported_operational_unusability", "contradictory_evidence", "no_supporting_evidence", "untestable", "insufficient_evidence"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.recordClassification, value)}>${escapeHtml(evaluationRecordAssessmentLabel(value))}</option>`).join("")}</select></label>
+            <label>Reason<input name="recordReason" value="${escapeHtml(resultFilters.recordReason || "")}" placeholder="e.g. wrong_number" /></label>
+            <label>Operational issue<select name="operationalClassification"><option value="">All operational findings</option>${["none", "do_not_contact", "unsafe_abusive"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.operationalClassification, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Allegation<select name="allegationAssessment"><option value="">All allegation states</option>${["absent", "supported", "contradicted", "untestable"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.allegationAssessment, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Recommendation<input name="recommendation" value="${escapeHtml(resultFilters.recommendation || "")}" placeholder="e.g. retry_contact" /></label>
+            <label>Foundation opportunity<select name="foundationOpportunityStatus"><option value="">All opportunity states</option>${[["actionable_or_accepted", "Actionable or accepted"], ["accepted", "Accepted candidate"], ["actionable", "Actionable"], ["possible", "Possible"], ["none", "None"]].map(([value, label]) => `<option value="${value}" ${selectedOption(resultFilters.foundationOpportunityStatus, value)}>${label}</option>`).join("")}</select></label>
+            <label>Foundation measurement<select name="foundationMeasurementEligibility"><option value="">All measurement states</option>${["eligible", "ineligible", "unknown"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.foundationMeasurementEligibility, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Foundation efficiency<select name="foundationEfficiencyStatus"><option value="">All efficiency states</option>${["efficient_progression", "actionable_gap", "terminal_complete", "not_applicable", "unknown"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.foundationEfficiencyStatus, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Called on behalf of<input name="foundationCalledOnBehalfOf" value="${escapeHtml(resultFilters.foundationCalledOnBehalfOf || "")}" placeholder="Exact represented organisation" /></label>
+            <label>Callback timing<input name="foundationFollowUpTiming" value="${escapeHtml(resultFilters.foundationFollowUpTiming || "")}" placeholder="Exact captured timing" /></label>
+            <label>Foundation specialist route<select name="foundationSpecialistRoute"><option value="">All specialist routes</option>${["offer_acceptance_classification", "callback_opportunity", "objection_handling", "procedure_adherence", "lead_record_disposition_evidence_audit"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.foundationSpecialistRoute, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Offer presented<select name="foundationOfferPresented"><option value="">Either</option><option value="true" ${selectedOption(resultFilters.foundationOfferPresented, "true")}>Yes</option><option value="false" ${selectedOption(resultFilters.foundationOfferPresented, "false")}>No</option></select></label>
+            <label>Quoted amount captured<select name="foundationQuotedAmountAvailable"><option value="">Either</option><option value="true" ${selectedOption(resultFilters.foundationQuotedAmountAvailable, "true")}>Yes</option><option value="false" ${selectedOption(resultFilters.foundationQuotedAmountAvailable, "false")}>No</option></select></label>
+            <label>Manual check suggested<select name="reviewRecommended"><option value="">All results</option><option value="true" ${selectedOption(resultFilters.reviewRecommended, "true")}>Suggested only</option></select></label>
+            <label>Confidence<select name="confidenceBand"><option value="">All confidence bands</option>${["high", "medium", "low", "unusable", "confidence_unavailable"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.confidenceBand, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+            <label>Evidence<select name="evidenceAvailability"><option value="">All evidence states</option>${["available", "partial", "unavailable"].map((value) => `<option value="${value}" ${selectedOption(resultFilters.evidenceAvailability, value)}>${humanizeSlug(value)}</option>`).join("")}</select></label>
+          </div>
+        </details>
         <input type="hidden" name="offset" value="0" />
         <div class="result-filter-actions"><button type="submit">Apply filters</button><a class="filter-link" href="/evaluation-studio#results">Clear</a></div>
       </form>
-      ${table([
-        { label: "Call", description: "The call ID and evaluator used. Select the call ID to open the full transcript proof.", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.callId || "")}">${escapeHtml(row.callId || "unknown")}</a><br /><span class="muted small">${escapeHtml(humanizeSlug(row.evaluationGoal || "evaluation"))}</span>` },
-        { label: "Status", description: "Usable means enough evidence was available for this evaluator to make a decision. It does not mean a sale was made or that the lead was good.", render: (row) => badge(String(row.status || "usable").replace(/_/g, " "), row.status === "failed" ? "critical" : row.status === "insufficient_evidence" ? "warning" : "success") },
-        { label: "Answer", description: "The conclusion about whether the lead record appears invalid or operationally unusable. No evidence the record is invalid means this call did not support correcting or removing it.", render: (row) => { const facets = evaluationResultFacets(row); return `${escapeHtml(evaluationRecordAssessmentLabel(facets.recordClassification))}<br /><span class="muted small">${escapeHtml(facets.recordReason && facets.recordReason !== "none" ? humanizeSlug(facets.recordReason) : evaluationLeadDecisionLabel(facets))}</span>`; } },
-        { label: "Recommendation", description: "The suggested next step based on the available evidence. It is advisory and does not change the lead, claim or CRM.", render: (row) => { const facets = evaluationResultFacets(row); return `<span class="evidence">${escapeHtml(evaluationRecommendationLabel(facets.recommendation))}</span>`; } },
-        { label: "Confidence", description: "How strongly the available evidence supports this evaluation result. It is not a probability of sale.", render: (row) => `${row.confidence === null || row.confidence === undefined ? "Unavailable" : formatRatioPercent(row.confidence)}<br /><span class="muted small">${escapeHtml(humanizeSlug(row.evidenceAvailability || "unavailable"))} evidence</span>` },
-        { label: "Updated", description: "When this evaluation result was last stored, shown in AEST. Open View result for the explanation and transcript evidence.", render: (row) => `${formatDateTime(row.updatedAt || row.createdAt)}<br />${renderEvaluationResultDetails(row)}` }
-      ], resultRows, "No results match these filters.")}
+      ${resultCallGroups.length
+        ? `<div class="evaluation-call-group-list" role="list">${resultCallGroups.map(renderEvaluationCallGroup).join("")}</div>`
+        : `<div class="empty">No results match these filters.</div>`}
       <nav class="result-pagination" aria-label="Evaluation result pages">
         ${resultQuery.previousOffset !== null && resultQuery.previousOffset !== undefined ? `<a class="filter-link" href="${escapeHtml(resultPageUrl(resultQuery.previousOffset))}">Previous</a>` : `<span class="muted small">Previous</span>`}
-        <span class="muted small">Showing ${formatNumber((resultQuery.offset || 0) + (resultRows.length ? 1 : 0))}-${formatNumber((resultQuery.offset || 0) + resultRows.length)} of ${formatNumber(resultQuery.matchingResults || resultRows.length)}</span>
+        <span class="muted small">Showing calls ${formatNumber((resultQuery.offset || 0) + (resultCallGroups.length ? 1 : 0))}-${formatNumber((resultQuery.offset || 0) + resultCallGroups.length)} of ${formatNumber(matchingCallCount)} · ${formatNumber(resultQuery.matchingResults || resultRows.length)} matching evaluations</span>
         ${resultQuery.nextOffset !== null && resultQuery.nextOffset !== undefined ? `<a class="filter-link" href="${escapeHtml(resultPageUrl(resultQuery.nextOffset))}">Next</a>` : `<span class="muted small">Next</span>`}
       </nav>
       </section>
@@ -2240,10 +2829,10 @@ function renderEvaluationStudioDashboardSummary(persistence = {}) {
     </div>
     <div class="panel-body">
       <div class="metrics">
-        ${metricCard("Evaluated calls", formatNumber(reportTotals.evaluatedCalls || summary.results || 0), `${formatNumber(reportTotals.evaluatedResults || summary.results || 0)} stored evaluation results`, "info")}
-        ${metricCard("Manual check suggested", formatNumber(summary.reviewRecommendedResults || 0), "Evidence-backed results worth checking", summary.reviewRecommendedResults ? "warn" : "good")}
-        ${metricCard("Evidence gaps", formatNumber(summary.evidenceUnavailableResults || 0), "Evaluation results labelled evidence unavailable", summary.evidenceUnavailableResults ? "warn" : "good")}
-        ${metricCard("Callback signals", formatNumber(reportTotals.callbackOpportunities || 0), "Process-review signals, not confirmed conversion", reportTotals.callbackOpportunities ? "warn" : "info")}
+        ${metricCard("Evaluated calls", formatNumber(reportTotals.evaluatedCalls || summary.results || 0), `${formatNumber(reportTotals.evaluatedResults || summary.results || 0)} stored evaluation results`, "info", "/evaluation-studio#results")}
+        ${metricCard("Manual check suggested", formatNumber(summary.reviewRecommendedResults || 0), "Evidence-backed results worth checking", summary.reviewRecommendedResults ? "warn" : "good", "/evaluation-studio?reviewRecommended=true#results")}
+        ${metricCard("Evidence gaps", formatNumber(summary.evidenceUnavailableResults || 0), "Evaluation results labelled evidence unavailable", summary.evidenceUnavailableResults ? "warn" : "good", "/evaluation-studio?evidenceAvailability=unavailable#results")}
+        ${metricCard("Callback signals", formatNumber(reportTotals.callbackOpportunities || 0), "Process-review signals, not confirmed conversion", reportTotals.callbackOpportunities ? "warn" : "info", "/evaluation-studio?evaluationGoal=callback_opportunity#results")}
       </div>
       <p class="muted small" style="margin-top: 12px;">Evaluation Studio results remain evidence/confidence-labelled local signals. They do not overwrite raw call data, deterministic metrics, LLM outputs, or optional manual corrections.</p>
     </div>
@@ -2297,6 +2886,8 @@ function renderStudioUtilityScript() {
         const runControls = document.getElementById("run-controls");
         const metricGrid = panelBody ? panelBody.querySelector(":scope > .metrics") : null;
         const results = document.getElementById("results");
+        const foundationReport = document.getElementById("foundation-report");
+        const offerReport = document.getElementById("offer-acceptance-report");
         const runsHeading = document.getElementById("runs");
         const evidenceHeading = document.getElementById("evidence");
         const rollupsHeading = document.getElementById("rollups");
@@ -2305,10 +2896,12 @@ function renderStudioUtilityScript() {
           ? [evidenceHeading, evidenceHeading.nextElementSibling, evidenceHeading.nextElementSibling?.nextElementSibling].filter(Boolean)
           : [];
         const rollupsGroup = [];
-        for (let node = rollupsHeading; node && node !== results; node = node.nextElementSibling) rollupsGroup.push(node);
+        for (let node = rollupsHeading; node && node !== foundationReport && node !== offerReport && node !== results; node = node.nextElementSibling) rollupsGroup.push(node);
         if (panelBody && runControls && metricGrid) {
           panelBody.insertBefore(runControls, metricGrid);
-          if (results) metricGrid.after(results);
+          if (foundationReport) metricGrid.after(foundationReport);
+          if (offerReport) (foundationReport || metricGrid).after(offerReport);
+          if (results) (offerReport || foundationReport || metricGrid).after(results);
           if (results && runsGroup.length) results.after(...runsGroup);
           if (runsGroup.length && evidenceGroup.length) runsGroup.at(-1).after(...evidenceGroup);
           if (evidenceGroup.length && rollupsGroup.length) evidenceGroup.at(-1).after(...rollupsGroup);
@@ -2345,22 +2938,92 @@ function renderStudioUtilityScript() {
         form.addEventListener("input", () => setStatus("Selection changed; preview again."));
       })();
       (() => {
-        const runNodes = Array.from(document.querySelectorAll("[data-evaluation-run-id][data-evaluation-run-status][data-evaluation-run-has-job='true']"));
+        const progressNode = document.querySelector("[data-evaluation-studio-progress]");
         const activeStatuses = new Set(["queued", "running", "partially_completed"]);
-        const activeRuns = new Map(runNodes
-          .map((node) => [node.getAttribute("data-evaluation-run-id"), node.getAttribute("data-evaluation-run-status")])
-          .filter(([id, status]) => id && activeStatuses.has(status)));
-        if (!activeRuns.size) return;
-        const poll = async () => {
+        const stateKey = "sales-dashboard-evaluation-studio-refresh-state.v1";
+        const pageKey = window.location.pathname + window.location.search;
+        const trackedForms = () => Array.from(document.querySelectorAll("[data-evaluation-batch-form], form[action='/evaluation-studio/prompt-tests'], #evaluation-result-filters"));
+        const restoreRefreshState = () => {
           try {
-            const response = await fetch("/api/evaluation-studio?currentOnly=true", { cache: "no-store" });
+            const saved = JSON.parse(window.sessionStorage.getItem(stateKey) || "null");
+            if (!saved || saved.pageKey !== pageKey) return;
+            window.sessionStorage.removeItem(stateKey);
+            trackedForms().forEach((form, formIndex) => {
+              const controls = saved.formState?.[formIndex] || [];
+              Array.from(form.elements || []).forEach((control, controlIndex) => {
+                const stored = controls[controlIndex];
+                if (!stored || !control.name || ["file", "submit", "button"].includes(String(control.type || "").toLowerCase())) return;
+                if (["checkbox", "radio"].includes(String(control.type || "").toLowerCase())) control.checked = Boolean(stored.checked);
+                else control.value = stored.value ?? "";
+              });
+            });
+            (saved.openCallIds || []).forEach((callId) => {
+              const group = Array.from(document.querySelectorAll(".evaluation-call-group"))
+                .find((item) => item.getAttribute("data-call-id") === String(callId));
+              const details = group ? group.querySelector("details") : null;
+              if (details) details.open = true;
+            });
+            window.requestAnimationFrame(() => window.scrollTo(Number(saved.scrollX || 0), Number(saved.scrollY || 0)));
+          } catch (error) {
+            try { window.sessionStorage.removeItem(stateKey); } catch (storageError) { /* Storage is optional. */ }
+          }
+        };
+        const preserveRefreshState = () => {
+          try {
+            const openCallIds = Array.from(document.querySelectorAll(".evaluation-call-group details[open]"))
+              .map((details) => details.closest(".evaluation-call-group")?.getAttribute("data-call-id"))
+              .filter(Boolean);
+            const formState = trackedForms().map((form) => Array.from(form.elements || []).map((control) => ({
+              value: control.value,
+              checked: Boolean(control.checked)
+            })));
+            window.sessionStorage.setItem(stateKey, JSON.stringify({
+              pageKey,
+              scrollX: window.scrollX,
+              scrollY: window.scrollY,
+              openCallIds,
+              formState
+            }));
+          } catch (error) {
+            // Refresh can continue when session storage is unavailable.
+          }
+        };
+        const progressSignature = (run) => [
+          String(run.status || "queued"),
+          Number(run.completedCallCount || 0),
+          Number(run.failedCallCount || 0),
+          Number(run.queuedJobCount || 0),
+          String(run.updatedAt || "")
+        ].join("|");
+        restoreRefreshState();
+        let activeRuns = new Map();
+        try {
+          activeRuns = new Map(JSON.parse(progressNode?.getAttribute("data-active-runs") || "[]"));
+        } catch (error) {
+          activeRuns = new Map();
+        }
+        if (!activeRuns.size) return;
+        let polling = false;
+        const poll = async () => {
+          if (polling) return;
+          polling = true;
+          try {
+            const response = await fetch("/api/evaluation-studio/progress?currentOnly=true", { cache: "no-store" });
             if (!response.ok) return;
             const payload = await response.json();
-            const nextRuns = new Map((payload.evaluationRuns || []).map((run) => [String(run.id || ""), String(run.status || "queued")]));
-            const changed = Array.from(activeRuns.entries()).some(([id, status]) => nextRuns.get(id) !== status);
-            if (changed) window.location.reload();
+            const nextRuns = new Map((payload.evaluationRuns || [])
+              .filter((run) => run.hasPendingJobs && activeStatuses.has(String(run.status || "").toLowerCase()))
+              .map((run) => [String(run.id || ""), progressSignature(run)]));
+            const changed = activeRuns.size !== nextRuns.size
+              || Array.from(activeRuns.entries()).some(([id, signature]) => nextRuns.get(id) !== signature);
+            if (changed) {
+              preserveRefreshState();
+              window.location.reload();
+            }
           } catch (error) {
             // A temporary status check failure should not interrupt the workspace.
+          } finally {
+            polling = false;
           }
         };
         const timer = window.setInterval(poll, 5000);
@@ -2413,6 +3076,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       body {
         margin: 0;
         min-height: 100vh;
+        overflow-x: hidden;
         color: var(--foreground);
         background: var(--background);
         font-family: "Instrument Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -2420,6 +3084,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       }
       main {
         width: min(1440px, calc(100vw - 40px));
+        min-width: 0;
         margin: 0 auto;
         padding: 28px 0 42px;
         display: grid;
@@ -2515,6 +3180,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
         font-weight: 750;
         white-space: nowrap;
         border: 1px solid transparent;
+        text-decoration: none;
       }
       .success { color: var(--success); background: rgba(52, 211, 153, 0.09); border-color: rgba(52, 211, 153, 0.22); }
       .warning { color: var(--warning); background: rgba(245, 158, 11, 0.10); border-color: rgba(245, 158, 11, 0.24); }
@@ -2552,6 +3218,14 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       .metric-label { color: var(--muted-foreground); font-size: 13px; margin-bottom: 12px; }
       .metric-value { font-size: 29px; line-height: 1; font-weight: 850; }
       .metric-detail { color: var(--muted-foreground); font-size: 13px; margin-top: 10px; }
+      a.metric:hover { border-color: rgba(86, 214, 229, 0.62); transform: translateY(-1px); }
+      .aggregate-drill-link {
+        color: var(--accent);
+        font-weight: 800;
+        text-decoration: none;
+        border-bottom: 1px solid rgba(86, 214, 229, 0.34);
+      }
+      .aggregate-drill-link:hover, .aggregate-drill-link:focus-visible { color: var(--foreground); border-color: var(--accent); }
       .grid-2 {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -2598,6 +3272,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
         font-weight: 700;
       }
       .studio-field input, .studio-field select, .studio-field textarea { min-width: 0; }
+      .studio-field input[type="checkbox"] { width: auto; min-width: auto; margin-right: 7px; }
       .studio-field-full { grid-column: 1 / -1; }
       .evaluation-batch-form { margin-top: 14px; }
       .evaluation-submit-row {
@@ -2639,6 +3314,9 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       }
       .result-filter-actions { display: flex; align-items: center; gap: 8px; }
       .result-filter-actions button { min-height: 36px; }
+      .result-filter-advanced { grid-column: 1 / -1; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--surface); }
+      .result-filter-advanced > summary { padding: 9px 10px; color: var(--accent); font-size: 12px; font-weight: 700; }
+      .result-filter-advanced-grid { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 9px; padding: 0 10px 10px; }
       .result-pagination {
         display: flex;
         justify-content: space-between;
@@ -2646,6 +3324,74 @@ function renderEvaluationStudioPage(analysis, options = {}) {
         gap: 12px;
         margin-top: 12px;
       }
+      .evaluation-result-list { display: grid; gap: 12px; min-width: 0; }
+      .evaluation-call-group-list { display: grid; gap: 14px; min-width: 0; }
+      .evaluation-call-group {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface);
+        overflow: hidden;
+      }
+      .evaluation-call-group-header {
+        display: grid;
+        grid-template-columns: minmax(210px, 0.85fr) minmax(260px, 1.45fr) auto;
+        gap: 16px;
+        align-items: start;
+        padding: 16px;
+      }
+      .evaluation-call-identity, .evaluation-call-current-outcome, .evaluation-call-count { display: grid; gap: 6px; min-width: 0; }
+      .evaluation-call-count { justify-items: end; }
+      .evaluation-call-summary { display: grid; gap: 7px; padding: 13px 16px; border-top: 1px solid var(--border-subtle); background: var(--surface-elevated); }
+      .evaluation-call-summary p { color: var(--foreground); font-size: 13px; line-height: 1.5; }
+      .evaluation-call-evaluations { border-top: 1px solid var(--border-subtle); }
+      .evaluation-call-evaluations > summary { color: var(--accent); font-size: 13px; }
+      .grouped-results { padding: 0 14px 14px; }
+      .evaluation-result-card[data-grouped="true"] { background: var(--surface-elevated); box-shadow: none; }
+      .evaluation-result-card[data-grouped="true"] .evaluation-result-card-header { grid-template-columns: minmax(0, 1fr) auto; }
+      .evaluation-result-card[data-grouped="true"] .evaluation-result-card-header > div:first-child { display: none; }
+      .evaluation-result-card {
+        min-width: 0;
+        padding: 15px;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+      .evaluation-result-card-header {
+        display: grid;
+        grid-template-columns: minmax(190px, 0.8fr) minmax(220px, 1.2fr) auto;
+        gap: 16px;
+        align-items: start;
+        padding-bottom: 13px;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .evaluation-result-card-header > *, .evaluation-result-facts > * { min-width: 0; }
+      .evaluation-result-type, .evaluation-result-outcome, .evaluation-result-card-header > div { display: grid; gap: 5px; }
+      .evaluation-result-proof-link { align-self: start; white-space: nowrap; }
+      .evaluation-result-call { display: inline-block; width: max-content; margin: 4px 0 5px; }
+      .result-card-label {
+        display: block;
+        color: var(--muted-foreground);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .evaluation-result-facts {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        padding: 13px 0;
+        border-bottom: 1px solid var(--border-subtle);
+      }
+      .evaluation-result-facts > div { display: grid; align-content: start; gap: 6px; }
+      .evaluation-result-facts strong, .evaluation-result-explanation { overflow-wrap: anywhere; }
+      .evaluation-result-explanation { display: grid; gap: 6px; padding: 13px 0; }
+      .evaluation-result-explanation .evidence { max-width: none; }
+      .evaluation-result-updated { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; padding-top: 2px; }
+      .evaluation-result-card .result-details { width: 100%; min-width: 0; margin-top: 11px; }
+      .evaluation-result-card .result-decision, .evaluation-result-card .result-answer-list { width: 100%; min-width: 0; max-width: none; }
+      .evaluation-result-card .result-proof, .evaluation-result-card .result-evidence-list { max-width: none; }
       .result-details { min-width: 220px; margin-top: 7px; }
       .result-details summary { padding: 6px 0; color: var(--accent); font-size: 12px; }
       .result-decision {
@@ -2673,6 +3419,13 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       .result-proof { max-width: 780px; padding: 12px 0; }
       .result-proof > strong { font-size: 12px; }
       .result-evidence-list { display: grid; gap: 6px; max-width: 760px; padding-left: 18px; color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+      .run-failure-details summary { margin-top: 5px; color: var(--warning); font-size: 11px; }
+      .run-failure-details .result-evidence-list { min-width: 280px; margin: 6px 0 0; }
+      .offer-acceptance-report { border-color: rgba(52, 211, 153, 0.4); }
+      .offer-acceptance-metrics { margin-top: 14px; }
+      .offer-failure-summary { margin-top: 12px; }
+      .offer-breakdown-grid { display: grid; gap: 18px; margin-top: 18px; }
+      .offer-breakdown-grid h4 { margin-bottom: 8px; color: var(--foreground); }
       .studio-create {
         margin: 10px 0 12px;
         border: 1px solid var(--border-subtle);
@@ -2696,6 +3449,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       }
       .studio-section-heading .page-kicker { margin-bottom: 5px; }
       .studio-section-heading h3 { font-size: 18px; margin-bottom: 5px; }
+      .studio-result-progress { display: grid; justify-items: end; gap: 5px; min-width: max-content; text-align: right; }
       .studio-library-list { display: grid; gap: 10px; }
       .studio-library-item {
         display: block;
@@ -2805,6 +3559,12 @@ function renderEvaluationStudioPage(analysis, options = {}) {
         .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .grid-2, .guardrails { grid-template-columns: minmax(0, 1fr); }
         .result-filter-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .result-filter-advanced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .evaluation-result-card-header { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .evaluation-call-group-header { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+        .evaluation-call-count { grid-column: 1 / -1; justify-items: start; }
+        .evaluation-result-proof-link { justify-self: start; }
+        .evaluation-result-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
       @media (max-width: 640px) {
         main { width: min(100vw - 24px, 1440px); padding: 18px 0 30px; }
@@ -2813,12 +3573,36 @@ function renderEvaluationStudioPage(analysis, options = {}) {
         .metrics, .studio-form { grid-template-columns: 1fr; }
         .studio-library { padding: 12px; }
         .studio-section-heading { flex-direction: column; }
+        .studio-result-progress { justify-items: start; min-width: 0; text-align: left; }
         .studio-library-item .compact-details .studio-form { grid-template-columns: 1fr; }
         .result-filter-form { grid-template-columns: 1fr; min-width: 0; }
+        .result-filter-advanced-grid { grid-template-columns: 1fr; }
         .result-decision, .result-answer-list { min-width: 0; }
         .result-answer-list div { grid-template-columns: 1fr; gap: 4px; }
         .evaluation-submit-row, .result-pagination { align-items: stretch; flex-direction: column; }
         .evaluation-submit-row button { width: 100%; }
+        .evaluation-result-card-header, .evaluation-result-facts { grid-template-columns: 1fr; }
+        .evaluation-call-group-header { grid-template-columns: 1fr; }
+        .evaluation-call-count { grid-column: auto; justify-items: start; }
+        .evaluation-result-card[data-grouped="true"] .evaluation-result-card-header { grid-template-columns: 1fr; }
+        .evaluation-result-proof-link { width: 100%; justify-content: center; }
+        .table-wrap { overflow: visible; border: 0; }
+        .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; width: 100%; min-width: 0; }
+        .table-wrap thead {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+        .table-wrap tbody { display: grid; gap: 10px; }
+        .table-wrap tr { padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface); }
+        .table-wrap td { display: grid; grid-template-columns: minmax(110px, 34%) minmax(0, 1fr); gap: 10px; padding: 8px 0; overflow-wrap: anywhere; }
+        .table-wrap td::before { content: attr(data-label); color: var(--muted-foreground); font-size: 10px; font-weight: 800; text-transform: uppercase; }
       }
     </style>
   </head>
@@ -2843,6 +3627,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       </header>
       <nav class="studio-jump-nav" aria-label="Evaluation Studio sections">
         <a href="#run-controls">Evaluate</a>
+        <a href="#foundation-report">Foundation</a>
         <a href="#results">Results</a>
         <a href="#runs">Runs</a>
         <a href="#evidence">Attention</a>
@@ -2927,7 +3712,9 @@ function dashboardSegmentUrl(segment = "") {
 
 function intelligenceQueueLabel(queue) {
   const labels = {
+    all: "All Indexed Calls",
     waste: "Utilisation Review",
+    repeated_short: "Repeated Short Attempts",
     manager_review: "Manager Review",
     llm_completed: "LLM Completed",
     llm_queued: "LLM Queued",
@@ -2966,6 +3753,22 @@ function renderCallPage(call, options = {}) {
   const managerReviews = (options.reviews || []).map(normalizeManagerReview);
   const latestManagerReview = managerReviews.slice().sort((a, b) => String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt)))[0] || null;
   const hasManagerReview = managerReviews.length > 0;
+  const evaluationResults = options.evaluationResults || [];
+  const offerResult = evaluationResults.find((result) => result.evaluationGoal === OFFER_ACCEPTANCE_GOAL && result.acceptanceAssessment) || null;
+  const foundationResult = evaluationResults.find((result) => result.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL && result.foundationAssessment) || null;
+  const summaryResult = offerResult || foundationResult || evaluationResults[0] || null;
+  const summaryRow = summaryResult ? {
+    ...summaryResult,
+    sharedOfferAcceptanceContext: summaryResult.offerAcceptanceContext || (offerResult ? {
+      sourceResultId: offerResult.id,
+      acceptanceAssessment: offerResult.acceptanceAssessment,
+      managerSummary: offerResult.managerSummary,
+      confidence: offerResult.confidence,
+      evidenceAvailability: offerResult.evidenceAvailability,
+      status: offerResult.status,
+      updatedAt: offerResult.updatedAt || offerResult.createdAt
+    } : null)
+  } : null;
   const evidenceRows = (call?.evidence || []).map((item) => ({
     signal: item.signal,
     summary: item.summary,
@@ -3109,6 +3912,12 @@ function renderCallPage(call, options = {}) {
         </div>
         <a class="button-link" href="/#overview">Dashboard</a>
       </header>
+      ${call ? `<section class="panel call-summary-panel">
+        <p class="page-kicker">Record summary</p>
+        <h2>What this call currently tells you</h2>
+        <p><strong>Customer ID: <span class="mono">${escapeHtml(customerIdValue(call))}</span></strong></p>
+        ${summaryRow ? `<div class="stack" style="margin: 10px 0;">${evaluationResultOutcomeMarkup(summaryRow)}</div><p class="muted">${escapeHtml(evaluationRecordSummary(summaryRow))}</p>` : `<p class="muted">No Evaluation Studio result has been stored for this call. The deterministic classifications below remain available.</p>`}
+      </section>` : ""}
       ${call ? `<section class="grid-2">
         <div class="panel">
           <h2>Classification</h2>
@@ -3294,6 +4103,8 @@ function renderDashboard(analysis, options = {}) {
   const sourceQualityAgeRows = (sourceQuality.recordAgeBuckets || sourceQuality.importAgeBuckets || []).slice(0, 8);
   const sourceQualityThresholdRows = sourceQuality.newBusinessRecordAgeThresholds || sourceQuality.newBusinessImportAgeThresholds || [];
   const sourceQualityWorstSource = sourceQuality.lowestHumanAnswerSource || null;
+  const selfSourcingAttribution = data.selfSourcingAttribution || { totals: {}, thresholds: [], legacyImportSources: [], conclusion: {}, limitations: [] };
+  const weeklyLeadIntelligence = data.weeklyLeadIntelligence || { totals: {}, originRows: [], weeklyRows: [], workflowFields: [], limitations: [] };
   const aiVoiceAssistant = data.aiVoiceAssistant || renderEmptyState("").aiVoiceAssistant;
   const aiAssistantTotals = aiVoiceAssistant.totals || {};
   const aiAssistantTrendRows = (aiVoiceAssistant.trendRows || []).slice(-12);
@@ -3747,7 +4558,10 @@ function renderDashboard(analysis, options = {}) {
         border: 1px solid var(--border-subtle);
         border-radius: 8px;
         background: var(--surface-elevated);
+        color: inherit;
+        text-decoration: none;
       }
+      a.dataset-fact:hover { border-color: rgba(86, 214, 229, 0.55); background: var(--surface-soft); }
       .dataset-fact span {
         display: block;
         color: var(--muted-foreground);
@@ -4466,12 +5280,12 @@ function renderDashboard(analysis, options = {}) {
             <div class="command-panel-inner">
               <p class="page-kicker">Primary operating signal</p>
               <h2>Conversation Quality</h2>
-              <div class="command-value mono">${formatPercent(meaningfulRate)}</div>
+              <div class="command-value mono">${hrefDataLink(formatPercent(meaningfulRate), drilldownUrl("calls.meaningfulConversation", withSegment()), "View meaningful-conversation calls")}</div>
               <p class="muted small" style="margin-top: 10px;">${formatNumber(data.totals.meaningfulConversation)} deterministic meaningful-conversation signals from ${formatNumber(uniqueCalls)} unique calls.</p>
               <div class="command-meta">
-                <div class="mini-stat"><span>Live-human</span><strong class="mono">${formatPercent(liveHumanRate)}</strong></div>
-                <div class="mini-stat"><span>Follow-up</span><strong class="mono">${formatNumber(data.totals.followUpRequired)}</strong></div>
-                <div class="mini-stat"><span>Risk review</span><strong class="mono">${formatNumber(data.totals.riskReviews)}</strong></div>
+                <div class="mini-stat"><span>Live-human</span><strong class="mono">${hrefDataLink(formatPercent(liveHumanRate), drilldownUrl("calls.probableLiveHuman", withSegment()))}</strong></div>
+                <div class="mini-stat"><span>Follow-up</span><strong class="mono">${hrefDataLink(formatNumber(data.totals.followUpRequired), drilldownUrl("calls.followUpRequired", withSegment()))}</strong></div>
+                <div class="mini-stat"><span>Risk review</span><strong class="mono">${hrefDataLink(formatNumber(data.totals.riskReviews), drilldownUrl("calls.riskReviews", withSegment()))}</strong></div>
               </div>
             </div>
           </article>
@@ -4481,7 +5295,7 @@ function renderDashboard(analysis, options = {}) {
                 <h2>Conversation Pipeline</h2>
                 <p class="muted small">Supported call and lead-readiness metrics only; revenue fields are not inferred.</p>
               </div>
-              ${badge(`${formatNumber(data.totals.salespeople || 0)} salespeople`, "neutral")}
+              ${linkedBadge(`${formatNumber(data.totals.salespeople || 0)} salespeople`, "neutral", workspaceHref("team", "salespeople"))}
             </div>
             <div class="command-panel-inner">
               <div class="pipeline">
@@ -4537,7 +5351,7 @@ function renderDashboard(analysis, options = {}) {
           ${metricCard("AI assistants", formatNumber(aiAssistantTotals.encounters || 0), `${formatPercent(aiAssistantEncounterRate)} encounter rate`, "warn", drilldownUrl("calls.aiVoiceAssistant", withSegment()))}
           ${metricCard("Transcript coverage", formatPercent(data.rates.transcriptCoverage), `${formatNumber(data.totals.transcriptAvailable)} transcripts available; blanks mean no pickup`, "info", drilldownUrl("calls.transcriptAvailable", withSegment()))}
           ${metricCard("Risk reviews", formatNumber(data.totals.riskReviews), "Deterministic complaint or opt-out style signals", "risk", drilldownUrl("calls.riskReviews", withSegment()))}
-          ${metricCard("Reports stored", formatNumber(persistence.counts.reports), `${formatNumber(persistence.counts.imports)} saved import snapshots`, "info")}
+          ${metricCard("Reports stored", formatNumber(persistence.counts.reports), `${formatNumber(persistence.counts.imports)} saved import snapshots`, "info", workspaceHref("records", "reports"))}
         </section>
 
         <section class="panel" id="attention" ${workspaceAttr("overview")}>
@@ -4571,7 +5385,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>AI Call Assistant Encounters</h2>
               <p class="muted small">Tracks AI voicemail and screened-call services separately from normal voicemail, with proof, confidence, and future-contact recovery.</p>
             </div>
-            ${badge(`${formatPercent(aiAssistantTotals.highConfidenceRate || 0)} high-confidence`, (aiAssistantTotals.highConfidenceEncounters || 0) ? "success" : "neutral")}
+            ${linkedBadge(`${formatPercent(aiAssistantTotals.highConfidenceRate || 0)} high-confidence`, (aiAssistantTotals.highConfidenceEncounters || 0) ? "success" : "neutral", drilldownUrl("calls.aiVoiceAssistant", withSegment()))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Encounters", formatNumber(aiAssistantTotals.encounters || 0), `${formatPercent(aiAssistantEncounterRate)} of scoped calls`, "warn", drilldownUrl("calls.aiVoiceAssistant", withSegment()))}
@@ -4590,13 +5404,13 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(formatSourceDate(row.label || row.date))}</span>` },
-              { label: "Calls", render: (row) => formatNumber(row.calls) },
-              { label: "Encounters", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment()) },
-              { label: "Rate", render: (row) => formatPercent(row.encounterRate) },
-              { label: "Bails", render: (row) => dataLink("calls.aiVoiceAssistantBailed", formatNumber(row.bailed), withSegment()) },
-              { label: "Handled", render: (row) => dataLink("calls.aiVoiceAssistantHandled", formatNumber(row.handledSuccessfully), withSegment()) },
-              { label: "Recovered", render: (row) => dataLink("calls.aiVoiceAssistantFutureHuman", formatNumber(row.futureHumanContact), withSegment()) }
+              { label: "Date", render: (row) => dataLink("calls.unique", formatSourceDate(row.label || row.date), withSegment(sourceDateFilters(row.label || row.date))) },
+              { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment(sourceDateFilters(row.label || row.date))) },
+              { label: "Encounters", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment({ ...sourceDateFilters(row.label || row.date) })) },
+              { label: "Rate", render: (row) => dataLink("calls.aiVoiceAssistant", formatPercent(row.encounterRate), withSegment({ ...sourceDateFilters(row.label || row.date) })) },
+              { label: "Bails", render: (row) => dataLink("calls.aiVoiceAssistantBailed", formatNumber(row.bailed), withSegment({ ...sourceDateFilters(row.label || row.date) })) },
+              { label: "Handled", render: (row) => dataLink("calls.aiVoiceAssistantHandled", formatNumber(row.handledSuccessfully), withSegment({ ...sourceDateFilters(row.label || row.date) })) },
+              { label: "Recovered", render: (row) => dataLink("calls.aiVoiceAssistantFutureHuman", formatNumber(row.futureHumanContact), withSegment({ ...sourceDateFilters(row.label || row.date) })) }
             ], aiAssistantTrendRows, "No AI call assistant encounters are available in this scope.")}
           </div>
 
@@ -4609,13 +5423,13 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.aiVoiceAssistant", withSegment({ salesperson: row.salesperson })))}">${escapeHtml(row.salesperson)}</a>` },
-              { label: "Calls", render: (row) => formatNumber(row.calls) },
+              { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ salesperson: row.salesperson })) },
               { label: "Encounters", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment({ salesperson: row.salesperson })) },
-              { label: "Encounter rate", render: (row) => formatPercent(row.encounterRate) },
+              { label: "Encounter rate", render: (row) => dataLink("calls.aiVoiceAssistant", formatPercent(row.encounterRate), withSegment({ salesperson: row.salesperson })) },
               { label: "Bail rate", render: (row) => dataLink("calls.aiVoiceAssistantBailed", formatPercent(row.bailRate), withSegment({ salesperson: row.salesperson })) },
               { label: "Handled", render: (row) => dataLink("calls.aiVoiceAssistantHandled", formatPercent(row.handledRate), withSegment({ salesperson: row.salesperson })) },
               { label: "Recovered", render: (row) => dataLink("calls.aiVoiceAssistantFutureHuman", formatPercent(row.futureHumanContactRate), withSegment({ salesperson: row.salesperson })) },
-              { label: "Top tactic", render: (row) => escapeHtml(row.topTactic) }
+              { label: "Top tactic", render: (row) => row.topTacticKey ? dataLink("calls.aiVoiceAssistant", row.topTactic, withSegment({ salesperson: row.salesperson, aiAssistantTactic: row.topTacticKey })) : escapeHtml(row.topTactic) }
             ], aiAssistantSalespersonRows, "No salesperson has AI call assistant encounters in this scope.")}
           </div>
         </section>
@@ -4630,11 +5444,11 @@ function renderDashboard(analysis, options = {}) {
               ${aiAssistantTopTactic ? badge(`Best: ${aiAssistantTopTactic.label}`, "success") : badge("No tactic data", "neutral")}
             </div>
             ${table([
-              { label: "Tactic", render: (row) => escapeHtml(row.label) },
-              { label: "Used", render: (row) => formatNumber(row.encounters) },
-              { label: "Handled rate", render: (row) => formatPercent(row.handledRate) },
-              { label: "Bail rate", render: (row) => formatPercent(row.bailRate) },
-              { label: "Recovered later", render: (row) => formatPercent(row.futureHumanContactRate) }
+              { label: "Tactic", render: (row) => dataLink("calls.aiVoiceAssistant", row.label, withSegment({ aiAssistantTactic: row.key })) },
+              { label: "Used", render: (row) => dataLink("calls.aiVoiceAssistant", formatNumber(row.encounters), withSegment({ aiAssistantTactic: row.key })) },
+              { label: "Handled rate", render: (row) => dataLink("calls.aiVoiceAssistantHandled", formatPercent(row.handledRate), withSegment({ aiAssistantTactic: row.key })) },
+              { label: "Bail rate", render: (row) => dataLink("calls.aiVoiceAssistantBailed", formatPercent(row.bailRate), withSegment({ aiAssistantTactic: row.key })) },
+              { label: "Recovered later", render: (row) => dataLink("calls.aiVoiceAssistantFutureHuman", formatPercent(row.futureHumanContactRate), withSegment({ aiAssistantTactic: row.key })) }
             ], aiAssistantTacticRows, "No tactics were detected for AI assistant encounters.")}
           </div>
 
@@ -4662,7 +5476,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>System Audio Audit</h2>
               <p class="muted small">Tracks automated phone barriers separately from customer conversations: call screening, carrier messages, and machine voicemail.</p>
             </div>
-            ${badge(`${formatNumber(systemAudioTotals.encounters || 0)} barriers`, systemAudioTotals.encounters ? "warning" : "neutral")}
+            ${linkedBadge(`${formatNumber(systemAudioTotals.encounters || 0)} barriers`, systemAudioTotals.encounters ? "warning" : "neutral", drilldownUrl("calls.systemAudio", withSegment()))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("System barriers", formatNumber(systemAudioTotals.encounters || 0), `${formatPercent(systemAudioTotals.encounterRate || 0)} of scoped calls`, "warn", drilldownUrl("calls.systemAudio", withSegment()))}
@@ -4684,8 +5498,8 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Subtype", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl(`calls.systemAudio.${row.subtype}`, withSegment({ systemAudioSubtype: row.subtype })))}">${escapeHtml(row.subtypeLabel || row.name)}</a>` },
-              { label: "Calls", render: (row) => formatNumber(row.encounters) },
-              { label: "Share", render: (row) => formatPercent(percentOf(row.encounters, systemAudioTotals.encounters || 0)) },
+              { label: "Calls", render: (row) => dataLink(`calls.systemAudio.${row.subtype}`, formatNumber(row.encounters), withSegment({ systemAudioSubtype: row.subtype })) },
+              { label: "Share", render: (row) => dataLink(`calls.systemAudio.${row.subtype}`, formatPercent(percentOf(row.encounters, systemAudioTotals.encounters || 0)), withSegment({ systemAudioSubtype: row.subtype })) },
               { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment({ systemAudioSubtype: row.subtype })) }
             ], systemAudioSubtypeRows, "No system audio barriers were detected.")}
           </div>
@@ -4698,11 +5512,11 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Date", render: (row) => `<span class="mono">${escapeHtml(formatSourceDate(row.label || row.date))}</span>` },
-              { label: "Barriers", render: (row) => dataLink("calls.systemAudio", formatNumber(row.encounters), withSegment()) },
-              { label: "Screening", render: (row) => formatNumber(row.callScreening) },
-              { label: "Carrier", render: (row) => formatNumber(row.carrierPhoneSystem) },
-              { label: "Recovered", render: (row) => formatPercent(row.futureHumanContactRate) }
+              { label: "Date", render: (row) => dataLink("calls.unique", formatSourceDate(row.label || row.date), withSegment(sourceDateFilters(row.label || row.date))) },
+              { label: "Barriers", render: (row) => dataLink("calls.systemAudio", formatNumber(row.encounters), withSegment(sourceDateFilters(row.label || row.date))) },
+              { label: "Screening", render: (row) => dataLink("calls.systemAudio.call_screening", formatNumber(row.callScreening), withSegment(sourceDateFilters(row.label || row.date))) },
+              { label: "Carrier", render: (row) => dataLink("calls.systemAudio.carrier_phone_system", formatNumber(row.carrierPhoneSystem), withSegment(sourceDateFilters(row.label || row.date))) },
+              { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment(sourceDateFilters(row.label || row.date))) }
             ], systemAudioTrendRows, "No system audio trend rows are available.")}
           </div>
         </section>
@@ -4717,8 +5531,8 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.systemAudio", withSegment({ salesperson: row.salesperson })))}">${escapeHtml(row.salesperson)}</a>` },
-              { label: "Barriers", render: (row) => formatNumber(row.encounters) },
-              { label: "Screening", render: (row) => formatNumber(row.callScreening) },
+              { label: "Barriers", render: (row) => dataLink("calls.systemAudio", formatNumber(row.encounters), withSegment({ salesperson: row.salesperson })) },
+              { label: "Screening", render: (row) => dataLink("calls.systemAudio.call_screening", formatNumber(row.callScreening), withSegment({ salesperson: row.salesperson })) },
               { label: "Handled", render: (row) => dataLink("calls.systemAudioHandled", formatPercent(row.handledRate), withSegment({ salesperson: row.salesperson })) },
               { label: "Bailed", render: (row) => dataLink("calls.systemAudioBailed", formatPercent(row.bailRate), withSegment({ salesperson: row.salesperson })) },
               { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment({ salesperson: row.salesperson })) }
@@ -4734,9 +5548,9 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.systemAudio", withSegment({ source: row.source })))}">${escapeHtml(row.source)}</a>` },
-              { label: "Barriers", render: (row) => formatNumber(row.encounters) },
-              { label: "Screening", render: (row) => formatNumber(row.callScreening) },
-              { label: "Carrier", render: (row) => formatNumber(row.carrierPhoneSystem) },
+              { label: "Barriers", render: (row) => dataLink("calls.systemAudio", formatNumber(row.encounters), withSegment({ source: row.source })) },
+              { label: "Screening", render: (row) => dataLink("calls.systemAudio.call_screening", formatNumber(row.callScreening), withSegment({ source: row.source })) },
+              { label: "Carrier", render: (row) => dataLink("calls.systemAudio.carrier_phone_system", formatNumber(row.carrierPhoneSystem), withSegment({ source: row.source })) },
               { label: "Recovered", render: (row) => dataLink("calls.systemAudioRecovered", formatPercent(row.futureHumanContactRate), withSegment({ source: row.source })) }
             ], systemAudioSourceRows, "No source system audio rows are available.")}
           </div>
@@ -4769,7 +5583,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>Lead Reattempt Behaviour</h2>
               <p class="muted small">Matched customer/contact retry behaviour by salesperson. The main utilisation risk is one-dial no-contact records with no later matching call observed.</p>
             </div>
-            ${badge(`${formatNumber(leadReattemptTotals.leadsTouched || 0)} matched records`, leadReattemptTotals.leadsTouched ? "success" : "warning")}
+            ${linkedBadge(`${formatNumber(leadReattemptTotals.leadsTouched || 0)} matched records`, leadReattemptTotals.leadsTouched ? "success" : "warning", drilldownUrl("reattempt.leadsTouched", withSegment()))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Personal retry rate", formatPercent(leadReattemptTotals.personalRetryRate), `${formatNumber(leadReattemptTotals.personallyRetriedLeads || 0)} records retried by same salesperson`, "good", drilldownUrl("reattempt.personalRetried", withSegment()))}
@@ -4802,7 +5616,7 @@ function renderDashboard(analysis, options = {}) {
             { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatNumber(row.oneDialNoContactNoLaterLeads), withSegment({ salesperson: row.salesperson })) },
             { label: "Ambiguous excluded", render: (row) => dataLink("reattempt.oneDialNeedsReview", formatNumber(row.oneDialNeedsReviewLeads), withSegment({ salesperson: row.salesperson })) },
             { label: "No later by anyone", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ salesperson: row.salesperson })) },
-            { label: "Avg calls/lead", render: (row) => formatDecimal(row.averageCallsPerLead) },
+            { label: "Avg calls/lead", render: (row) => dataLink("reattempt.leadsTouched", formatDecimal(row.averageCallsPerLead), withSegment({ salesperson: row.salesperson })) },
             { label: "Max attempts", render: (row) => dataLink("reattempt.maxAttemptsOnOneLead", formatNumber(row.maxAttemptsOnOneLead), withSegment({ salesperson: row.salesperson, maxAttempts: row.maxAttemptsOnOneLead })) }
           ], leadReattemptSalespersonRows, "No matched reattempt rows are available.")}
         </section>
@@ -4816,12 +5630,12 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Salesperson", key: "salesperson" },
-              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Salesperson", render: (row) => dataLink("reattempt.leadsTouched", row.salesperson, withSegment({ salesperson: row.salesperson })) },
+              { label: "Records", render: (row) => dataLink("reattempt.leadsTouched", formatNumber(row.leadsTouched), withSegment({ salesperson: row.salesperson })) },
               { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ salesperson: row.salesperson })) },
               { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ salesperson: row.salesperson })) },
               { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ salesperson: row.salesperson })) },
-              { label: "Avg calls", render: (row) => formatDecimal(row.averageCallsPerLead) }
+              { label: "Avg calls", render: (row) => dataLink("reattempt.leadsTouched", formatDecimal(row.averageCallsPerLead), withSegment({ salesperson: row.salesperson })) }
             ], leadReattemptHighestRows, "No high-volume retry rows are available.")}
           </div>
 
@@ -4833,8 +5647,8 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Salesperson", key: "salesperson" },
-              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Salesperson", render: (row) => dataLink("reattempt.leadsTouched", row.salesperson, withSegment({ salesperson: row.salesperson })) },
+              { label: "Records", render: (row) => dataLink("reattempt.leadsTouched", formatNumber(row.leadsTouched), withSegment({ salesperson: row.salesperson })) },
               { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ salesperson: row.salesperson })) },
               { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ salesperson: row.salesperson })) },
               { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ salesperson: row.salesperson })) },
@@ -4853,12 +5667,12 @@ function renderDashboard(analysis, options = {}) {
           </div>
           ${table([
             { label: "Segment", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ businessSegment: row.businessSegment })))}">${escapeHtml(row.businessSegmentLabel || row.name)}</a>` },
-            { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+            { label: "Records", render: (row) => dataLink("reattempt.leadsTouched", formatNumber(row.leadsTouched), { businessSegment: row.businessSegment }) },
             { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), { businessSegment: row.businessSegment }) },
             { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), { businessSegment: row.businessSegment }) },
             { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), { businessSegment: row.businessSegment }) },
             { label: "No later", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), { businessSegment: row.businessSegment }) },
-            { label: "Avg calls", render: (row) => formatDecimal(row.averageCallsPerLead) }
+            { label: "Avg calls", render: (row) => dataLink("reattempt.leadsTouched", formatDecimal(row.averageCallsPerLead), { businessSegment: row.businessSegment }) }
           ], leadReattemptSegmentRows, "No business segment reattempt rows are available.")}
         </section>
 
@@ -4872,7 +5686,7 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ source: row.source })))}">${escapeHtml(row.source)}</a>` },
-              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Records", render: (row) => dataLink("reattempt.leadsTouched", formatNumber(row.leadsTouched), withSegment({ source: row.source })) },
               { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ source: row.source })) },
               { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ source: row.source })) },
               { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ source: row.source })) },
@@ -4889,7 +5703,7 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Region", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("reattempt.leadsTouched", withSegment({ region: row.region })))}">${escapeHtml(row.region)}</a>` },
-              { label: "Records", render: (row) => formatNumber(row.leadsTouched) },
+              { label: "Records", render: (row) => dataLink("reattempt.leadsTouched", formatNumber(row.leadsTouched), withSegment({ region: row.region })) },
               { label: "Retry", render: (row) => dataLink("reattempt.personalRetried", formatPercent(row.personalRetryRate), withSegment({ region: row.region })) },
               { label: "One-dial", render: (row) => dataLink("reattempt.oneAndDone", formatPercent(row.oneAndDoneRate), withSegment({ region: row.region })) },
               { label: "No-contact, no later", render: (row) => dataLink("reattempt.oneDialNoContactNoLater", formatPercent(row.oneDialNoContactNoLaterRate), withSegment({ region: row.region })) },
@@ -4907,7 +5721,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>Lead Harvest Queue</h2>
               <p class="muted small">${escapeHtml(leadHarvestScopeLabel)} calls where deterministic evidence shows a live-human conversation, a positive response, and a callback/follow-up request. These are evidence-backed review candidates, not confirmed sales outcomes.</p>
             </div>
-            ${badge(`${formatNumber(leadHarvestQueueCount)} to review`, leadHarvestQueueCount ? "warning" : "neutral")}
+            ${linkedBadge(`${formatNumber(leadHarvestQueueCount)} to review`, leadHarvestQueueCount ? "warning" : "neutral", drilldownUrl("harvest.reviewQueue", leadHarvestScopeFilters))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Open harvest candidates", formatNumber(leadHarvestQueueCount), `${formatNumber(leadHarvestOpenNoLater)} no later matching call; ${formatNumber(leadHarvestMatchingUnavailable)} matching unavailable`, "risk", drilldownUrl("harvest.reviewQueue", leadHarvestScopeFilters))}
@@ -4931,7 +5745,7 @@ function renderDashboard(analysis, options = {}) {
               { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
               { label: "Later matching call observed", render: (row) => dataLink("harvest.laterObserved", formatNumber(leadHarvestScopedLater(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
               { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, salesperson: row.salesperson }) },
-              { label: "High/medium confidence", render: (row) => formatNumber(row.highOrMediumConfidence || 0) }
+              { label: "High/medium confidence", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(row.highOrMediumConfidence || 0), { ...leadHarvestScopeFilters, salesperson: row.salesperson, confidenceBand: "high,medium" }) }
             ], leadHarvestSalespersonRows.filter((row) => leadHarvestScopedCandidates(row)), "No lead harvest candidates are available in this scope.")}
           </div>
 
@@ -4961,7 +5775,7 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Objection", render: (row) => escapeHtml(row.objectionLabel || row.objectionType || "Unknown") },
+              { label: "Objection", render: (row) => dataLink(leadHarvestCandidateMetric, row.objectionLabel || row.objectionType || "Unknown", { ...leadHarvestScopeFilters, objectionType: row.objectionType }) },
               { label: "Candidates", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(leadHarvestScopedCandidates(row)), { ...leadHarvestScopeFilters, objectionType: row.objectionType }) },
               { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, objectionType: row.objectionType }) },
               { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, objectionType: row.objectionType }) }
@@ -4976,7 +5790,7 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Handling", render: (row) => escapeHtml(row.salespersonHandlingLabel || row.salespersonHandlingType || "Unknown") },
+              { label: "Handling", render: (row) => dataLink(leadHarvestCandidateMetric, row.salespersonHandlingLabel || row.salespersonHandlingType || "Unknown", { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) },
               { label: "Candidates", render: (row) => dataLink(leadHarvestCandidateMetric, formatNumber(leadHarvestScopedCandidates(row)), { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) },
               { label: "Open", render: (row) => dataLink("harvest.openCandidates", formatNumber(leadHarvestScopedOpen(row)), { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) },
               { label: "Matching unavailable", render: (row) => dataLink("harvest.matchingUnavailable", formatNumber(leadHarvestScopedUnavailable(row)), { ...leadHarvestScopeFilters, handlingType: row.salespersonHandlingType }) }
@@ -4991,7 +5805,7 @@ function renderDashboard(analysis, options = {}) {
               <p class="muted small">Use this as a callback prep list. Names, objections, handling, and timing are possible extracted context and should be checked against the call evidence before action.</p>
             </div>
             <div class="stack">
-              ${badge(`${formatNumber(leadHarvestLatestRows.length)} newest shown`, leadHarvestLatestRows.length ? "notice" : "neutral")}
+              ${linkedBadge(`${formatNumber(leadHarvestLatestRows.length)} newest shown`, leadHarvestLatestRows.length ? "notice" : "neutral", leadHarvestNewestUrl)}
               <a class="button-link" href="${escapeHtml(leadHarvestNewestUrl)}">Newest</a>
               <a class="button-link" href="${escapeHtml(leadHarvestOldestUrl)}">Oldest</a>
               <a class="button-link" href="${escapeHtml(leadHarvestAllUrl)}">View all</a>
@@ -4999,6 +5813,7 @@ function renderDashboard(analysis, options = {}) {
           </div>
           ${table([
             { label: "Call", render: (row) => callLink(row.callId) },
+            { label: "Customer ID", render: (row) => customerIdCell(row) },
             { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("harvest.openCandidates", { ...leadHarvestScopeFilters, salesperson: row.salesperson }))}">${escapeHtml(row.salesperson)}</a>` },
             { label: "Source", render: (row) => escapeHtml(row.source) },
             { label: "Source time", render: (row) => `<span class="mono">${escapeHtml(row.sourceTime)}</span>` },
@@ -5022,7 +5837,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>Customer Source Quality</h2>
               <p class="muted small">Bulk/manual source fields are raw call CSV context. Human-answer and follow-up rates are deterministic transcript-derived signals with confidence context, not LLM-reviewed conclusions unless labelled elsewhere.</p>
             </div>
-            ${badge(`${formatNumber(sourceQualityTotals.callsWithRecordAge || 0)} record ages`, sourceQualityTotals.callsWithRecordAge ? "success" : "warning")}
+            ${linkedBadge(`${formatNumber(sourceQualityTotals.callsWithRecordAge || 0)} record ages`, sourceQualityTotals.callsWithRecordAge ? "success" : "warning", drilldownUrl("source.recordAgeAvailable", withSegment()))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Bulk sourced calls", formatNumber(sourceQualityTotals.callsWithBulkSource), `${formatPercent(sourceQualityTotals.bulkSourceCoverageRate)} source coverage`, "info", drilldownUrl("source.bulkSourced", withSegment()))}
@@ -5031,6 +5846,82 @@ function renderDashboard(analysis, options = {}) {
             ${metricCard("Self sourced no raw attribution", formatNumber(sourceQualityTotals.callsMissingSourceAttribution), `${formatPercent(sourceQualityTotals.missingSourceAttributionRate)} inferred Self Sourced records`, "info", drilldownUrl("source.missingAttribution", withSegment()))}
             ${metricCard("Worst human answer source", sourceQualityWorstSource ? sourceQualityWorstSource.name : "n/a", sourceQualityWorstSource ? `${formatPercent(sourceQualityWorstSource.probableLiveHumanRate)} from ${formatNumber(sourceQualityWorstSource.calls)} calls` : "Needs source data", "warn", sourceQualityWorstSource ? drilldownUrl("calls.unique", withSegment({ source: sourceQualityWorstSource.name })) : "")}
           </div>
+        </section>
+
+        <section class="panel" id="self-sourcing-attribution">
+          <div class="panel-header">
+            <div>
+              <h2>Self-Sourcing Attribution Audit</h2>
+              <p class="muted small">Tests whether the call mix is dominated by long-held CRM records, while keeping a strict boundary between an attribution-review signal and proof that a salesperson found a number online.</p>
+            </div>
+            ${badge(selfSourcingAttribution?.conclusion?.longHeldRecordsAreMajority ? "Long-held records are the majority" : "Long-held records are not the majority", selfSourcingAttribution?.conclusion?.longHeldRecordsAreMajority ? "warning" : "neutral")}
+          </div>
+          <div class="panel-body metrics">
+            ${metricCard("New Business calls", formatNumber(selfSourcingAttribution?.totals?.newBusinessCalls || 0), "OrderCount = 0 only", "info", drilldownUrl("calls.newBusiness", withSegment({ businessSegment: "new" })))}
+            ${metricCard("Records >90 days", formatNumber(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.longHeldRecordCalls || 0), `${formatPercent(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.longHeldRecordRate || 0)} of New Business calls`, "risk", drilldownUrl("source.newBusinessRecordOlderThan", withSegment({ businessSegment: "new", minImportAgeDays: 90 })))}
+            ${metricCard("Confirmed imports >90 days", formatNumber(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.confirmedLegacyImportCalls || 0), `${formatPercent(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.confirmedLegacyImportRate || 0)} have a valid import date`, "warning", drilldownUrl("source.newBusinessImportedOlderThan", withSegment({ businessSegment: "new", minImportAgeDays: 90 })))}
+            ${metricCard("SP-created >90 days", formatNumber(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.salespersonCreatedLongHeldCalls || 0), "Manual salesperson creation, not online-source proof", "info", drilldownUrl("source.manualCreated", withSegment({ businessSegment: "new", createdByType: "SP", minImportAgeDays: 90 })))}
+          </div>
+          <div class="grid-2">
+            <div>
+              <p class="muted small">${escapeHtml(selfSourcingAttribution?.conclusion?.statement || "No active call data is available.")}</p>
+              ${table([
+                { label: "Record age at call", render: (row) => dataLink("source.newBusinessRecordOlderThan", `>${formatNumber(row.thresholdDays)} days`, withSegment({ businessSegment: "new", minImportAgeDays: row.thresholdDays })) },
+                { label: "Calls", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatNumber(row.longHeldRecordCalls), withSegment({ businessSegment: "new", minImportAgeDays: row.thresholdDays })) },
+                { label: "Share", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatPercent(row.longHeldRecordRate), withSegment({ businessSegment: "new", minImportAgeDays: row.thresholdDays })) },
+                { label: "Distinct records", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatNumber(row.longHeldDistinctRecords), withSegment({ businessSegment: "new", minImportAgeDays: row.thresholdDays })) },
+                { label: "Confirmed legacy imports", render: (row) => dataLink("source.newBusinessImportedOlderThan", formatNumber(row.confirmedLegacyImportCalls), withSegment({ businessSegment: "new", minImportAgeDays: row.thresholdDays })) },
+                { label: "Import share", render: (row) => dataLink("source.newBusinessImportedOlderThan", formatPercent(row.confirmedLegacyImportRate), withSegment({ businessSegment: "new", minImportAgeDays: row.thresholdDays })) }
+              ], selfSourcingAttribution?.thresholds || [], "No valid record-date evidence is available.")}
+            </div>
+            <div>
+              <p class="muted small">${escapeHtml(selfSourcingAttribution?.conclusion?.attributionStatement || "")}</p>
+              ${table([
+                { label: "Confirmed import source", render: (row) => dataLink("source.newBusinessImportedOlderThan", row.source, withSegment({ businessSegment: "new", source: row.source, minImportAgeDays: 90 })) },
+                { label: "Calls >90 days", render: (row) => dataLink("source.newBusinessImportedOlderThan", formatNumber(row.legacyImportCalls), withSegment({ businessSegment: "new", source: row.source, minImportAgeDays: 90 })) },
+                { label: "Distinct records", render: (row) => dataLink("source.newBusinessImportedOlderThan", formatNumber(row.legacyImportDistinctRecords), withSegment({ businessSegment: "new", source: row.source, minImportAgeDays: 90 })) },
+                { label: "Share of legacy imports", render: (row) => dataLink("source.newBusinessImportedOlderThan", formatPercent(row.shareOfConfirmedLegacyImports), withSegment({ businessSegment: "new", source: row.source, minImportAgeDays: 90 })) }
+              ], (selfSourcingAttribution?.legacyImportSources || []).slice(0, 8), "No confirmed legacy import dates are available.")}
+            </div>
+          </div>
+          <p class="muted small">${escapeHtml((selfSourcingAttribution?.limitations || []).join(" "))}</p>
+        </section>
+
+        <section class="panel" id="weekly-lead-intelligence">
+          <div class="panel-header">
+            <div>
+              <h2>Weekly Lead Intelligence</h2>
+              <p class="muted small">Lead supply and operational workflow context from the two attached weekly spreadsheet exports. This is separate from the active call-data metrics.</p>
+            </div>
+            ${badge(weeklyLeadIntelligence.statusLabel || "No weekly export loaded", weeklyLeadIntelligence.status === "attached_snapshot" ? "notice" : "neutral")}
+          </div>
+          <div class="panel-body metrics">
+            ${metricCard("Leads imported", formatNumber(weeklyLeadIntelligence.totals?.totalImported || 0), `${formatNumber(weeklyLeadIntelligence.totals?.weeksCovered || 0)} weekly periods in the supplied snapshot`, "info", "#weekly-lead-origin")}
+            ${metricCard("Largest supply week", formatNumber(weeklyLeadIntelligence.totals?.highestWeekImported || 0), `Week starting ${weeklyLeadIntelligence.totals?.highestWeekStarting || "n/a"}`, "good", "#weekly-lead-trend")}
+            ${metricCard("Latest supply week", formatNumber(weeklyLeadIntelligence.totals?.latestWeekImported || 0), `${formatNumber(weeklyLeadIntelligence.totals?.latestVsPeakChange || 0)}% versus the supplied peak week`, "warning", "#weekly-lead-trend")}
+            ${metricCard("Lead-generator handoff", "Next week", "Generator entries should be compared with the following week's allocation and calling activity", "info", "#weekly-lead-workflow")}
+          </div>
+          <div class="grid-2">
+            <div>
+              <h3 id="weekly-lead-origin">Lead supply by origin</h3>
+              ${table([
+                { label: "Origin", render: (row) => `${escapeHtml(row.origin)}<br /><span class="muted small">${escapeHtml(row.description)}</span>` },
+                { label: "Leads imported", render: (row) => formatNumber(row.leadsImported) },
+                { label: "Share", render: (row) => formatPercent(row.shareOfImportedLeads) }
+              ], weeklyLeadIntelligence.originRows || [], "No lead-supply rows are available.")}
+            </div>
+            <div>
+              <h3 id="weekly-lead-trend">Weekly supply trend</h3>
+              ${table([
+                { label: "Week starting", key: "weekStarting" },
+                { label: "Leads imported", render: (row) => formatNumber(row.leadsImported) }
+              ], (weeklyLeadIntelligence.weeklyRows || []).slice(0, 8), "No weekly trend is available.")}
+            </div>
+          </div>
+          <div class="callout notice" id="weekly-lead-workflow">
+            <strong>Workflow fields available:</strong> ${escapeHtml((weeklyLeadIntelligence.workflowFields || []).join(", "))}. ${escapeHtml(weeklyLeadIntelligence.cohortRule || "")}
+          </div>
+          <p class="muted small">${escapeHtml((weeklyLeadIntelligence.limitations || []).join(" "))}</p>
         </section>
 
         <section class="grid-2">
@@ -5043,8 +5934,8 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Record age older than", render: (row) => dataLink("source.newBusinessRecordOlderThan", `>${formatNumber(row.thresholdDays)}d`, withSegment({ minImportAgeDays: row.thresholdDays })) },
-              { label: "Calls", render: (row) => formatNumber(row.calls) },
-              { label: "Share", render: (row) => formatPercent(row.rate) }
+              { label: "Calls", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatNumber(row.calls), withSegment({ minImportAgeDays: row.thresholdDays })) },
+              { label: "Share", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatPercent(row.rate), withSegment({ minImportAgeDays: row.thresholdDays })) }
             ], sourceQualityThresholdRows, "No valid CustomerImportDate or CustomerCreateDate values are available.")}
           </div>
 
@@ -5057,11 +5948,11 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Type", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("source.manualCreated", withSegment({ createdByType: row.createdByType })))}">${escapeHtml(row.createdByTypeLabel || row.name)}</a>` },
-              { label: "Calls", render: (row) => formatNumber(row.calls) },
-              { label: "New", render: (row) => formatNumber(row.newBusinessCalls) },
-              { label: "Warm", render: (row) => formatNumber(row.warmBusinessCalls) },
-              { label: "Human answer", render: (row) => formatPercent(row.probableLiveHumanRate) },
-              { label: "Avg age", render: (row) => formatDays(row.averageCreateAgeDays) }
+              { label: "Calls", render: (row) => dataLink("source.manualCreated", formatNumber(row.calls), withSegment({ createdByType: row.createdByType })) },
+              { label: "New", render: (row) => dataLink("source.manualCreated", formatNumber(row.newBusinessCalls), withSegment({ createdByType: row.createdByType, businessSegment: "new" })) },
+              { label: "Warm", render: (row) => dataLink("source.manualCreated", formatNumber(row.warmBusinessCalls), withSegment({ createdByType: row.createdByType, businessSegment: "warm" })) },
+              { label: "Human answer", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ createdByType: row.createdByType })) },
+              { label: "Avg age", render: (row) => dataLink("source.manualCreated", formatDays(row.averageCreateAgeDays), withSegment({ createdByType: row.createdByType })) }
             ], sourceQualityTypeRows, "No manual LG/SP creator fields are available.")}
           </div>
         </section>
@@ -5075,12 +5966,12 @@ function renderDashboard(analysis, options = {}) {
           </div>
           ${table([
             { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.unique", withSegment({ source: row.name })))}">${escapeHtml(row.name)}</a>` },
-            { label: "Calls", render: (row) => formatNumber(row.calls) },
-            { label: "New", render: (row) => formatNumber(row.newBusinessCalls) },
-            { label: "Warm", render: (row) => formatNumber(row.warmBusinessCalls) },
+            { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ source: row.name })) },
+            { label: "New", render: (row) => dataLink("calls.newBusiness", formatNumber(row.newBusinessCalls), withSegment({ source: row.name, businessSegment: "new" })) },
+            { label: "Warm", render: (row) => dataLink("calls.warmBusiness", formatNumber(row.warmBusinessCalls), withSegment({ source: row.name, businessSegment: "warm" })) },
             { label: "Human answer", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ source: row.name })) },
             { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ source: row.name })) },
-            { label: "Avg record age", render: (row) => formatDays(row.averageRecordAgeDays) },
+            { label: "Avg record age", render: (row) => dataLink("calls.unique", formatDays(row.averageRecordAgeDays), withSegment({ source: row.name })) },
             { label: "New >90d", render: (row) => dataLink("source.newBusinessRecordOlderThan", formatNumber(row.newBusinessRecordOlderThan90 ?? row.newBusinessImportedOlderThan90), withSegment({ source: row.name, minImportAgeDays: 90 })) }
           ], sourceQualitySourceRows, "No bulk source rows are available.")}
         </section>
@@ -5095,11 +5986,11 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Record age", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("calls.unique", withSegment({ recordAgeBucket: row.bucket })))}">${escapeHtml(row.bucket)}</a>` },
-              { label: "Calls", render: (row) => formatNumber(row.calls) },
-              { label: "New", render: (row) => formatNumber(row.newBusinessCalls) },
-              { label: "Warm", render: (row) => formatNumber(row.warmBusinessCalls) },
-              { label: "Human answer", render: (row) => formatPercent(row.probableLiveHumanRate) },
-              { label: "Meaningful", render: (row) => formatPercent(row.meaningfulConversationRate) }
+              { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ recordAgeBucket: row.bucket })) },
+              { label: "New", render: (row) => dataLink("calls.newBusiness", formatNumber(row.newBusinessCalls), withSegment({ recordAgeBucket: row.bucket, businessSegment: "new" })) },
+              { label: "Warm", render: (row) => dataLink("calls.warmBusiness", formatNumber(row.warmBusinessCalls), withSegment({ recordAgeBucket: row.bucket, businessSegment: "warm" })) },
+              { label: "Human answer", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ recordAgeBucket: row.bucket })) },
+              { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ recordAgeBucket: row.bucket })) }
             ], sourceQualityAgeRows, "No record age cohorts are available.")}
           </div>
 
@@ -5112,11 +6003,11 @@ function renderDashboard(analysis, options = {}) {
             </div>
             ${table([
               { label: "Creator", render: (row) => `<a class="data-link" href="${escapeHtml(drilldownUrl("source.manualCreated", withSegment({ createdBy: row.createdBy })))}">${escapeHtml(row.createdBy || row.name)}</a><br /><span class="muted small">${escapeHtml(row.createdByTypeLabel || row.createdByType || "Unknown")}</span>` },
-              { label: "Calls", render: (row) => formatNumber(row.calls) },
-              { label: "New", render: (row) => formatNumber(row.newBusinessCalls) },
-              { label: "Warm", render: (row) => formatNumber(row.warmBusinessCalls) },
-              { label: "Human answer", render: (row) => formatPercent(row.probableLiveHumanRate) },
-              { label: "Avg create age", render: (row) => formatDays(row.averageCreateAgeDays) }
+              { label: "Calls", render: (row) => dataLink("source.manualCreated", formatNumber(row.calls), withSegment({ createdBy: row.createdBy })) },
+              { label: "New", render: (row) => dataLink("source.manualCreated", formatNumber(row.newBusinessCalls), withSegment({ createdBy: row.createdBy, businessSegment: "new" })) },
+              { label: "Warm", render: (row) => dataLink("source.manualCreated", formatNumber(row.warmBusinessCalls), withSegment({ createdBy: row.createdBy, businessSegment: "warm" })) },
+              { label: "Human answer", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ createdBy: row.createdBy })) },
+              { label: "Avg create age", render: (row) => dataLink("source.manualCreated", formatDays(row.averageCreateAgeDays), withSegment({ createdBy: row.createdBy })) }
             ], sourceQualityCreatorRows, "No manual creator rows are available.")}
           </div>
         </section>
@@ -5130,12 +6021,12 @@ function renderDashboard(analysis, options = {}) {
               <h2>Transcript Intelligence</h2>
               <p class="muted small">Database-backed deterministic call deconstruction, lead-utilisation rollups, and local LLM extraction queue state. Deterministic records are not LLM-reviewed unless labelled as such.</p>
             </div>
-            ${badge(`${formatNumber(intelligenceTotals.callsIndexed)} calls indexed`, intelligenceTotals.callsIndexed ? "success" : "warning")}
+            ${linkedBadge(`${formatNumber(intelligenceTotals.callsIndexed)} calls indexed`, intelligenceTotals.callsIndexed ? "success" : "warning", queueFilterUrl({ intelligenceQueue: "all", wasteRisk: "" }))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Utilisation review signals", formatNumber(intelligenceTotals.wasteRiskLeads), `${formatNumber(intelligenceTotals.leadsIndexed)} leads indexed`, "risk", queueFilterUrl({ intelligenceQueue: "waste", wasteRisk: "1" }))}
             ${metricCard("High-quality utilized", formatNumber(intelligenceTotals.highQualityLeads), `Avg lead score ${Number(intelligenceTotals.avgLeadUtilizationScore || 0).toFixed(1)} / 5`, "good", queueFilterUrl({ intelligenceQueue: "high_quality", highQuality: "1" }))}
-            ${metricCard("Repeated short attempts", formatNumber(intelligenceTotals.repeatedShortAttemptLeads), "Lead-level short/no-result pattern", "warn")}
+            ${metricCard("Repeated short attempts", formatNumber(intelligenceTotals.repeatedShortAttemptLeads), "Lead-level short/no-result pattern", "warn", queueFilterUrl({ intelligenceQueue: "repeated_short", repeatedShortAttempt: "1", wasteRisk: "" }))}
             ${metricCard("Manager review calls", formatNumber(intelligenceTotals.managerReviewCalls), `${formatNumber(intelligenceTotals.riskFlagCalls)} deterministic risk-flag calls`, "risk", queueFilterUrl({ intelligenceQueue: "manager_review", managerReview: "1" }))}
             ${metricCard("LLM queue state", formatNumber(intelligenceTotals.llmQueued), `${formatNumber(intelligenceTotals.llmCompleted)} reviewed, ${formatNumber(intelligenceTotals.llmFailed || 0)} failed, ${formatNumber(intelligenceTotals.llmNotRequested)} not requested`, "info", queueFilterUrl({ intelligenceQueue: "llm_queued", llmStatus: "queued" }))}
             ${metricCard("Database", "SQLite", intelligence.dbPath ? "Call intelligence is persisted locally" : "No database summary available", "info")}
@@ -5148,7 +6039,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>Intelligence Review Queue</h2>
               <p class="muted small">${escapeHtml(intelligenceQueueLabel(activeIntelligenceQueue))} queue. Filtered rows show deterministic, LLM, and manager-review provenance separately.</p>
             </div>
-            ${badge(`${formatNumber(intelligenceQueueRows.length)} calls shown`, intelligenceQueueRows.length ? "notice" : "neutral")}
+            ${linkedBadge(`${formatNumber(intelligenceQueueRows.length)} calls shown`, intelligenceQueueRows.length ? "notice" : "neutral", queueFilterUrl())}
           </div>
           <div class="panel-body">
             <div class="stack" style="margin-bottom: 12px;">
@@ -5185,13 +6076,13 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Salesperson", render: (row) => `<a class="data-link" href="${escapeHtml(queueFilterUrl({ salesperson: row.salesperson, wasteRisk: "1", intelligenceQueue: "waste" }))}">${escapeHtml(row.salesperson)}</a>` },
-              { label: "Leads", render: (row) => formatNumber(row.leads) },
-              { label: "Review signals", render: (row) => formatNumber(row.wasteRiskLeads) },
-              { label: "Risk rate", render: (row) => formatRatioPercent(row.wasteRiskRate) },
-              { label: "High-quality", render: (row) => formatNumber(row.highQualityLeads) },
-              { label: "Repeated short", render: (row) => formatNumber(row.repeatedShortAttemptLeads) },
-              { label: "Avg score", render: (row) => `${Number(row.avgScore || 0).toFixed(1)} / 5` }
+              { label: "Salesperson", render: (row) => hrefDataLink(row.salesperson, queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "all", wasteRisk: "" })) },
+              { label: "Leads", render: (row) => hrefDataLink(formatNumber(row.leads), queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "all", wasteRisk: "" })) },
+              { label: "Review signals", render: (row) => hrefDataLink(formatNumber(row.wasteRiskLeads), queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "waste", wasteRisk: "1" })) },
+              { label: "Risk rate", render: (row) => hrefDataLink(formatRatioPercent(row.wasteRiskRate), queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "waste", wasteRisk: "1" })) },
+              { label: "High-quality", render: (row) => hrefDataLink(formatNumber(row.highQualityLeads), queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "high_quality", wasteRisk: "", highQuality: "1" })) },
+              { label: "Repeated short", render: (row) => hrefDataLink(formatNumber(row.repeatedShortAttemptLeads), queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "repeated_short", wasteRisk: "", repeatedShortAttempt: "1" })) },
+              { label: "Avg score", render: (row) => hrefDataLink(`${Number(row.avgScore || 0).toFixed(1)} / 5`, queueFilterUrl({ salesperson: row.salesperson, intelligenceQueue: "all", wasteRisk: "" })) }
             ], intelligenceSalespersonRows, "No transcript-intelligence salesperson rows are available yet.")}
           </div>
 
@@ -5203,13 +6094,13 @@ function renderDashboard(analysis, options = {}) {
               </div>
             </div>
             ${table([
-              { label: "Source", render: (row) => `<a class="data-link" href="${escapeHtml(queueFilterUrl({ source: row.source, wasteRisk: "1", intelligenceQueue: "waste" }))}">${escapeHtml(row.source)}</a>` },
-              { label: "Leads", render: (row) => formatNumber(row.leads) },
-              { label: "Review signals", render: (row) => formatNumber(row.wasteRiskLeads) },
-              { label: "Risk rate", render: (row) => formatRatioPercent(row.wasteRiskRate) },
-              { label: "High-quality", render: (row) => formatNumber(row.highQualityLeads) },
-              { label: "Repeated short", render: (row) => formatNumber(row.repeatedShortAttemptLeads) },
-              { label: "Avg score", render: (row) => `${Number(row.avgScore || 0).toFixed(1)} / 5` }
+              { label: "Source", render: (row) => hrefDataLink(row.source, queueFilterUrl({ source: row.source, intelligenceQueue: "all", wasteRisk: "" })) },
+              { label: "Leads", render: (row) => hrefDataLink(formatNumber(row.leads), queueFilterUrl({ source: row.source, intelligenceQueue: "all", wasteRisk: "" })) },
+              { label: "Review signals", render: (row) => hrefDataLink(formatNumber(row.wasteRiskLeads), queueFilterUrl({ source: row.source, intelligenceQueue: "waste", wasteRisk: "1" })) },
+              { label: "Risk rate", render: (row) => hrefDataLink(formatRatioPercent(row.wasteRiskRate), queueFilterUrl({ source: row.source, intelligenceQueue: "waste", wasteRisk: "1" })) },
+              { label: "High-quality", render: (row) => hrefDataLink(formatNumber(row.highQualityLeads), queueFilterUrl({ source: row.source, intelligenceQueue: "high_quality", wasteRisk: "", highQuality: "1" })) },
+              { label: "Repeated short", render: (row) => hrefDataLink(formatNumber(row.repeatedShortAttemptLeads), queueFilterUrl({ source: row.source, intelligenceQueue: "repeated_short", wasteRisk: "", repeatedShortAttempt: "1" })) },
+              { label: "Avg score", render: (row) => hrefDataLink(`${Number(row.avgScore || 0).toFixed(1)} / 5`, queueFilterUrl({ source: row.source, intelligenceQueue: "all", wasteRisk: "" })) }
             ], intelligenceSourceRows, "No transcript-intelligence source rows are available yet.")}
           </div>
         </section>
@@ -5223,7 +6114,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>No-Contact Utilisation Proof</h2>
               <p class="muted small">Matched-record metrics use source IDs only. This section does not rank live conversations or ambiguous one-dial records.</p>
             </div>
-            ${badge(`${formatNumber(leadTotals.stableLeadDaysWorked)} matched records`, "neutral")}
+            ${linkedBadge(`${formatNumber(leadTotals.stableLeadDaysWorked)} matched records`, "neutral", drilldownUrl("lead.stableLeadDaysWorked", withSegment()))}
           </div>
           <div class="panel-body metrics">
             ${metricCard("Potential lead under-utilisation", formatNumber(leadReattemptTotals.oneDialNoContactNoLaterLeads || leadTotals.singleAttemptNoContact || 0), "One-dial no-contact with no later matching call observed", "risk", drilldownUrl("reattempt.oneDialNoContactNoLater", withSegment()))}
@@ -5275,15 +6166,15 @@ function renderDashboard(analysis, options = {}) {
                 <h2>Import History</h2>
                 <p class="muted small">Each CSV load stores a derived local snapshot without copying the raw CSV into Git.</p>
               </div>
-              ${badge(`${formatNumber(persistence.counts.imports)} saved`, "neutral")}
+              ${linkedBadge(`${formatNumber(persistence.counts.imports)} saved`, "neutral", "#history")}
             </div>
             ${table([
-              { label: "Import", render: (row) => `<span class="mono">${escapeHtml(row.id)}</span>` },
-              { label: "Source", key: "sourceName" },
-              { label: "Loaded", render: (row) => formatDateTime(row.lastImportedAt) },
-              { label: "Calls", render: (row) => formatNumber(row.totals?.uniqueCalls) },
-              { label: "AI assistants", render: (row) => formatNumber(row.totals?.aiVoiceAssistantEncounters || 0) },
-              { label: "Follow-ups", render: (row) => formatNumber(row.totals?.followUpRequired) },
+              { label: "Import", render: (row) => hrefDataLink(row.id, `/imports/${encodeURIComponent(row.id)}`) },
+              { label: "Source", render: (row) => hrefDataLink(row.sourceName, `/imports/${encodeURIComponent(row.id)}`) },
+              { label: "Loaded", render: (row) => hrefDataLink(formatDateTime(row.lastImportedAt), `/imports/${encodeURIComponent(row.id)}`) },
+              { label: "Calls", render: (row) => hrefDataLink(formatNumber(row.totals?.uniqueCalls), `/imports/${encodeURIComponent(row.id)}`) },
+              { label: "AI assistants", render: (row) => hrefDataLink(formatNumber(row.totals?.aiVoiceAssistantEncounters || 0), `/imports/${encodeURIComponent(row.id)}`) },
+              { label: "Follow-ups", render: (row) => hrefDataLink(formatNumber(row.totals?.followUpRequired), `/imports/${encodeURIComponent(row.id)}`) },
             ], importRows, "No imports have been saved yet.")}
           </div>
 
@@ -5293,7 +6184,7 @@ function renderDashboard(analysis, options = {}) {
                 <h2>Reports Library</h2>
                 <p class="muted small">Generated reports are stored locally and can be viewed from the dashboard/API.</p>
               </div>
-              ${badge(`${formatNumber(persistence.counts.reports)} reports`, "neutral")}
+              ${linkedBadge(`${formatNumber(persistence.counts.reports)} reports`, "neutral", "#reports")}
             </div>
             ${table([
               { label: "Report", render: (row) => `<strong>${escapeHtml(row.title)}</strong><br /><span class="muted small mono">${escapeHtml(row.id)}</span>` },
@@ -5330,10 +6221,10 @@ function renderDashboard(analysis, options = {}) {
                 <p class="muted small">Lifecycle workflow for call-data alerts in the current global filter scope.</p>
               </div>
               <div class="stack">
-                ${badge(`${formatNumber(alertSummary.active || persistence.counts.currentAlertEvents || 0)} active`, (alertSummary.active || persistence.counts.currentAlertEvents) ? "critical" : "neutral")}
-                ${badge(`${criticalAlerts} critical`, criticalAlerts ? "critical" : "neutral")}
-                ${badge(`${warningAlerts} warning`, warningAlerts ? "warning" : "neutral")}
-                ${badge(`${noticeAlerts} notice`, noticeAlerts ? "notice" : "neutral")}
+                ${linkedBadge(`${formatNumber(alertSummary.active || persistence.counts.currentAlertEvents || 0)} active`, (alertSummary.active || persistence.counts.currentAlertEvents) ? "critical" : "neutral", "#alerts")}
+                ${linkedBadge(`${criticalAlerts} critical`, criticalAlerts ? "critical" : "neutral", dashboardFilterUrl({ ...globalFilterQuery, ...segmentFilters, view: "reviews", alertSeverity: "critical" }, "alerts"))}
+                ${linkedBadge(`${warningAlerts} warning`, warningAlerts ? "warning" : "neutral", dashboardFilterUrl({ ...globalFilterQuery, ...segmentFilters, view: "reviews", alertSeverity: "warning" }, "alerts"))}
+                ${linkedBadge(`${noticeAlerts} notice`, noticeAlerts ? "notice" : "neutral", dashboardFilterUrl({ ...globalFilterQuery, ...segmentFilters, view: "reviews", alertSeverity: "notice" }, "alerts"))}
               </div>
             </div>
             ${renderAlertCentre(alertRows, alertSummary, {
@@ -5343,18 +6234,18 @@ function renderDashboard(analysis, options = {}) {
             })}
           </div>
 
-          <div class="panel">
+          <div class="panel" id="manager-review-queue">
             <div class="panel-header">
               <h2>Manager Review Queue</h2>
               <div class="stack">
-                ${badge(`${formatNumber(reviewRows.length)} shown`, "neutral")}
-                ${badge(`${formatNumber(persistence.counts.currentManagerReviews)} saved reviews`, persistence.counts.currentManagerReviews ? "success" : "neutral")}
+                ${linkedBadge(`${formatNumber(reviewRows.length)} shown`, "neutral", "#manager-review-queue")}
+                ${linkedBadge(`${formatNumber(persistence.counts.currentManagerReviews)} saved reviews`, persistence.counts.currentManagerReviews ? "success" : "neutral", "/manager-reviews")}
               </div>
             </div>
             ${table([
               { label: "Call", render: (row) => callLink(row.callId) },
               { label: "Customer ID", render: (row) => customerIdCell(row) },
-              { label: "Salesperson", key: "salesperson" },
+              { label: "Salesperson", render: (row) => dataLink("calls.unique", row.salesperson || "Unknown", withSegment({ salesperson: row.salesperson })) },
               { label: "Local outcome", render: (row) => badge(row.localOutcome, row.reviewRequired ? "warning" : "neutral") },
               { label: "Review", render: (row) => `${managerReviewBadge(row, reviewSummaryMap)}<br />${managerCorrectionSummary(row, reviewSummaryMap)}<br />${managerSuggestedCorrectionSummary(row, reviewSummaryMap)}` },
               { label: "Provenance", render: (row) => `${provenanceBadge(row.localOutcomeProvenance || "Deterministic")} ${provenanceBadge(managerReviewState(row, persistence))}` },
@@ -5377,15 +6268,15 @@ function renderDashboard(analysis, options = {}) {
             </div>
           </div>
           ${table([
-            { label: "Salesperson", key: "name" },
+            { label: "Salesperson", render: (row) => dataLink("calls.unique", row.name, withSegment({ salesperson: row.name })) },
             { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ salesperson: row.name })) },
-            { label: "Transcript coverage", render: (row) => formatPercent(row.transcriptCoverageRate) },
-            { label: "Confidence mix", render: (row) => `<span class="muted small">${escapeHtml(confidenceMix(row))}</span>` },
-            { label: "Review-only", render: (row) => formatNumber(row.reviewOnlySignals || 0) },
+            { label: "Transcript coverage", render: (row) => dataLink("calls.transcriptAvailable", formatPercent(row.transcriptCoverageRate), withSegment({ salesperson: row.name })) },
+            { label: "Confidence mix", render: (row) => dataLink("calls.unique", confidenceMix(row), withSegment({ salesperson: row.name })) },
+            { label: "Review-only", render: (row) => dataLink("calls.lowOrUnusableTranscript", formatNumber(row.reviewOnlySignals || 0), withSegment({ salesperson: row.name })) },
             { label: "Live-human", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ salesperson: row.name })) },
             { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ salesperson: row.name })) },
             { label: "Follow-up signals", render: (row) => dataLink("calls.followUpRequired", formatNumber(row.followUpRequired), withSegment({ salesperson: row.name })) },
-            { label: "Avg duration", render: (row) => `${formatNumber(row.averageDurationSeconds)}s` }
+            { label: "Avg duration", render: (row) => dataLink("calls.unique", `${formatNumber(row.averageDurationSeconds)}s`, withSegment({ salesperson: row.name })) }
           ], salespersonRows)}
         </section>
 
@@ -5397,10 +6288,10 @@ function renderDashboard(analysis, options = {}) {
             </div>
           </div>
           ${table([
-            { label: "Source", key: "name" },
+            { label: "Source", render: (row) => dataLink("calls.unique", row.name, withSegment({ source: row.name })) },
             { label: "Calls", render: (row) => dataLink("calls.unique", formatNumber(row.calls), withSegment({ source: row.name })) },
-            { label: "Transcript coverage", render: (row) => formatPercent(row.transcriptCoverageRate) },
-            { label: "Confidence mix", render: (row) => `<span class="muted small">${escapeHtml(confidenceMix(row))}</span>` },
+            { label: "Transcript coverage", render: (row) => dataLink("calls.transcriptAvailable", formatPercent(row.transcriptCoverageRate), withSegment({ source: row.name })) },
+            { label: "Confidence mix", render: (row) => dataLink("calls.unique", confidenceMix(row), withSegment({ source: row.name })) },
             { label: "Live-human", render: (row) => dataLink("calls.probableLiveHuman", formatPercent(row.probableLiveHumanRate), withSegment({ source: row.name })) },
             { label: "Meaningful", render: (row) => dataLink("calls.meaningfulConversation", formatPercent(row.meaningfulConversationRate), withSegment({ source: row.name })) },
             { label: "Follow-up rate", render: (row) => dataLink("calls.followUpRequired", formatPercent(row.followUpRequiredRate), withSegment({ source: row.name })) },
@@ -5416,7 +6307,7 @@ function renderDashboard(analysis, options = {}) {
               <h2>Raw Call Explorer</h2>
               <p class="muted small">Shows sanitized source fields, local outcomes, proof summaries, and transcript previews.</p>
             </div>
-            ${badge(`${formatNumber(explorerRows.length)} recent calls`, "neutral")}
+            ${linkedBadge(`${formatNumber(explorerRows.length)} recent calls`, "neutral", drilldownUrl("calls.unique", withSegment({ sort: "newest" })))}
           </div>
           ${table([
             { label: "Call", render: (row) => callLink(row.callId) },
@@ -5539,7 +6430,7 @@ function renderDashboard(analysis, options = {}) {
 </html>`;
 }
 
-function renderReportPage(report) {
+function renderReportPage(report, options = {}) {
   const reportTitle = report?.title || "Report not found";
   const hasReport = Boolean(report);
   return `<!doctype html>
@@ -5644,6 +6535,12 @@ function renderReportPage(report) {
         text-decoration: none;
         font-weight: 760;
       }
+      .data-link {
+        color: var(--accent);
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .data-link:hover { color: var(--foreground); text-decoration: underline; }
       .open-link:hover, .button-link:hover {
         color: var(--foreground);
         border-color: rgba(86, 214, 229, 0.58);
@@ -5725,12 +6622,12 @@ function renderReportPage(report) {
         <div class="page-title">
           <a class="page-brand" href="/#overview"><img data-brand-logo src="/branding/logo" alt="Countrywide Austral" /></a>
           <div>
-            <p class="page-kicker">Saved report</p>
+            <p class="page-kicker">${escapeHtml(options.pageKicker || "Saved report")}</p>
             <h1>${escapeHtml(reportTitle)}</h1>
             <p class="muted">${hasReport ? escapeHtml(report.summary || "Saved report") : "This report does not exist."}</p>
           </div>
         </div>
-        <a class="button-link" href="/#reports">Back to Reports</a>
+        <a class="button-link" href="${escapeHtml(options.backHref || "/#reports")}">${escapeHtml(options.backLabel || "Back to Reports")}</a>
       </header>
       ${hasReport ? `<section class="panel">
         <div class="metadata">

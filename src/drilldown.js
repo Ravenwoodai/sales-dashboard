@@ -71,6 +71,16 @@ const METRICS = {
     description: "Calls where the transcription field contains text. Blank transcripts are treated as no pickup/no answer in this dataset.",
     kind: "call"
   },
+  "calls.transcriptUsableForCoaching": {
+    title: "Transcript-Derived Coverage",
+    description: "Calls whose transcript quality is sufficient for coaching-style deterministic conclusions.",
+    kind: "call"
+  },
+  "calls.lowOrUnusableTranscript": {
+    title: "Low Or Unusable Transcripts",
+    description: "Calls in the low-confidence or unusable transcript bands. These rows require proof review before coaching conclusions.",
+    kind: "call"
+  },
   "calls.probableLiveHuman": {
     title: "Probable Live-Human Calls",
     description: "Calls where transcript evidence suggests the salesperson reached a person.",
@@ -169,6 +179,11 @@ const METRICS = {
   "source.missingAttribution": {
     title: "Self Sourced Without Raw Attribution",
     description: "Calls categorized as Self Sourced because both bulk import evidence and manual creator evidence are blank.",
+    kind: "call"
+  },
+  "source.recordAgeAvailable": {
+    title: "Calls With Record Age",
+    description: "Calls with a valid CustomerImportDate or fallback CustomerCreateDate that can be used to calculate record age.",
     kind: "call"
   },
   "source.newBusinessImportedOlderThan": {
@@ -385,6 +400,8 @@ function metricKeysForItem(item) {
   const sourceAttribution = item.sourceAttribution || sourceAttributionFor(item.row, item.dateTime);
   keys.push(businessSegment === "warm" ? "calls.warmBusiness" : "calls.newBusiness");
   if (item.evaluation.transcript.available) keys.push("calls.transcriptAvailable");
+  if (item.evaluation.transcript.usableForCoaching) keys.push("calls.transcriptUsableForCoaching");
+  if (["low", "unusable"].includes(confidenceBandForItem(item))) keys.push("calls.lowOrUnusableTranscript");
   if (item.evaluation.contact.probableLiveHuman) keys.push("calls.probableLiveHuman");
   if (item.evaluation.contact.meaningfulConversation) keys.push("calls.meaningfulConversation");
   if (item.evaluation.opportunity.followUpRequired) keys.push("calls.followUpRequired");
@@ -400,6 +417,7 @@ function metricKeysForItem(item) {
   if (sourceAttribution.hasBulkSource) keys.push("source.bulkSourced");
   if (sourceAttribution.hasManualCreator) keys.push("source.manualCreated");
   if (!sourceAttribution.hasBulkSource && !sourceAttribution.hasManualCreator) keys.push("source.missingAttribution");
+  if (sourceAttribution.daysSinceRecord !== null) keys.push("source.recordAgeAvailable");
   if (businessSegment === "new" && sourceAttribution.daysSinceImport !== null) {
     SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
       if (sourceAttribution.daysSinceImport > threshold) keys.push(`source.newBusinessImportedOlderThan${threshold}`);
@@ -509,7 +527,8 @@ function metricFor(key) {
 function metricMatches(row, metricKey, query = {}) {
   if (metricKey === "source.newBusinessImportedOlderThan" || metricKey === "source.newBusinessRecordOlderThan") {
     const threshold = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, 90);
-    return row.businessSegment === "new" && row.daysSinceRecord !== null && Number(row.daysSinceRecord) > threshold;
+    const ageDays = metricKey === "source.newBusinessImportedOlderThan" ? row.daysSinceImport : row.daysSinceRecord;
+    return row.businessSegment === "new" && ageDays !== null && Number(ageDays) > threshold;
   }
   if (metricKey === "reattempt.maxAttemptsOnOneLead") {
     const attempts = normalizeMinImportAgeDays(query.maxAttempts || query.attempts || query.personalCallCount, null);
@@ -535,6 +554,7 @@ function filterRows(rows, query = {}) {
   const systemAudioSubtype = clean(query.systemAudioSubtype || query.systemAudioType);
   const harvestStatus = clean(query.harvestStatus || query.status);
   const confidenceBand = clean(query.confidenceBand || query.confidence);
+  const confidenceBands = confidenceBand.split(",").map(clean).filter(Boolean);
   const objectionType = clean(query.objectionType || query.objection);
   const handlingType = clean(query.handlingType || query.salespersonHandlingType);
   const minImportAgeDays = normalizeMinImportAgeDays(query.minImportAgeDays || query.days || query.importAgeDays, null);
@@ -556,7 +576,7 @@ function filterRows(rows, query = {}) {
     if (aiAssistantTactic && !(row.aiVoiceAssistantTactics || []).includes(aiAssistantTactic)) return false;
     if (systemAudioSubtype && row.systemAudioSubtype !== systemAudioSubtype && row.subtype !== systemAudioSubtype) return false;
     if (harvestStatus && row.status !== harvestStatus) return false;
-    if (confidenceBand && row.confidenceBand !== confidenceBand) return false;
+    if (confidenceBands.length && !confidenceBands.includes(row.confidenceBand)) return false;
     if (objectionType && row.objectionType !== objectionType) return false;
     if (handlingType && row.salespersonHandlingType !== handlingType) return false;
     if (minImportAgeDays !== null && !(row.daysSinceRecord !== null && Number(row.daysSinceRecord) > minImportAgeDays)) return false;

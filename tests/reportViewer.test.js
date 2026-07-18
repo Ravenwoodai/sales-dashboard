@@ -190,7 +190,7 @@ test("report page renders markdown table data as an HTML table", () => {
       "",
       "| Salesperson | Missed callbacks |",
       "| --- | ---: |",
-      "| Justin Lucas | 3 |",
+      "| [Justin Lucas](/calls/call-123) | 3 |",
       "| Patrick Reinemann | 2 |"
     ].join("\n")
   });
@@ -198,6 +198,7 @@ test("report page renders markdown table data as an HTML table", () => {
   assert.match(html, /Callback Leakage Review/);
   assert.match(html, /<table>/);
   assert.match(html, /Justin Lucas/);
+  assert.match(html, /href="\/calls\/call-123"/);
   assert.match(html, /Patrick Reinemann/);
   assert.match(html, /Raw report record/);
 });

@@ -145,11 +145,11 @@ function addItemToGroup(group, item) {
 }
 
 function topTactic(group) {
-  const row = Object.values(group.tacticCounts || {}).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))[0];
-  return row ? row.label : "No clear tactic";
+  return Object.values(group.tacticCounts || {}).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))[0] || null;
 }
 
 function finalizeGroup(group) {
+  const tactic = topTactic(group);
   return {
     ...group,
     encounterRate: percent(group.encounters, group.calls),
@@ -161,7 +161,8 @@ function finalizeGroup(group) {
     futureMeaningfulConversationRate: percent(group.futureMeaningfulConversation, group.encounters),
     insufficientFutureDataRate: percent(group.insufficientFutureData, group.encounters),
     averageResponseWords: group.encounters ? Math.round(group.totalResponseWords / group.encounters) : 0,
-    topTactic: topTactic(group)
+    topTactic: tactic?.label || "No clear tactic",
+    topTacticKey: tactic?.key || ""
   };
 }
 

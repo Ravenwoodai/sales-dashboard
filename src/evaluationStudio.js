@@ -28,6 +28,7 @@ const KNOWLEDGEBASE_APPROVAL_STATUSES = new Set([
 ]);
 
 const EVALUATION_GOALS = new Set([
+  "call_intelligence_foundation",
   "procedure_adherence",
   "salesperson_procedure_adherence",
   "stage_failure_detection",
@@ -36,6 +37,7 @@ const EVALUATION_GOALS = new Set([
   "lead_utilisation",
   "objection_handling",
   "objection_detection",
+  "offer_acceptance_classification",
   "callback_opportunity",
   "follow_up_quality",
   "follow_up_leakage",
@@ -157,6 +159,90 @@ const DEFAULT_OUTPUT_SCHEMA = {
   limitations: ["string"]
 };
 
+const OFFER_ACCEPTANCE_GOAL = "offer_acceptance_classification";
+const OFFER_ACCEPTANCE_SCHEMA_VERSION = "offer_acceptance_classification.v1";
+const OFFER_ACCEPTANCE_OUTPUT_SCHEMA = {
+  schema_version: OFFER_ACCEPTANCE_SCHEMA_VERSION,
+  evaluation_goal: OFFER_ACCEPTANCE_GOAL,
+  call_id: "string",
+  status: "usable|insufficient_evidence|failed",
+  confidence: "number 0-1",
+  evidence_availability: "available|partial|unavailable",
+  transcript_quality: "high|medium|low|unusable|unknown",
+  category: "integer",
+  classification: "no_sale_signal|interested_follow_up_only|customer_accepted_offer",
+  offer_presented: "boolean",
+  customer_commitment: "none|interest_only|conditional_or_pending|explicit_unconditional_agreement|acceptance_action_completed",
+  unresolved_condition: "boolean",
+  offer_evidence: {
+    speaker: "salesperson|unknown",
+    quote: "one contiguous verbatim transcript quote, 500 characters or fewer, or empty string",
+    summary: "short description of the offer or why no offer was established"
+  },
+  customer_response_evidence: {
+    speaker: "customer|unknown",
+    quote: "one contiguous verbatim transcript quote, 500 characters or fewer, or empty string",
+    summary: "short explanation of what the customer did or did not commit to"
+  },
+  manager_review_recommended: "boolean",
+  manager_summary: "short conservative summary",
+  limitations: ["string"],
+  findings: []
+};
+
+const CALL_INTELLIGENCE_FOUNDATION_GOAL = "call_intelligence_foundation";
+const CALL_INTELLIGENCE_FOUNDATION_SCHEMA_VERSION = "call_intelligence_foundation.v3";
+const FOUNDATION_NO_PRODUCT_PITCHED = "No product pitched";
+const CALL_INTELLIGENCE_FOUNDATION_OUTPUT_SCHEMA = {
+  schema_version: CALL_INTELLIGENCE_FOUNDATION_SCHEMA_VERSION,
+  evaluation_goal: CALL_INTELLIGENCE_FOUNDATION_GOAL,
+  call_id: "string",
+  status: "usable|insufficient_evidence|failed",
+  confidence: "number 0-1",
+  evidence_availability: "available|partial|unavailable",
+  transcript_quality: "high|medium|low|unusable|unknown",
+  contact_result: "live_decision_maker|live_non_decision_maker|gatekeeper|voicemail|no_answer_system|wrong_number|business_closed|do_not_contact|unsafe_abusive|other_live_contact|unknown",
+  decision_maker_status: "confirmed|possible|not_reached|unknown",
+  conversation_stage: "no_contact|introduction|purpose_explained|offer_presented|price_presented|objection_discussed|commitment_requested|next_step_agreed|acceptance_signal",
+  offer_presented: "boolean",
+  price_presented: "boolean",
+  objection_present: "boolean",
+  customer_outcome: "no_contact|no_sale_signal|explicit_decline|information_requested|callback_requested|conditional_interest|long_term_nurture|accepted_offer_signal|unknown",
+  next_step_status: "none|vague|actionable|accepted_action_completed|unknown",
+  follow_up_timing: "short transcript-grounded timing text or empty string",
+  lead_record_signal: "none|wrong_number|private_non_business|business_closed_permanently|do_not_contact|unsafe_abusive|possible_issue|unknown",
+  called_on_behalf_of: `the transcript-grounded organisation, publication, brand, program, or client represented by the salesperson; otherwise exactly \"${FOUNDATION_NO_PRODUCT_PITCHED}\"`,
+  commercial_context: {
+    product_or_package: "short transcript-grounded label or empty string",
+    quoted_amount_available: "boolean",
+    quoted_amount: "number",
+    currency: "AUD|NZD|unknown"
+  },
+  intelligence_lenses: {
+    opportunity_status: "none|possible|actionable|accepted",
+    measurement_eligibility: "eligible|excluded_terminal|insufficient_evidence",
+    efficiency_status: "efficient_progression|actionable_gap|terminal_complete|unable_to_assess"
+  },
+  specialist_routes: {
+    offer_acceptance_classification: "boolean",
+    callback_opportunity: "boolean",
+    objection_handling: "boolean",
+    procedure_adherence: "boolean",
+    lead_record_disposition_evidence_audit: "boolean"
+  },
+  evidence: [
+    {
+      supports: "contact_result|decision_maker_status|conversation_stage|offer_presented|customer_outcome|next_step_status|follow_up_timing|lead_record_signal|called_on_behalf_of|commercial_context|opportunity_status|efficiency_status",
+      speaker: "customer|salesperson|system|unknown",
+      quote: "one exact contiguous transcript excerpt, 300 characters or fewer"
+    }
+  ],
+  manager_review_recommended: "boolean",
+  manager_summary: "short conservative operational summary",
+  limitations: ["string"],
+  findings: []
+};
+
 const LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL = "lead_record_disposition_evidence_audit";
 const LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION = "lead_record_disposition_evidence_audit.v1";
 const LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_OUTPUT_SCHEMA = {
@@ -260,6 +346,32 @@ const DEFAULT_KNOWLEDGEBASE_ENTRIES = [
 
 const DEFAULT_EVALUATION_TEMPLATES = [
   {
+    id: "template_call_intelligence_foundation_v6",
+    name: "Call Intelligence Foundation",
+    evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL,
+    version: 6,
+    description: "Creates the neutral evidence foundation used to find opportunities, measure performance, assess efficiency, and route calls to specialist evaluators.",
+    outputSchema: CALL_INTELLIGENCE_FOUNDATION_OUTPUT_SCHEMA,
+    instructions: [
+      "Analyse one sales call using only the supplied transcript and trusted call metadata. Produce a conservative operational intelligence record; do not produce an overall call score.",
+      "Keep three independent lenses: opportunity status, measurement eligibility, and efficiency status. A call may be an actionable opportunity without being an accepted offer, and it may contain an efficiency gap without proving salesperson fault.",
+      "Classify who or what was reached, decision-maker status, the furthest conversation stage supported by the transcript, whether an offer and price were presented, the customer outcome, the next-step quality, and any direct lead-record issue signal.",
+      `Capture called_on_behalf_of only when the transcript identifies the organisation, publication, brand, program, or client the salesperson says they represent or are calling for. Do not substitute the salesperson's employer, the customer business, or unsupported metadata. If the call never gets far enough to identify it, or it is not present, return exactly \"${FOUNDATION_NO_PRODUCT_PITCHED}\". When a name is captured, include one exact evidence item whose supports value is called_on_behalf_of.`,
+      `The called_on_behalf_of field is independent of the customer's response and whether a formal offer was reached. Capture it as soon as the salesperson says \"on behalf of\", \"calling for\", or otherwise clearly names the represented organisation or publication. For example, \"on behalf of our local SES, the State Emergency Service Volunteers\" must be captured as \"Local SES / State Emergency Service Volunteers\", not \"${FOUNDATION_NO_PRODUCT_PITCHED}\".`,
+      `When both the represented group and its named publication or program are stated, retain both in called_on_behalf_of. For example, \"on behalf of the local paramedics\" followed by \"official Ambulance Active Journal\" should be captured as \"Local paramedics / Ambulance Active Journal\" with an exact supporting excerpt.`,
+      "Resolve the call chronologically and classify the final agreed state. A later objection or agreed next step overrides an earlier provisional callback request or expression of interest. Do not stop at the first matching signal.",
+      "Use customer_outcome long_term_nurture when the final agreement is contact in about a year, 12 months, next year, next financial year, or similarly distant timing. Preserve the exact phrase in follow_up_timing, do not classify it as callback_requested, and do not route it as an active Callback Opportunity.",
+      "Opportunity none means no supported opportunity. Possible means weak or incomplete positive evidence. Actionable requires a concrete follow-up, information request, unresolved positive response, or other supported next action. Accepted is only a candidate signal for the specialist Offer Acceptance evaluator and is not authoritative by itself.",
+      "Measurement eligible means the transcript supports a live sales conversation suitable for denominator-based salesperson or source analysis. Exclude terminal no-contact states. Use insufficient evidence when speaker, contact, or transcript quality cannot support a fair measurement decision.",
+      "Efficiency is efficient_progression when the call made a sensible evidence-backed progression or properly completed a terminal outcome; actionable_gap when a meaningful live call left a material next-step or process gap; terminal_complete for a properly identified terminal state; and unable_to_assess when evidence is insufficient.",
+      "Commercial context may contain only a product/package and amount explicitly stated in the transcript. Set quoted_amount_available false and quoted_amount 0 when no reliable amount is present. It is quoted context, never payment, revenue, order value, fulfilment, CRM closure, source ROI, or realised value.",
+      "Set specialist_routes as recommendations only. Local deterministic routing will reconcile them before storage. Offer Acceptance remains authoritative for acceptance, Lead Record Audit remains authoritative for record validity, Callback Opportunity remains authoritative for handover details, and coaching evaluators never determine whether a sale occurred.",
+      "Use at most five evidence items. Every quote must be one exact contiguous transcript excerpt no longer than 300 characters. Never combine separate excerpts with ellipses. Use unknown or insufficient evidence instead of guessing.",
+      "A usable result with evidence_availability available must include at least one exact evidence item, including no-contact and terminal calls. Quote the transcript fragment that supports the contact result. If no exact excerpt can support the result, use partial or unavailable evidence and lower the status/confidence accordingly.",
+      "Return only JSON matching the supplied output schema and set findings to an empty array; normalized findings and final specialist routes are generated locally."
+    ].join("\n")
+  },
+  {
     id: "template_procedure_adherence_v1",
     name: "Procedure Adherence Review",
     evaluationGoal: "procedure_adherence",
@@ -282,6 +394,29 @@ const DEFAULT_EVALUATION_TEMPLATES = [
     ].join("\n")
   },
   {
+    id: "template_offer_acceptance_classification_v2",
+    name: "Offer Acceptance (Sale Signal) Review",
+    evaluationGoal: OFFER_ACCEPTANCE_GOAL,
+    version: 2,
+    description: "Classifies whether the call contains no sale signal, interest/follow-up only, or explicit customer acceptance of the presented offer.",
+    outputSchema: OFFER_ACCEPTANCE_OUTPUT_SCHEMA,
+    instructions: [
+      "Classify one call into exactly one operational category using only the supplied transcript.",
+      "Category 1, no_sale_signal: use for an explicit decline, voicemail or no answer, wrong number, a call where no offer was presented, or any call with neither qualifying interest nor acceptance.",
+      "Category 2, interested_follow_up_only: use when the customer is positive or open to the offer but a decision remains unresolved. This includes asking for an email or callback, wanting more information, saying they will discuss it with a partner or finance team, needing approval, promising a later answer, choosing between options without committing, or agreeing only to receive or review material.",
+      "Category 3, customer_accepted_offer: use only when the salesperson has presented the offer and the customer explicitly commits to doing it. Agreement can include a specific booking or payment arrangement even when payment will happen later. Completing the stated acceptance action during the call also qualifies.",
+      "The salesperson's own statements, assumptions, thanks, booking language, invoice language, or claim that the customer is on board never proves acceptance. Category 3 requires direct customer words or a direct customer acceptance action in the transcript.",
+      "Any unresolved condition prevents category 3. Subject to partner, owner, manager, finance-team, paperwork, research, review, or later-decision approval is category 2 even if the customer also says yes, put us in, sounds good, or go ahead.",
+      "Short acknowledgements such as yes, yep, okay, sure, sounds good, or that's fine are not acceptance when they merely acknowledge the explanation, confirm contact details, agree to receive information, or answer an administrative question.",
+      "Calibration: 'send the invoice and we'll get that sorted' after agreeing to the specific $440 booking is category 3. 'Yes, please' to booking the stated $550 bronze offer is category 3. 'I'm responding now' to the required agree message is category 3.",
+      "Calibration: 'either bronze or silver, but I will talk to my wife' is category 2. 'Put us in it, but finance must approve first' is category 2. Agreeing that an email address is correct or agreeing to receive a confirmation is category 2.",
+      "Category 3 is transcript evidence that the customer accepted the offer under this operational definition. It is not proof that payment cleared, an order was fulfilled, revenue was recognized, or a CRM opportunity closed.",
+      "Quote the salesperson's offer and the customer's response verbatim when available. Use insufficient evidence instead of guessing when the transcript cannot establish the speaker, offer, response, or unresolved condition.",
+      "Each evidence quote must be one exact contiguous excerpt copied from the transcript, no more than 500 characters. Never join separate excerpts with ellipses. Choose the shortest excerpt that proves the offer or response.",
+      "Return only JSON matching the supplied output schema and set findings to an empty array; validated findings are generated locally."
+    ].join("\n")
+  },
+  {
     id: "template_callback_opportunity_v1",
     name: "Callback Opportunity And Lead Harvest",
     evaluationGoal: "callback_opportunity",
@@ -289,6 +424,7 @@ const DEFAULT_EVALUATION_TEMPLATES = [
     instructions: [
       "Identify whether the customer gave a positive or soft-positive response and requested a callback, information, or later timing.",
       "Extract possible name, callback timing, objection, useful handover context, and confidence.",
+      "Use the final agreed next step rather than an earlier provisional request. Contact in about a year, 12 months, next year, or next financial year is long-term nurture and must not be reported as an active callback opportunity.",
       "Do not call the follow-up completed unless manager-confirmed completion exists."
     ].join("\n")
   },
@@ -546,6 +682,9 @@ function normalizeEvaluationRun(run = {}) {
     failedCallCount: Number(run.failedCallCount || 0),
     queuedJobs: Array.isArray(run.queuedJobs) ? run.queuedJobs : [],
     errors: Array.isArray(run.errors) ? run.errors : [],
+    specialistRouting: run.specialistRouting && typeof run.specialistRouting === "object"
+      ? run.specialistRouting
+      : null,
     quarantineReason: clean(run.quarantineReason || run.quarantine_reason),
     quarantinedAt: clean(run.quarantinedAt || run.quarantined_at),
     quarantinedBy: clean(run.quarantinedBy || run.quarantined_by),
@@ -753,7 +892,7 @@ function explicitWrongNumberContext(context) {
 
 function explicitDoNotContactContext(context) {
   if (context.transcriptQuality === "unusable") return false;
-  return /\b(?:do not|don'?t) (?:call|contact) (?:me|us)(?: again)?\b|\b(?:take|remove) (?:me|us) off (?:your|the) (?:call(?:ing)? )?(?:list|database|system)\b|\bstop calling (?:me|us)\b|\bno more calls\b/i.test(context.transcript);
+  return /\b(?:do not|don'?t) (?:call|contact) (?:me|us)(?: again)?\b|\b(?:take|remove) (?:me|us) off (?:your|the|that|this) (?:call(?:ing)? )?(?:list|database|system)\b|\bstop calling (?:me|us)\b|\bno more calls\b/i.test(context.transcript);
 }
 
 function explicitUnsafeAbusiveContext(context) {
@@ -786,6 +925,46 @@ function reconcileLeadRecordDispositionAuditOutput(record = {}) {
     target[key] = value;
   };
   if (!output.record_evidence || !output.allegation_assessment) return { output, adjustments };
+  if (Array.isArray(output.evidence)) {
+    output.evidence = output.evidence.filter((item, index) => {
+      const original = clean(item?.quote);
+      if (original && original.length <= 500 && auditQuoteIsVerified(original, context)) return true;
+      const verified = offerAcceptanceVerifiedExcerpt(original, context)
+        || foundationBestMatchingTranscriptExcerpt(original, context, {
+          maxLength: 500,
+          minMatches: 4,
+          minCoverage: 0.4
+        });
+      if (!verified) {
+        adjustments.push({
+          field: `evidence[${index}].quote`,
+          action: "removed_unverifiable_evidence",
+          reason: "The supplied audit evidence could not be mapped to one exact contiguous transcript excerpt."
+        });
+        return false;
+      }
+      item.quote = verified;
+      adjustments.push({
+        field: `evidence[${index}].quote`,
+        action: "replaced_with_verified_contiguous_excerpt",
+        originalLength: original.length,
+        storedLength: verified.length
+      });
+      return true;
+    });
+  }
+  const verifiedMaterialEvidence = (output.evidence || [])
+    .filter((item) => item?.relevance !== "limitation" && auditQuoteIsVerified(item?.quote, context));
+  if (!verifiedMaterialEvidence.length
+    && output.record_evidence.classification === "no_supporting_evidence"
+    && output.allegation_assessment.assessment === "absent") {
+    setValue(output, "status", "insufficient_evidence", "No verified material excerpt was supplied for this audit result.");
+    setValue(output, "evidence_availability", "unavailable", "No verified material excerpt was supplied for this audit result.");
+    if (Number(output.confidence) > 0.35) {
+      setValue(output, "confidence", 0.35, "Unavailable evidence caps audit confidence at 0.35.");
+    }
+    setValue(output, "manager_summary", "The transcript did not provide a verified material excerpt for a lead-record finding; no record action is supported.", "The summary must reflect unavailable verified evidence.");
+  }
 
   if (explicitWrongNumberContext(context)) {
     setValue(output, "status", "usable", "Verified explicit wrong-number evidence is usable record evidence.");
@@ -1144,6 +1323,1087 @@ function auditFindingsForNormalization(output, validationContext = {}) {
   ];
 }
 
+const FOUNDATION_CONTACT_RESULTS = new Set([
+  "live_decision_maker",
+  "live_non_decision_maker",
+  "gatekeeper",
+  "voicemail",
+  "no_answer_system",
+  "wrong_number",
+  "business_closed",
+  "do_not_contact",
+  "unsafe_abusive",
+  "other_live_contact",
+  "unknown"
+]);
+const FOUNDATION_DECISION_MAKER_STATUSES = new Set(["confirmed", "possible", "not_reached", "unknown"]);
+const FOUNDATION_CONVERSATION_STAGES = new Set([
+  "no_contact",
+  "introduction",
+  "purpose_explained",
+  "offer_presented",
+  "price_presented",
+  "objection_discussed",
+  "commitment_requested",
+  "next_step_agreed",
+  "acceptance_signal"
+]);
+const FOUNDATION_CUSTOMER_OUTCOMES = new Set([
+  "no_contact",
+  "no_sale_signal",
+  "explicit_decline",
+  "information_requested",
+  "callback_requested",
+  "conditional_interest",
+  "long_term_nurture",
+  "accepted_offer_signal",
+  "unknown"
+]);
+const FOUNDATION_NEXT_STEP_STATUSES = new Set(["none", "vague", "actionable", "accepted_action_completed", "unknown"]);
+const FOUNDATION_LEAD_RECORD_SIGNALS = new Set([
+  "none",
+  "wrong_number",
+  "private_non_business",
+  "business_closed_permanently",
+  "do_not_contact",
+  "unsafe_abusive",
+  "possible_issue",
+  "unknown"
+]);
+const FOUNDATION_OPPORTUNITY_STATUSES = new Set(["none", "possible", "actionable", "accepted"]);
+const FOUNDATION_MEASUREMENT_ELIGIBILITY = new Set(["eligible", "excluded_terminal", "insufficient_evidence"]);
+const FOUNDATION_EFFICIENCY_STATUSES = new Set(["efficient_progression", "actionable_gap", "terminal_complete", "unable_to_assess"]);
+const FOUNDATION_EVIDENCE_SUPPORTS = new Set([
+  "contact_result",
+  "decision_maker_status",
+  "conversation_stage",
+  "offer_presented",
+  "customer_outcome",
+  "next_step_status",
+  "follow_up_timing",
+  "lead_record_signal",
+  "called_on_behalf_of",
+  "commercial_context",
+  "opportunity_status",
+  "efficiency_status"
+]);
+const FOUNDATION_SPECIALIST_GOALS = Object.freeze([
+  OFFER_ACCEPTANCE_GOAL,
+  "callback_opportunity",
+  "objection_handling",
+  "procedure_adherence",
+  LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
+]);
+const FOUNDATION_LIVE_CONTACT_RESULTS = new Set([
+  "live_decision_maker",
+  "live_non_decision_maker",
+  "gatekeeper",
+  "other_live_contact"
+]);
+const FOUNDATION_TERMINAL_CONTACT_RESULTS = new Set([
+  "voicemail",
+  "no_answer_system",
+  "wrong_number",
+  "business_closed",
+  "do_not_contact",
+  "unsafe_abusive"
+]);
+
+function foundationValidationError(message) {
+  const error = new Error(`Call Intelligence Foundation output is invalid: ${message}`);
+  error.statusCode = 400;
+  return error;
+}
+
+function assertFoundationObject(value, field) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw foundationValidationError(`${field} must be an object.`);
+  }
+  return value;
+}
+
+function assertFoundationKeys(value, allowed, field) {
+  const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unexpected.length) {
+    throw foundationValidationError(`${field} contains unsupported field${unexpected.length === 1 ? "" : "s"}: ${unexpected.join(", ")}.`);
+  }
+}
+
+function foundationString(value, field, { allowEmpty = false, maxLength = 1200 } = {}) {
+  if (typeof value !== "string") throw foundationValidationError(`${field} must be a string.`);
+  const text = value.trim();
+  if (!allowEmpty && !text) throw foundationValidationError(`${field} is required.`);
+  if (text.length > maxLength) throw foundationValidationError(`${field} must be ${maxLength} characters or fewer.`);
+  return text;
+}
+
+function foundationEnum(value, allowed, field) {
+  const text = foundationString(value, field, { maxLength: 100 });
+  if (!allowed.has(text)) throw foundationValidationError(`${field} has unsupported value: ${text}.`);
+  return text;
+}
+
+function foundationSpecialistRoutes(output = {}) {
+  const opportunity = output.intelligence_lenses?.opportunity_status;
+  const leadSignal = output.lead_record_signal;
+  const contactResult = output.contact_result;
+  const stage = output.conversation_stage;
+  const stageOrder = [
+    "no_contact",
+    "introduction",
+    "purpose_explained",
+    "offer_presented",
+    "price_presented",
+    "objection_discussed",
+    "commitment_requested",
+    "next_step_agreed",
+    "acceptance_signal"
+  ];
+  const meaningfulLiveConversation = FOUNDATION_LIVE_CONTACT_RESULTS.has(contactResult)
+    && stageOrder.indexOf(stage) >= stageOrder.indexOf("purpose_explained");
+  const longTermNurture = output.customer_outcome === "long_term_nurture";
+  const terminalContact = FOUNDATION_TERMINAL_CONTACT_RESULTS.has(contactResult);
+  const productPitched = output.called_on_behalf_of !== FOUNDATION_NO_PRODUCT_PITCHED;
+  return {
+    [OFFER_ACCEPTANCE_GOAL]: productPitched && !terminalContact
+      && Boolean(output.offer_presented || output.customer_outcome === "accepted_offer_signal"),
+    callback_opportunity: productPitched && !terminalContact && !longTermNurture && (["possible", "actionable"].includes(opportunity)
+      || ["information_requested", "callback_requested", "conditional_interest"].includes(output.customer_outcome)),
+    objection_handling: productPitched && !terminalContact && Boolean(output.objection_present),
+    procedure_adherence: productPitched && meaningfulLiveConversation,
+    [LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL]: !["none", "unknown"].includes(leadSignal)
+      || ["wrong_number", "business_closed", "do_not_contact", "unsafe_abusive"].includes(contactResult)
+  };
+}
+
+function foundationVerifiedExcerpt(value, context) {
+  const quote = clean(value);
+  if (!quote || !context.transcriptComparable) return "";
+  if (quote.length <= 300 && auditQuoteIsVerified(quote, context)) return quote;
+  const candidates = [];
+  const addCandidate = (candidate) => {
+    const text = clean(candidate);
+    if (!text) return;
+    if (text.length <= 300) {
+      candidates.push(text);
+      return;
+    }
+    const first = text.slice(0, 300).replace(/\s+\S*$/, "").trim();
+    const last = text.slice(-300).replace(/^\S*\s+/, "").trim();
+    if (first) candidates.push(first);
+    if (last) candidates.push(last);
+  };
+  quote.split(/\s*(?:\.{3,}|â€¦+)\s*/).forEach((segment) => {
+    addCandidate(segment);
+    segment.split(/(?<=[.!?])\s+/).forEach(addCandidate);
+  });
+  return candidates
+    .filter((candidate) => auditQuoteIsVerified(candidate, context))
+    .sort((left, right) => right.length - left.length)[0] || "";
+}
+
+function foundationEvidenceTokens(value) {
+  const ignored = new Set([
+    "about", "after", "again", "also", "and", "are", "because", "been", "before", "but", "can", "could",
+    "did", "does", "for", "from", "got", "have", "here", "into", "just", "like", "mate", "not", "our",
+    "out", "that", "the", "their", "there", "they", "this", "through", "very", "was", "were", "what",
+    "when", "where", "which", "with", "would", "yeah", "you", "your"
+  ]);
+  return (clean(value).toLocaleLowerCase().match(/[a-z]+|\d+(?:\.\d+)?/g) || [])
+    .filter((token) => token.length >= 3 || /^\d/.test(token))
+    .filter((token) => !ignored.has(token));
+}
+
+function foundationBestMatchingTranscriptExcerpt(value, context, options = {}) {
+  const quoteTokens = Array.from(new Set(foundationEvidenceTokens(value)));
+  const transcript = clean(context.transcript);
+  const maxLength = Math.max(40, Number(options.maxLength || 300));
+  const minMatches = Math.max(1, Number(options.minMatches || 4));
+  const minCoverage = Number(options.minCoverage || 0.4);
+  if (!transcript || quoteTokens.length < minMatches) return "";
+  const quoteTokenSet = new Set(quoteTokens);
+  const transcriptTokens = Array.from(transcript.matchAll(/[A-Za-z]+|\d+(?:\.\d+)?/g))
+    .map((match) => ({ value: match[0].toLocaleLowerCase(), index: match.index || 0, end: (match.index || 0) + match[0].length }));
+  const candidates = [];
+  const spans = [10, 18, 30, 45, 65];
+  transcriptTokens.forEach((token, anchorIndex) => {
+    if (!quoteTokenSet.has(token.value)) return;
+    [-6, -3, 0].forEach((backtrack) => {
+      const startIndex = Math.max(0, anchorIndex + backtrack);
+      spans.forEach((span) => {
+        let endIndex = Math.min(transcriptTokens.length - 1, startIndex + span - 1);
+        while (endIndex > startIndex && transcriptTokens[endIndex].end - transcriptTokens[startIndex].index > maxLength) endIndex -= 1;
+        if (endIndex <= startIndex) return;
+        const excerpt = transcript.slice(transcriptTokens[startIndex].index, transcriptTokens[endIndex].end).trim();
+        const excerptTokens = Array.from(new Set(foundationEvidenceTokens(excerpt)));
+        const matched = excerptTokens.filter((item) => quoteTokenSet.has(item)).length;
+        const coverage = matched / quoteTokens.length;
+        const density = matched / Math.max(1, excerptTokens.length);
+        if (matched < minMatches || (coverage < minCoverage && !(matched >= 8 && coverage >= 0.25))) return;
+        candidates.push({ excerpt, matched, coverage, density, score: coverage * 0.7 + density * 0.3 });
+      });
+    });
+  });
+  const best = candidates.sort((left, right) => right.score - left.score
+    || right.matched - left.matched
+    || left.excerpt.length - right.excerpt.length)[0]?.excerpt || "";
+  return best && auditQuoteIsVerified(best, context) ? best : "";
+}
+
+function foundationLabelEvidenceExcerpt(value, context) {
+  const label = clean(value);
+  const transcript = clean(context.transcript);
+  if (!label || !transcript) return "";
+  const lowerTranscript = transcript.toLocaleLowerCase();
+  let matchedText = label;
+  let index = lowerTranscript.indexOf(label.toLocaleLowerCase());
+  if (index < 0) {
+    const ignored = new Set(["and", "for", "local", "our", "state", "the"]);
+    const tokens = label.match(/[A-Za-z0-9]+/g)
+      ?.filter((token) => token.length >= 3 && !ignored.has(token.toLocaleLowerCase()))
+      .sort((left, right) => right.length - left.length) || [];
+    for (const token of tokens) {
+      const match = new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").exec(transcript);
+      if (!match) continue;
+      index = match.index;
+      matchedText = match[0];
+      break;
+    }
+  }
+  if (index < 0) return "";
+  let start = Math.max(0, index - 120);
+  let end = Math.min(transcript.length, index + matchedText.length + 140);
+  if (start > 0) {
+    const nextSpace = transcript.indexOf(" ", start);
+    if (nextSpace >= 0 && nextSpace < index) start = nextSpace + 1;
+  }
+  if (end < transcript.length) {
+    const priorSpace = transcript.lastIndexOf(" ", end);
+    if (priorSpace > index + matchedText.length) end = priorSpace;
+  }
+  let excerpt = transcript.slice(start, end).replace(/\s+/g, " ").trim();
+  if (excerpt.length > 300) excerpt = excerpt.slice(0, 300).replace(/\s+\S*$/, "").trim();
+  return auditQuoteIsVerified(excerpt, context) ? excerpt : "";
+}
+
+function foundationCalledOnEvidenceIsRelevant(item, calledOnBehalfOf) {
+  const quote = auditComparableText(item?.quote);
+  const label = auditComparableText(calledOnBehalfOf);
+  if (!quote || !label) return false;
+  if (quote.includes(label)) return true;
+  const ignored = new Set(["and", "for", "local", "our", "state", "the"]);
+  return (clean(calledOnBehalfOf).match(/[A-Za-z0-9]+/g) || [])
+    .filter((token) => token.length >= 3 && !ignored.has(token.toLocaleLowerCase()))
+    .some((token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(item.quote || ""));
+}
+
+function foundationLongTermTimingFromTranscript(transcript = "") {
+  const text = clean(transcript);
+  if (!text) return "";
+  const patterns = [
+    /\b(?:in|after|within)\s+(?:(?:about|around|roughly|approximately|maybe)\s+)?(?:a|one)\s+year(?:'s)?(?:\s+time)?\b/gi,
+    /\b(?:in|after|within)\s+(?:about\s+|around\s+|roughly\s+)?(?:12|twelve)\s+months?(?:'?\s*time)?\b/gi,
+    /\b(?:this time\s+)?next year\b/gi,
+    /\b(?:before\s+(?:the\s+)?)?next financial year\b/gi,
+    /\b(?:trading|operating|in business)\s+for\s+(?:about\s+|around\s+|roughly\s+)?(?:12|twelve)\s+months?\s+before\b/gi
+  ];
+  const activePatterns = [
+    /\b(?:call|ring)\s+(?:me|us|him|her|them)?\s*back\b/gi,
+    /\b(?:tomorrow|later today|this afternoon|tonight|next week|sometime soon)\b/gi
+  ];
+  const matches = [];
+  patterns.forEach((pattern) => {
+    for (const match of text.matchAll(pattern)) matches.push({ index: match.index || 0, value: match[0] });
+  });
+  if (!matches.length) return "";
+  const latestLongTerm = matches.sort((left, right) => right.index - left.index)[0];
+  const activeMatches = [];
+  activePatterns.forEach((pattern) => {
+    for (const match of text.matchAll(pattern)) activeMatches.push({ index: match.index || 0, value: match[0] });
+  });
+  const latestActive = activeMatches.sort((left, right) => right.index - left.index)[0];
+  return !latestActive || latestLongTerm.index >= latestActive.index ? latestLongTerm.value : "";
+}
+
+function foundationExplicitRepresentedParty(context = {}) {
+  const transcript = clean(context.transcript);
+  if (!transcript) return null;
+  const represented = /\b(?:on behalf of|calling for)\s+(?:the\s+)?([^,.!?]{3,100})/i.exec(transcript);
+  if (!represented) return null;
+  const representedLabel = clean(represented[1])
+    .replace(/\b(?:that's|that is|this is)\s+all\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!representedLabel) return null;
+  const publication = /\bofficial\s+([A-Z][A-Za-z0-9&' -]{2,80}?\s+(?:Journal|Yearbook|Magazine|Program|Programme))\b/.exec(transcript);
+  const capitalize = (value) => value ? `${value[0].toLocaleUpperCase()}${value.slice(1)}` : "";
+  const labels = [capitalize(representedLabel), clean(publication?.[1])].filter(Boolean);
+  const label = Array.from(new Set(labels.map((value) => value.toLocaleLowerCase())))
+    .map((key) => labels.find((value) => value.toLocaleLowerCase() === key))
+    .join(" / ");
+  const start = Math.max(0, represented.index - 60);
+  const end = Math.min(transcript.length, represented.index + represented[0].length + 80);
+  const quote = foundationVerifiedExcerpt(transcript.slice(start, end), context)
+    || foundationVerifiedExcerpt(represented[0], context);
+  return label && quote ? { label, quote } : null;
+}
+
+function reconcileCallIntelligenceFoundationOutput(record = {}) {
+  const source = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  const output = JSON.parse(JSON.stringify(source));
+  const context = auditEvidenceContext(record);
+  const adjustments = [];
+  const confidenceCap = output.evidence_availability === "unavailable"
+    ? 0.35
+    : output.evidence_availability === "partial"
+      ? 0.8
+      : null;
+  if (confidenceCap !== null
+    && typeof output.confidence === "number"
+    && Number.isFinite(output.confidence)
+    && output.confidence > confidenceCap) {
+    adjustments.push({
+      field: "confidence",
+      from: output.confidence,
+      to: confidenceCap,
+      reason: `${output.evidence_availability} evidence cannot support confidence above ${confidenceCap.toFixed(2)}.`
+    });
+    output.confidence = confidenceCap;
+  }
+  if (Array.isArray(output.evidence)) {
+    output.evidence = output.evidence.filter((item, index) => {
+      const original = clean(item?.quote);
+      if (!original || (original.length <= 300 && auditQuoteIsVerified(original, context))) return true;
+      const verified = foundationVerifiedExcerpt(original, context)
+        || foundationBestMatchingTranscriptExcerpt(original, context);
+      if (!verified) {
+        if (item?.supports === "called_on_behalf_of") return true;
+        adjustments.push({
+          field: `evidence[${index}].quote`,
+          action: "removed_unverifiable_optional_evidence",
+          reason: "The supplied evidence could not be mapped to one exact contiguous transcript excerpt."
+        });
+        return false;
+      }
+      item.quote = verified;
+      adjustments.push({
+        field: `evidence[${index}].quote`,
+        action: "replaced_with_verified_contiguous_excerpt",
+        originalLength: original.length,
+        storedLength: verified.length
+      });
+      return true;
+    });
+  }
+  const finalLongTermTiming = foundationLongTermTimingFromTranscript(context.transcript);
+  if (finalLongTermTiming && !["accepted_offer_signal", "explicit_decline", "no_contact"].includes(output.customer_outcome)) {
+    if (output.customer_outcome !== "long_term_nurture") {
+      adjustments.push({
+        field: "customer_outcome",
+        from: output.customer_outcome,
+        to: "long_term_nurture",
+        reason: "The final transcript-grounded follow-up timing is long-term nurture rather than an active callback."
+      });
+      output.customer_outcome = "long_term_nurture";
+    }
+    if (output.follow_up_timing !== finalLongTermTiming) {
+      adjustments.push({
+        field: "follow_up_timing",
+        from: output.follow_up_timing,
+        to: finalLongTermTiming,
+        reason: "The final long-term timing phrase is stored verbatim from the transcript."
+      });
+      output.follow_up_timing = finalLongTermTiming;
+    }
+    if (output.intelligence_lenses?.opportunity_status === "actionable") {
+      output.intelligence_lenses.opportunity_status = "possible";
+      adjustments.push({
+        field: "intelligence_lenses.opportunity_status",
+        from: "actionable",
+        to: "possible",
+        reason: "A roughly one-year nurture agreement is not an active callback opportunity."
+      });
+    }
+  }
+  if (clean(output.follow_up_timing)
+    && !auditQuoteIsVerified(output.follow_up_timing, context)
+    && output.customer_outcome !== "long_term_nurture") {
+    const originalTiming = clean(output.follow_up_timing);
+    const verifiedTiming = foundationVerifiedExcerpt(originalTiming, context)
+      || foundationBestMatchingTranscriptExcerpt(originalTiming, context, {
+        maxLength: 160,
+        minMatches: 1,
+        minCoverage: 0.5
+      });
+    output.follow_up_timing = verifiedTiming;
+    adjustments.push({
+      field: "follow_up_timing",
+      from: originalTiming,
+      to: verifiedTiming,
+      reason: verifiedTiming
+        ? "The timing was replaced with one exact contiguous transcript excerpt."
+        : "The unverified timing was cleared rather than stored as transcript evidence."
+    });
+  }
+  if (output.called_on_behalf_of === FOUNDATION_NO_PRODUCT_PITCHED) {
+    const representedParty = foundationExplicitRepresentedParty(context);
+    if (representedParty) {
+      output.called_on_behalf_of = representedParty.label;
+      if (!Array.isArray(output.evidence)) output.evidence = [];
+      if (output.evidence.length >= 5) output.evidence.pop();
+      output.evidence.push({ supports: "called_on_behalf_of", speaker: "salesperson", quote: representedParty.quote });
+      adjustments.push({
+        field: "called_on_behalf_of",
+        from: FOUNDATION_NO_PRODUCT_PITCHED,
+        to: representedParty.label,
+        reason: "An explicit on-behalf-of statement was present in the supplied transcript."
+      });
+    }
+  }
+  if (output.called_on_behalf_of && output.called_on_behalf_of !== FOUNDATION_NO_PRODUCT_PITCHED) {
+    const suppliedEvidence = output.evidence?.find((item) => item?.supports === "called_on_behalf_of");
+    const needsEvidenceRepair = !suppliedEvidence
+      || !auditQuoteIsVerified(suppliedEvidence.quote, context)
+      || !foundationCalledOnEvidenceIsRelevant(suppliedEvidence, output.called_on_behalf_of);
+    if (!needsEvidenceRepair) {
+      // The supplied evidence is exact and meaningfully identifies the represented party.
+    } else {
+      const quote = foundationLabelEvidenceExcerpt(output.called_on_behalf_of, context);
+      if (quote) {
+        if (!Array.isArray(output.evidence)) output.evidence = [];
+        if (suppliedEvidence) {
+          suppliedEvidence.quote = quote;
+          suppliedEvidence.speaker = "salesperson";
+        } else {
+          if (output.evidence.length >= 5) output.evidence.pop();
+          output.evidence.push({ supports: "called_on_behalf_of", speaker: "salesperson", quote });
+        }
+        adjustments.push({
+          field: "evidence",
+          action: "added_verified_called_on_behalf_of_excerpt",
+          reason: "A distinctive represented-party label token appeared verbatim in the supplied transcript."
+        });
+      }
+    }
+  }
+  const metadataContactResult = {
+    voicemail: "voicemail",
+    no_answer: "no_answer_system",
+    wrong_number: "wrong_number"
+  }[context.contactClassification] || "";
+  const originalContactResult = output.contact_result;
+  if (context.contactClassification === "customer" && FOUNDATION_TERMINAL_CONTACT_RESULTS.has(output.contact_result)) {
+    output.contact_result = output.decision_maker_status === "confirmed"
+      ? "live_decision_maker"
+      : output.decision_maker_status === "not_reached"
+        ? "gatekeeper"
+        : output.decision_maker_status === "possible"
+          ? "live_non_decision_maker"
+          : "other_live_contact";
+  } else if (metadataContactResult && output.contact_result !== metadataContactResult) {
+    output.contact_result = metadataContactResult;
+  }
+  if (output.contact_result !== originalContactResult) {
+    adjustments.push({
+      field: "contact_result",
+      from: originalContactResult,
+      to: output.contact_result,
+      reason: "The deterministic call-contact classification reconciled an inconsistent model contact result."
+    });
+  }
+  const terminalContact = FOUNDATION_TERMINAL_CONTACT_RESULTS.has(output.contact_result);
+  if (terminalContact) {
+    if (output.intelligence_lenses?.measurement_eligibility !== "excluded_terminal") {
+      adjustments.push({
+        field: "intelligence_lenses.measurement_eligibility",
+        from: output.intelligence_lenses?.measurement_eligibility,
+        to: "excluded_terminal",
+        reason: "Terminal contact results are excluded from live-conversation measurement."
+      });
+      output.intelligence_lenses.measurement_eligibility = "excluded_terminal";
+    }
+    if (!["terminal_complete", "unable_to_assess"].includes(output.intelligence_lenses?.efficiency_status)) {
+      adjustments.push({
+        field: "intelligence_lenses.efficiency_status",
+        from: output.intelligence_lenses?.efficiency_status,
+        to: "terminal_complete",
+        reason: "The terminal contact state was completed and recorded."
+      });
+      output.intelligence_lenses.efficiency_status = "terminal_complete";
+    }
+    if (["voicemail", "no_answer_system"].includes(output.contact_result)) {
+      output.customer_outcome = "no_contact";
+      output.next_step_status = "none";
+      output.follow_up_timing = "";
+      output.intelligence_lenses.opportunity_status = "none";
+      output.offer_presented = false;
+      output.price_presented = false;
+      output.objection_present = false;
+    }
+    if (output.contact_result === "wrong_number" && output.lead_record_signal !== "wrong_number") {
+      output.lead_record_signal = "wrong_number";
+      adjustments.push({
+        field: "lead_record_signal",
+        from: source.lead_record_signal,
+        to: "wrong_number",
+        reason: "The trusted call-contact classification identifies a wrong number."
+      });
+    }
+  }
+  if (output.called_on_behalf_of === FOUNDATION_NO_PRODUCT_PITCHED) {
+    const originalCommercial = JSON.parse(JSON.stringify(output.commercial_context || {}));
+    output.offer_presented = false;
+    output.price_presented = false;
+    output.objection_present = false;
+    if (output.intelligence_lenses) output.intelligence_lenses.opportunity_status = "none";
+    output.commercial_context = {
+      product_or_package: "",
+      quoted_amount_available: false,
+      quoted_amount: 0,
+      currency: "unknown"
+    };
+    if (source.offer_presented || source.price_presented || source.objection_present
+      || source.intelligence_lenses?.opportunity_status !== "none"
+      || originalCommercial.quoted_amount_available || clean(originalCommercial.product_or_package)) {
+      adjustments.push({
+        field: "commercial_signal",
+        action: "cleared_without_identified_product_or_represented_party",
+        reason: "No product or represented party was established, so unsupported commercial and specialist-routing signals were cleared."
+      });
+    }
+  }
+  if (output.status === "usable" && output.evidence_availability === "available"
+    && Array.isArray(output.evidence) && !output.evidence.length && context.transcript) {
+    const fallbackQuote = clean(context.transcript.slice(0, 300).replace(/\s+\S*$/, ""))
+      || clean(context.transcript.slice(0, 300));
+    if (fallbackQuote && auditQuoteIsVerified(fallbackQuote, context)) {
+      output.evidence.push({ supports: "contact_result", speaker: "unknown", quote: fallbackQuote });
+      adjustments.push({
+        field: "evidence",
+        action: "added_verified_contact_excerpt",
+        reason: "A verified transcript excerpt was retained so an available-evidence result is not stored without proof."
+      });
+    }
+  }
+  const derivedRoutes = foundationSpecialistRoutes(output);
+  const suppliedRoutes = output.specialist_routes && typeof output.specialist_routes === "object"
+    ? output.specialist_routes
+    : {};
+  adjustments.push(...FOUNDATION_SPECIALIST_GOALS.flatMap((goal) => suppliedRoutes[goal] === derivedRoutes[goal]
+    ? []
+    : [{
+        field: `specialist_routes.${goal}`,
+        from: suppliedRoutes[goal],
+        to: derivedRoutes[goal],
+        reason: "Specialist routing is derived locally from the validated foundation facts."
+      }]));
+  output.specialist_routes = derivedRoutes;
+  return { output, adjustments };
+}
+
+function validateCallIntelligenceFoundationResult(record = {}) {
+  const output = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  assertFoundationObject(output, "result");
+  assertFoundationKeys(output, [
+    "schema_version",
+    "evaluation_goal",
+    "call_id",
+    "status",
+    "confidence",
+    "evidence_availability",
+    "transcript_quality",
+    "contact_result",
+    "decision_maker_status",
+    "conversation_stage",
+    "offer_presented",
+    "price_presented",
+    "objection_present",
+    "customer_outcome",
+    "next_step_status",
+    "follow_up_timing",
+    "lead_record_signal",
+    "called_on_behalf_of",
+    "commercial_context",
+    "intelligence_lenses",
+    "specialist_routes",
+    "evidence",
+    "manager_review_recommended",
+    "manager_summary",
+    "limitations",
+    "findings",
+    "model_metadata"
+  ], "result");
+  if (output.schema_version !== CALL_INTELLIGENCE_FOUNDATION_SCHEMA_VERSION) {
+    throw foundationValidationError(`schema_version must be ${CALL_INTELLIGENCE_FOUNDATION_SCHEMA_VERSION}.`);
+  }
+  if (output.evaluation_goal !== CALL_INTELLIGENCE_FOUNDATION_GOAL) {
+    throw foundationValidationError(`evaluation_goal must be ${CALL_INTELLIGENCE_FOUNDATION_GOAL}.`);
+  }
+  foundationString(output.call_id, "call_id", { maxLength: 200 });
+  const status = foundationEnum(output.status, EVALUATION_RESULT_STATUSES, "status");
+  const confidence = Number(output.confidence);
+  if (typeof output.confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw foundationValidationError("confidence must be a number between 0 and 1.");
+  }
+  const evidenceAvailability = foundationEnum(output.evidence_availability, EVIDENCE_AVAILABILITY, "evidence_availability");
+  foundationEnum(output.transcript_quality, TRANSCRIPT_QUALITIES, "transcript_quality");
+  const contactResult = foundationEnum(output.contact_result, FOUNDATION_CONTACT_RESULTS, "contact_result");
+  foundationEnum(output.decision_maker_status, FOUNDATION_DECISION_MAKER_STATUSES, "decision_maker_status");
+  foundationEnum(output.conversation_stage, FOUNDATION_CONVERSATION_STAGES, "conversation_stage");
+  if (typeof output.offer_presented !== "boolean") throw foundationValidationError("offer_presented must be a boolean.");
+  if (typeof output.price_presented !== "boolean") throw foundationValidationError("price_presented must be a boolean.");
+  if (typeof output.objection_present !== "boolean") throw foundationValidationError("objection_present must be a boolean.");
+  const customerOutcome = foundationEnum(output.customer_outcome, FOUNDATION_CUSTOMER_OUTCOMES, "customer_outcome");
+  const nextStepStatus = foundationEnum(output.next_step_status, FOUNDATION_NEXT_STEP_STATUSES, "next_step_status");
+  const followUpTiming = foundationString(output.follow_up_timing, "follow_up_timing", { allowEmpty: true, maxLength: 200 });
+  foundationEnum(output.lead_record_signal, FOUNDATION_LEAD_RECORD_SIGNALS, "lead_record_signal");
+  const calledOnBehalfOf = foundationString(output.called_on_behalf_of, "called_on_behalf_of", { maxLength: 200 });
+
+  const commercial = assertFoundationObject(output.commercial_context, "commercial_context");
+  assertFoundationKeys(commercial, ["product_or_package", "quoted_amount_available", "quoted_amount", "currency"], "commercial_context");
+  foundationString(commercial.product_or_package, "commercial_context.product_or_package", { allowEmpty: true, maxLength: 200 });
+  if (typeof commercial.quoted_amount_available !== "boolean") {
+    throw foundationValidationError("commercial_context.quoted_amount_available must be a boolean.");
+  }
+  if (typeof commercial.quoted_amount !== "number" || !Number.isFinite(commercial.quoted_amount) || commercial.quoted_amount < 0 || commercial.quoted_amount > 1000000000) {
+    throw foundationValidationError("commercial_context.quoted_amount must be a non-negative number.");
+  }
+  if (!commercial.quoted_amount_available && commercial.quoted_amount !== 0) {
+    throw foundationValidationError("commercial_context.quoted_amount must be 0 when quoted_amount_available is false.");
+  }
+  foundationEnum(commercial.currency, new Set(["AUD", "NZD", "unknown"]), "commercial_context.currency");
+
+  const lenses = assertFoundationObject(output.intelligence_lenses, "intelligence_lenses");
+  assertFoundationKeys(lenses, ["opportunity_status", "measurement_eligibility", "efficiency_status"], "intelligence_lenses");
+  const opportunityStatus = foundationEnum(lenses.opportunity_status, FOUNDATION_OPPORTUNITY_STATUSES, "intelligence_lenses.opportunity_status");
+  const measurementEligibility = foundationEnum(lenses.measurement_eligibility, FOUNDATION_MEASUREMENT_ELIGIBILITY, "intelligence_lenses.measurement_eligibility");
+  const efficiencyStatus = foundationEnum(lenses.efficiency_status, FOUNDATION_EFFICIENCY_STATUSES, "intelligence_lenses.efficiency_status");
+
+  const routes = assertFoundationObject(output.specialist_routes, "specialist_routes");
+  assertFoundationKeys(routes, FOUNDATION_SPECIALIST_GOALS, "specialist_routes");
+  FOUNDATION_SPECIALIST_GOALS.forEach((goal) => {
+    if (typeof routes[goal] !== "boolean") throw foundationValidationError(`specialist_routes.${goal} must be a boolean.`);
+  });
+
+  if (!Array.isArray(output.evidence) || output.evidence.length > 5) {
+    throw foundationValidationError("evidence must be an array containing at most five items.");
+  }
+  const validationContext = auditEvidenceContext(record);
+  output.evidence.forEach((item, index) => {
+    assertFoundationObject(item, `evidence[${index}]`);
+    assertFoundationKeys(item, ["supports", "speaker", "quote"], `evidence[${index}]`);
+    foundationEnum(item.supports, FOUNDATION_EVIDENCE_SUPPORTS, `evidence[${index}].supports`);
+    foundationEnum(item.speaker, new Set(["customer", "salesperson", "system", "unknown"]), `evidence[${index}].speaker`);
+    const quote = foundationString(item.quote, `evidence[${index}].quote`, { maxLength: 300 });
+    if (validationContext.transcriptComparable && !auditQuoteIsVerified(quote, validationContext)) {
+      throw foundationValidationError(`evidence[${index}].quote was not found in the supplied transcript.`);
+    }
+  });
+  if (followUpTiming && validationContext.transcriptComparable && !auditQuoteIsVerified(followUpTiming, validationContext)) {
+    throw foundationValidationError("follow_up_timing must be an exact timing phrase from the supplied transcript.");
+  }
+  if (customerOutcome === "long_term_nurture" && !followUpTiming) {
+    throw foundationValidationError("long_term_nurture requires an exact follow_up_timing phrase.");
+  }
+  if (calledOnBehalfOf !== FOUNDATION_NO_PRODUCT_PITCHED
+    && !output.evidence.some((item) => item.supports === "called_on_behalf_of")) {
+    throw foundationValidationError("called_on_behalf_of requires an exact supporting transcript excerpt unless it is No product pitched.");
+  }
+  if (calledOnBehalfOf !== FOUNDATION_NO_PRODUCT_PITCHED
+    && !output.evidence.some((item) => item.supports === "called_on_behalf_of"
+      && foundationCalledOnEvidenceIsRelevant(item, calledOnBehalfOf))) {
+    throw foundationValidationError("called_on_behalf_of evidence must identify the represented organisation or publication.");
+  }
+  if (status === "usable" && evidenceAvailability === "available" && !output.evidence.length) {
+    throw foundationValidationError("usable output with available evidence requires at least one verified evidence item.");
+  }
+  if (evidenceAvailability === "unavailable" && confidence > 0.35) {
+    throw foundationValidationError("unavailable evidence requires confidence of 0.35 or lower.");
+  }
+  if (evidenceAvailability === "partial" && confidence > 0.8) {
+    throw foundationValidationError("partial evidence requires confidence of 0.80 or lower.");
+  }
+  if (output.price_presented && !output.offer_presented) {
+    throw foundationValidationError("price_presented cannot be true when offer_presented is false.");
+  }
+  if (output.offer_presented && calledOnBehalfOf === FOUNDATION_NO_PRODUCT_PITCHED) {
+    throw foundationValidationError("offer_presented cannot be true when called_on_behalf_of is No product pitched.");
+  }
+  if (opportunityStatus === "accepted"
+    && (!output.offer_presented || customerOutcome !== "accepted_offer_signal")) {
+    throw foundationValidationError("accepted opportunity status requires a presented offer and accepted_offer_signal outcome.");
+  }
+  if (nextStepStatus === "accepted_action_completed" && opportunityStatus !== "accepted") {
+    throw foundationValidationError("accepted_action_completed requires accepted opportunity status.");
+  }
+  if (measurementEligibility === "eligible" && !FOUNDATION_LIVE_CONTACT_RESULTS.has(contactResult)) {
+    throw foundationValidationError("measurement eligibility requires a supported live-contact result.");
+  }
+  if (FOUNDATION_TERMINAL_CONTACT_RESULTS.has(contactResult)) {
+    if (measurementEligibility !== "excluded_terminal") {
+      throw foundationValidationError("terminal contact results must be excluded_terminal for measurement.");
+    }
+    if (!["terminal_complete", "unable_to_assess"].includes(efficiencyStatus)) {
+      throw foundationValidationError("terminal contact results require terminal_complete or unable_to_assess efficiency status.");
+    }
+  }
+  if (typeof output.manager_review_recommended !== "boolean") {
+    throw foundationValidationError("manager_review_recommended must be a boolean.");
+  }
+  foundationString(output.manager_summary, "manager_summary", { maxLength: 1000 });
+  if (!Array.isArray(output.limitations) || output.limitations.length > 12) {
+    throw foundationValidationError("limitations must be an array containing at most 12 items.");
+  }
+  output.limitations.forEach((item, index) => foundationString(item, `limitations[${index}]`, { maxLength: 500 }));
+  if (!Array.isArray(output.findings) || output.findings.length) {
+    throw foundationValidationError("findings must be an empty array; normalized findings are generated locally after validation.");
+  }
+  if (output.model_metadata !== undefined && output.model_metadata !== null) assertFoundationObject(output.model_metadata, "model_metadata");
+  return output;
+}
+
+function foundationFindingsForNormalization(output = {}) {
+  const evidenceBySupport = new Map((output.evidence || []).map((item) => [item.supports, item.quote]));
+  const evidence = (field) => evidenceBySupport.get(field)
+    || (field === "follow_up_timing" ? evidenceBySupport.get("next_step_status") : "")
+    || (output.evidence || [])[0]?.quote
+    || "";
+  const base = [
+    ["contact_result", output.contact_result],
+    ["decision_maker_status", output.decision_maker_status],
+    ["conversation_stage", output.conversation_stage],
+    ["offer_presented", output.offer_presented],
+    ["price_presented", output.price_presented],
+    ["objection_present", output.objection_present],
+    ["customer_outcome", output.customer_outcome],
+    ["next_step_status", output.next_step_status],
+    ...(clean(output.follow_up_timing) ? [["follow_up_timing", output.follow_up_timing]] : []),
+    ["opportunity_status", output.intelligence_lenses.opportunity_status],
+    ["measurement_eligibility", output.intelligence_lenses.measurement_eligibility],
+    ["efficiency_status", output.intelligence_lenses.efficiency_status],
+    ["lead_record_signal", output.lead_record_signal],
+    ["called_on_behalf_of", output.called_on_behalf_of]
+  ].map(([field, value]) => ({
+    field,
+    value,
+    evidence: evidence(field),
+    confidence: output.confidence,
+    manager_review_recommended: output.manager_review_recommended
+  }));
+  return [
+    ...base,
+    ...FOUNDATION_SPECIALIST_GOALS.filter((goal) => output.specialist_routes[goal]).map((goal) => ({
+      field: "specialist_route",
+      value: goal,
+      evidence: evidence("conversation_stage"),
+      confidence: output.confidence,
+      manager_review_recommended: false
+    }))
+  ];
+}
+
+const OFFER_ACCEPTANCE_CLASSIFICATIONS = new Map([
+  [1, "no_sale_signal"],
+  [2, "interested_follow_up_only"],
+  [3, "customer_accepted_offer"]
+]);
+const OFFER_ACCEPTANCE_COMMITMENTS = new Set([
+  "none",
+  "interest_only",
+  "conditional_or_pending",
+  "explicit_unconditional_agreement",
+  "acceptance_action_completed"
+]);
+
+function offerAcceptanceValidationError(message) {
+  const error = new Error(`Offer Acceptance evaluation output is invalid: ${message}`);
+  error.statusCode = 400;
+  return error;
+}
+
+function assertOfferAcceptanceObject(value, field) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw offerAcceptanceValidationError(`${field} must be an object.`);
+  }
+  return value;
+}
+
+function assertOfferAcceptanceKeys(value, allowed, field) {
+  const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unexpected.length) {
+    throw offerAcceptanceValidationError(`${field} contains unsupported field${unexpected.length === 1 ? "" : "s"}: ${unexpected.join(", ")}.`);
+  }
+}
+
+function offerAcceptanceString(value, field, { allowEmpty = false, maxLength = 1200 } = {}) {
+  if (typeof value !== "string") throw offerAcceptanceValidationError(`${field} must be a string.`);
+  const text = value.trim();
+  if (!allowEmpty && !text) throw offerAcceptanceValidationError(`${field} is required.`);
+  if (text.length > maxLength) throw offerAcceptanceValidationError(`${field} must be ${maxLength} characters or fewer.`);
+  return text;
+}
+
+function offerAcceptanceEnum(value, allowed, field) {
+  const text = offerAcceptanceString(value, field, { maxLength: 100 });
+  if (!allowed.has(text)) throw offerAcceptanceValidationError(`${field} has unsupported value: ${text}.`);
+  return text;
+}
+
+function offerAcceptanceVerifiedExcerpt(value, context, field = "") {
+  const quote = clean(value);
+  if (!quote || !context.transcriptComparable) return "";
+  if (quote.length <= 500 && auditQuoteIsVerified(quote, context)) return quote;
+  const candidates = [];
+  const addCandidate = (candidate) => {
+    const text = clean(candidate);
+    if (!text) return;
+    if (text.length <= 500) {
+      candidates.push(text);
+      return;
+    }
+    const first = text.slice(0, 500).replace(/\s+\S*$/, "").trim();
+    const last = text.slice(-500).replace(/^\S*\s+/, "").trim();
+    if (first) candidates.push(first);
+    if (last) candidates.push(last);
+  };
+  quote.split(/\s*(?:\.{3,}|…+)\s*/).forEach((segment) => {
+    addCandidate(segment);
+    segment.split(/(?<=[.!?])\s+/).forEach(addCandidate);
+  });
+  const preferredPattern = field === "offer_evidence.quote"
+    ? /\$|\b(?:offer|cost|price|gold|silver|bronze|booking|package|support|payable)\b/i
+    : /\b(?:yes|no|send|call|agree|accept|proceed|interested|talk|review|invoice|email)\b/i;
+  return candidates
+    .filter((candidate) => auditQuoteIsVerified(candidate, context))
+    .sort((left, right) => {
+      const preferredDifference = Number(preferredPattern.test(right)) - Number(preferredPattern.test(left));
+      return preferredDifference || right.length - left.length;
+    })[0] || "";
+}
+
+function reconcileOfferAcceptanceOutput(record = {}) {
+  const source = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  const output = JSON.parse(JSON.stringify(source));
+  const context = auditEvidenceContext(record);
+  const adjustments = [];
+  const confidenceCap = output.evidence_availability === "unavailable"
+    ? 0.35
+    : output.evidence_availability === "partial"
+      ? 0.75
+      : null;
+  if (output.status === "usable" && output.evidence_availability === "unavailable") {
+    output.status = "insufficient_evidence";
+    adjustments.push({
+      field: "status",
+      from: "usable",
+      to: "insufficient_evidence",
+      reason: "Unavailable evidence cannot support a usable Offer Acceptance result."
+    });
+  }
+  if (confidenceCap !== null
+    && typeof output.confidence === "number"
+    && Number.isFinite(output.confidence)
+    && output.confidence > confidenceCap) {
+    adjustments.push({
+      field: "confidence",
+      from: output.confidence,
+      to: confidenceCap,
+      reason: `${output.evidence_availability} evidence cannot support confidence above ${confidenceCap.toFixed(2)}.`
+    });
+    output.confidence = confidenceCap;
+  }
+  for (const [containerKey, field] of [
+    ["offer_evidence", "offer_evidence.quote"],
+    ["customer_response_evidence", "customer_response_evidence.quote"]
+  ]) {
+    const evidence = output[containerKey];
+    const original = clean(evidence?.quote);
+    if (!original || (original.length <= 500 && auditQuoteIsVerified(original, context))) continue;
+    const verified = offerAcceptanceVerifiedExcerpt(original, context, field)
+      || foundationBestMatchingTranscriptExcerpt(original, context, {
+        maxLength: 500,
+        minMatches: 4,
+        minCoverage: 0.4
+      });
+    if (!verified || verified === original) continue;
+    evidence.quote = verified;
+    adjustments.push({
+      field,
+      action: "shortened_to_verified_contiguous_excerpt",
+      originalLength: original.length,
+      storedLength: verified.length
+    });
+  }
+  if (Number(output.category) === 2 && output.unresolved_condition === false) {
+    output.unresolved_condition = true;
+    adjustments.push({
+      field: "unresolved_condition",
+      from: false,
+      to: true,
+      reason: "Category 2 is an interested or follow-up-only state and therefore remains unresolved by definition."
+    });
+    if (/\bno unresolved condition\b/i.test(clean(output.manager_summary))) {
+      output.manager_summary = "The customer showed interest or agreed to a follow-up step, but acceptance remained unresolved.";
+      adjustments.push({
+        field: "manager_summary",
+        action: "reconciled_with_category_2",
+        reason: "The summary cannot state that a category-2 decision has no unresolved condition."
+      });
+    }
+  }
+  return { output, adjustments };
+}
+
+function validateOfferAcceptanceResult(record = {}) {
+  const output = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  assertOfferAcceptanceObject(output, "result");
+  assertOfferAcceptanceKeys(output, [
+    "schema_version",
+    "evaluation_goal",
+    "call_id",
+    "status",
+    "confidence",
+    "evidence_availability",
+    "transcript_quality",
+    "category",
+    "classification",
+    "offer_presented",
+    "customer_commitment",
+    "unresolved_condition",
+    "offer_evidence",
+    "customer_response_evidence",
+    "manager_review_recommended",
+    "manager_summary",
+    "limitations",
+    "findings",
+    "model_metadata"
+  ], "result");
+  if (output.schema_version !== OFFER_ACCEPTANCE_SCHEMA_VERSION) {
+    throw offerAcceptanceValidationError(`schema_version must be ${OFFER_ACCEPTANCE_SCHEMA_VERSION}.`);
+  }
+  if (output.evaluation_goal !== OFFER_ACCEPTANCE_GOAL) {
+    throw offerAcceptanceValidationError(`evaluation_goal must be ${OFFER_ACCEPTANCE_GOAL}.`);
+  }
+  offerAcceptanceString(output.call_id, "call_id", { maxLength: 200 });
+  const status = offerAcceptanceEnum(output.status, EVALUATION_RESULT_STATUSES, "status");
+  const confidence = Number(output.confidence);
+  if (typeof output.confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw offerAcceptanceValidationError("confidence must be a number between 0 and 1.");
+  }
+  const evidenceAvailability = offerAcceptanceEnum(output.evidence_availability, EVIDENCE_AVAILABILITY, "evidence_availability");
+  offerAcceptanceEnum(output.transcript_quality, TRANSCRIPT_QUALITIES, "transcript_quality");
+  if (!Number.isInteger(output.category) || !OFFER_ACCEPTANCE_CLASSIFICATIONS.has(output.category)) {
+    throw offerAcceptanceValidationError("category must be integer 1, 2, or 3.");
+  }
+  const expectedClassification = OFFER_ACCEPTANCE_CLASSIFICATIONS.get(output.category);
+  if (output.classification !== expectedClassification) {
+    throw offerAcceptanceValidationError(`category ${output.category} requires classification ${expectedClassification}.`);
+  }
+  if (typeof output.offer_presented !== "boolean") throw offerAcceptanceValidationError("offer_presented must be boolean.");
+  const commitment = offerAcceptanceEnum(output.customer_commitment, OFFER_ACCEPTANCE_COMMITMENTS, "customer_commitment");
+  if (typeof output.unresolved_condition !== "boolean") throw offerAcceptanceValidationError("unresolved_condition must be boolean.");
+
+  const offerEvidence = assertOfferAcceptanceObject(output.offer_evidence, "offer_evidence");
+  assertOfferAcceptanceKeys(offerEvidence, ["speaker", "quote", "summary"], "offer_evidence");
+  offerAcceptanceEnum(offerEvidence.speaker, new Set(["salesperson", "unknown"]), "offer_evidence.speaker");
+  const offerQuote = offerAcceptanceString(offerEvidence.quote, "offer_evidence.quote", { allowEmpty: true, maxLength: 500 });
+  offerAcceptanceString(offerEvidence.summary, "offer_evidence.summary", { maxLength: 800 });
+
+  const responseEvidence = assertOfferAcceptanceObject(output.customer_response_evidence, "customer_response_evidence");
+  assertOfferAcceptanceKeys(responseEvidence, ["speaker", "quote", "summary"], "customer_response_evidence");
+  offerAcceptanceEnum(responseEvidence.speaker, new Set(["customer", "unknown"]), "customer_response_evidence.speaker");
+  const responseQuote = offerAcceptanceString(responseEvidence.quote, "customer_response_evidence.quote", { allowEmpty: true, maxLength: 500 });
+  offerAcceptanceString(responseEvidence.summary, "customer_response_evidence.summary", { maxLength: 800 });
+
+  const validationContext = auditEvidenceContext(record);
+  if (validationContext.transcriptComparable && offerQuote && !auditQuoteIsVerified(offerQuote, validationContext)) {
+    throw offerAcceptanceValidationError("offer_evidence.quote was not found in the supplied transcript.");
+  }
+  if (validationContext.transcriptComparable && responseQuote && !auditQuoteIsVerified(responseQuote, validationContext)) {
+    throw offerAcceptanceValidationError("customer_response_evidence.quote was not found in the supplied transcript.");
+  }
+  if (output.offer_presented && !offerQuote) throw offerAcceptanceValidationError("offer_presented requires an offer evidence quote.");
+  if ([2, 3].includes(output.category) && !responseQuote) {
+    throw offerAcceptanceValidationError(`category ${output.category} requires a customer response evidence quote.`);
+  }
+  if (status === "usable" && evidenceAvailability === "unavailable") {
+    throw offerAcceptanceValidationError("usable status cannot have unavailable evidence.");
+  }
+  if (evidenceAvailability === "unavailable" && confidence > 0.35) {
+    throw offerAcceptanceValidationError("unavailable evidence caps confidence at 0.35.");
+  }
+  if (evidenceAvailability === "partial" && confidence > 0.75) {
+    throw offerAcceptanceValidationError("partial evidence caps confidence at 0.75.");
+  }
+
+  if (output.category === 1) {
+    if (commitment !== "none") throw offerAcceptanceValidationError("category 1 requires customer_commitment none.");
+  }
+  if (output.category === 2) {
+    if (!["interest_only", "conditional_or_pending"].includes(commitment)) {
+      throw offerAcceptanceValidationError("category 2 requires interest_only or conditional_or_pending customer commitment.");
+    }
+    if (!output.unresolved_condition) throw offerAcceptanceValidationError("category 2 requires an unresolved condition.");
+  }
+  if (output.category === 3) {
+    if (status !== "usable" || evidenceAvailability !== "available") {
+      throw offerAcceptanceValidationError("category 3 must be usable and have available evidence.");
+    }
+    if (!output.offer_presented || !offerQuote || !responseQuote) {
+      throw offerAcceptanceValidationError("category 3 requires verified offer and customer-response evidence.");
+    }
+    if (!["explicit_unconditional_agreement", "acceptance_action_completed"].includes(commitment)) {
+      throw offerAcceptanceValidationError("category 3 requires explicit unconditional agreement or a completed acceptance action.");
+    }
+    if (output.unresolved_condition) throw offerAcceptanceValidationError("category 3 cannot have an unresolved condition.");
+  }
+  if (typeof output.manager_review_recommended !== "boolean") {
+    throw offerAcceptanceValidationError("manager_review_recommended must be boolean.");
+  }
+  offerAcceptanceString(output.manager_summary, "manager_summary", { maxLength: 1000 });
+  if (!Array.isArray(output.limitations) || output.limitations.length > 12) {
+    throw offerAcceptanceValidationError("limitations must be an array containing at most 12 items.");
+  }
+  output.limitations.forEach((item, index) => offerAcceptanceString(item, `limitations[${index}]`, { maxLength: 500 }));
+  if (!Array.isArray(output.findings) || output.findings.length) {
+    throw offerAcceptanceValidationError("findings must be an empty array; normalized findings are generated locally after validation.");
+  }
+  if (output.model_metadata !== undefined && output.model_metadata !== null) {
+    assertOfferAcceptanceObject(output.model_metadata, "model_metadata");
+  }
+  return output;
+}
+
+function offerAcceptanceFindingsForNormalization(output) {
+  const evidence = [output.offer_evidence?.quote, output.customer_response_evidence?.quote].filter(Boolean).join(" | ");
+  return [
+    {
+      field: "offer_acceptance_category",
+      value: output.category,
+      evidence,
+      confidence: output.confidence,
+      manager_review_recommended: output.manager_review_recommended,
+      note: output.manager_summary
+    },
+    {
+      field: "offer_acceptance_classification",
+      value: output.classification,
+      evidence,
+      confidence: output.confidence,
+      manager_review_recommended: output.manager_review_recommended,
+      note: output.manager_summary
+    },
+    {
+      field: "customer_commitment",
+      value: output.customer_commitment,
+      evidence: output.customer_response_evidence?.quote || "",
+      confidence: output.confidence,
+      manager_review_recommended: output.manager_review_recommended,
+      note: output.customer_response_evidence?.summary || ""
+    }
+  ];
+}
+
 function normalizeEvaluationResult(record = {}, context = {}) {
   const output = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
   const run = context.run || {};
@@ -1185,6 +2445,55 @@ function normalizeEvaluationResult(record = {}, context = {}) {
         semanticAdjustments: toArray(record.auditSemanticAdjustments || record.audit_semantic_adjustments)
       } : null)
     : null;
+  const storedAcceptanceAssessment = record.acceptanceAssessment || output.acceptanceAssessment;
+  const acceptanceAssessment = evaluationGoal === OFFER_ACCEPTANCE_GOAL
+    ? storedAcceptanceAssessment || (output.classification && Number.isInteger(output.category) ? {
+        schemaVersion: output.schema_version,
+        category: output.category,
+        classification: output.classification,
+        offerPresented: output.offer_presented,
+        customerCommitment: output.customer_commitment,
+        unresolvedCondition: output.unresolved_condition,
+        offerEvidence: output.offer_evidence,
+        customerResponseEvidence: output.customer_response_evidence,
+        semanticAdjustments: toArray(record.acceptanceSemanticAdjustments || record.acceptance_semantic_adjustments)
+    } : null)
+    : null;
+  const storedFoundationAssessment = record.foundationAssessment || output.foundationAssessment;
+  const foundationAssessment = evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+    ? storedFoundationAssessment || (output.intelligence_lenses && output.specialist_routes ? {
+        schemaVersion: output.schema_version,
+        contactResult: output.contact_result,
+        decisionMakerStatus: output.decision_maker_status,
+        conversationStage: output.conversation_stage,
+        offerPresented: output.offer_presented,
+        pricePresented: output.price_presented,
+        objectionPresent: output.objection_present,
+        customerOutcome: output.customer_outcome,
+        nextStepStatus: output.next_step_status,
+        followUpTiming: output.follow_up_timing,
+        leadRecordSignal: output.lead_record_signal,
+        calledOnBehalfOf: output.called_on_behalf_of,
+        commercialContext: output.commercial_context,
+        intelligenceLenses: output.intelligence_lenses,
+        specialistRoutes: output.specialist_routes,
+        evidence: output.evidence || [],
+        routingAdjustments: toArray(record.foundationRoutingAdjustments || record.foundation_routing_adjustments)
+      } : null)
+    : null;
+  const storedFollowUpTiming = clean(foundationAssessment?.followUpTiming);
+  if (storedFollowUpTiming && !findings.some((finding) => finding.field === "follow_up_timing")) {
+    const timingEvidence = (foundationAssessment.evidence || []).find((item) => item.supports === "follow_up_timing")?.quote
+      || (foundationAssessment.evidence || []).find((item) => item.supports === "next_step_status")?.quote
+      || "";
+    findings.push(normalizeFinding({
+      field: "follow_up_timing",
+      value: storedFollowUpTiming,
+      evidence: timingEvidence,
+      confidence,
+      manager_review_recommended: false
+    }));
+  }
   const runKnowledgebaseSnapshot = Array.isArray(run.knowledgebaseSnapshot) ? run.knowledgebaseSnapshot : [];
   const explicitKnowledgebaseIds = toArray(record.knowledgebaseIds || record.knowledgebaseEntryIds || output.knowledgebase_ids || output.knowledgebaseIds || output.knowledgebase_entry_ids)
     .map(clean)
@@ -1233,6 +2542,8 @@ function normalizeEvaluationResult(record = {}, context = {}) {
     transcriptQuality,
     findings,
     ...(auditAssessment ? { auditAssessment } : {}),
+    ...(acceptanceAssessment ? { acceptanceAssessment } : {}),
+    ...(foundationAssessment ? { foundationAssessment } : {}),
     managerSummary,
     limitations,
     managerReviewRecommended: reviewRecommended,
@@ -1245,6 +2556,8 @@ function normalizeEvaluationResult(record = {}, context = {}) {
       transcriptQuality,
       findings,
       auditAssessment,
+      acceptanceAssessment,
+      foundationAssessment,
       managerSummary,
       limitations
     }), 24),
@@ -1287,10 +2600,18 @@ function createDefaultEvaluationStudio() {
       ...template,
       outputSchema: template.outputSchema || DEFAULT_OUTPUT_SCHEMA,
       tags: [template.evaluationGoal, "seeded"],
-      sourceProject: template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL ? "LatentPulse" : "Neuron-Compute-Training",
+      sourceProject: template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
+        ? "LatentPulse"
+        : [OFFER_ACCEPTANCE_GOAL, CALL_INTELLIGENCE_FOUNDATION_GOAL].includes(template.evaluationGoal)
+          ? "Sales Dashboard"
+          : "Neuron-Compute-Training",
       sourceReference: template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
         ? "Structured evidence governance and Sales Dashboard guardrails"
-        : "Neuron sales training prompt and knowledgebase patterns"
+        : template.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+          ? "Manager-calibrated transcript examples, 16 July 2026"
+          : template.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+            ? "Balanced opportunity, measurement, and efficiency foundation, 16 July 2026"
+          : "Neuron sales training prompt and knowledgebase patterns"
     })),
     evaluationRuns: [],
     evaluationResults: []
@@ -1298,8 +2619,13 @@ function createDefaultEvaluationStudio() {
 }
 
 function reconcileEvaluationTemplates(templates = []) {
-  const replacement = createDefaultEvaluationStudio().evaluationTemplates
+  const defaults = createDefaultEvaluationStudio().evaluationTemplates;
+  const replacement = defaults
     .find((template) => template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const offerAcceptanceTemplate = defaults
+    .find((template) => template.evaluationGoal === OFFER_ACCEPTANCE_GOAL);
+  const foundationTemplate = defaults
+    .find((template) => template.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL);
   const normalized = templates.map(normalizeEvaluationTemplate).map((template) => {
     if (template.id !== "template_lead_validity_utilisation_v1" && template.name !== "Lead Validity And Utilisation") return template;
     return {
@@ -1314,8 +2640,43 @@ function reconcileEvaluationTemplates(templates = []) {
       status: "archived",
       isActive: false
     };
+  }).map((template) => {
+    if (template.id !== "template_offer_acceptance_classification_v1") return template;
+    return {
+      ...template,
+      status: "archived",
+      isActive: false
+    };
+  }).map((template) => {
+    if (!foundationTemplate
+      || template.evaluationGoal !== CALL_INTELLIGENCE_FOUNDATION_GOAL
+      || template.id === foundationTemplate.id) return template;
+    return {
+      ...template,
+      status: "archived",
+      isActive: false
+    };
+  }).map((template) => {
+    if (
+      !offerAcceptanceTemplate
+      || template.id !== offerAcceptanceTemplate.id
+      || template.outputSchema?.category !== "integer 1|2|3"
+    ) return template;
+    return normalizeEvaluationTemplate({
+      ...template,
+      outputSchema: {
+        ...template.outputSchema,
+        category: offerAcceptanceTemplate.outputSchema.category
+      }
+    });
   });
   if (replacement && !normalized.some((template) => template.id === replacement.id)) normalized.push(replacement);
+  if (offerAcceptanceTemplate && !normalized.some((template) => template.id === offerAcceptanceTemplate.id)) {
+    normalized.push(offerAcceptanceTemplate);
+  }
+  if (foundationTemplate && !normalized.some((template) => template.id === foundationTemplate.id)) {
+    normalized.push(foundationTemplate);
+  }
   return normalized;
 }
 
@@ -1605,6 +2966,16 @@ function listEvaluationResults(studio = {}, options = {}) {
   const operationalClassification = clean(options.operationalClassification || options.operational_classification);
   const recommendation = clean(options.recommendation);
   const allegationAssessment = clean(options.allegationAssessment || options.allegation_assessment);
+  const acceptanceClassification = clean(options.acceptanceClassification || options.acceptance_classification);
+  const foundationOpportunityStatus = clean(options.foundationOpportunityStatus || options.foundation_opportunity_status);
+  const foundationMeasurementEligibility = clean(options.foundationMeasurementEligibility || options.foundation_measurement_eligibility);
+  const foundationEfficiencyStatus = clean(options.foundationEfficiencyStatus || options.foundation_efficiency_status);
+  const foundationCalledOnBehalfOf = clean(options.foundationCalledOnBehalfOf || options.foundation_called_on_behalf_of);
+  const foundationFollowUpTiming = clean(options.foundationFollowUpTiming || options.foundation_follow_up_timing);
+  const foundationSpecialistRoute = clean(options.foundationSpecialistRoute || options.foundation_specialist_route);
+  const foundationOfferPresented = clean(options.foundationOfferPresented || options.foundation_offer_presented);
+  const foundationQuotedAmountAvailable = clean(options.foundationQuotedAmountAvailable || options.foundation_quoted_amount_available);
+  const reportSignal = clean(options.reportSignal || options.report_signal);
   const confidenceBandFilter = clean(options.confidenceBand || options.confidence_band);
   const evidenceAvailabilityFilter = clean(options.evidenceAvailability || options.evidence_availability);
   const reviewOnly = parseBoolean(options.reviewRecommended || options.reviewOnly, false);
@@ -1641,12 +3012,321 @@ function listEvaluationResults(studio = {}, options = {}) {
     if (operationalClassification && facets.operationalClassification !== operationalClassification) return false;
     if (recommendation && facets.recommendation !== recommendation) return false;
     if (allegationAssessment && facets.allegationAssessment !== allegationAssessment) return false;
+    if (acceptanceClassification && clean(result.acceptanceAssessment?.classification) !== acceptanceClassification) return false;
+    const foundation = result.foundationAssessment || null;
+    if (foundationOpportunityStatus) {
+      const opportunityStatus = clean(foundation?.intelligenceLenses?.opportunity_status);
+      if (foundationOpportunityStatus === "actionable_or_accepted") {
+        if (!["actionable", "accepted"].includes(opportunityStatus)) return false;
+      } else if (opportunityStatus !== foundationOpportunityStatus) return false;
+    }
+    if (foundationMeasurementEligibility && clean(foundation?.intelligenceLenses?.measurement_eligibility) !== foundationMeasurementEligibility) return false;
+    if (foundationEfficiencyStatus && clean(foundation?.intelligenceLenses?.efficiency_status) !== foundationEfficiencyStatus) return false;
+    if (foundationCalledOnBehalfOf && clean(foundation?.calledOnBehalfOf).toLowerCase() !== foundationCalledOnBehalfOf.toLowerCase()) return false;
+    if (foundationFollowUpTiming && clean(foundation?.followUpTiming).toLowerCase() !== foundationFollowUpTiming.toLowerCase()) return false;
+    if (foundationSpecialistRoute && foundation?.specialistRoutes?.[foundationSpecialistRoute] !== true) return false;
+    if (foundationOfferPresented && Boolean(foundation?.offerPresented) !== parseBoolean(foundationOfferPresented, false)) return false;
+    if (foundationQuotedAmountAvailable && Boolean(foundation?.commercialContext?.quoted_amount_available) !== parseBoolean(foundationQuotedAmountAvailable, false)) return false;
+    if (reportSignal && !(result.findings || []).some((finding) => classifyReportFinding(result, finding)?.key === reportSignal)) return false;
     if (confidenceBandFilter && result.confidenceBand !== confidenceBandFilter) return false;
     if (evidenceAvailabilityFilter && result.evidenceAvailability !== evidenceAvailabilityFilter) return false;
     if (reviewOnly && !result.managerReviewRecommended) return false;
     if (evidenceUnavailableOnly && result.evidenceAvailability !== "unavailable") return false;
     return true;
   }).slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function attachFoundationContextToResults(studio = {}, results = [], calls = []) {
+  const foundationByCall = new Map();
+  const offerAcceptanceByCall = new Map();
+  listEvaluationResults(studio, { evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL })
+    .forEach((result) => {
+      if (!result.foundationAssessment || foundationByCall.has(result.callId)) return;
+      foundationByCall.set(result.callId, { ...result.foundationAssessment, sourceResultId: result.id });
+    });
+  listEvaluationResults(studio, { evaluationGoal: OFFER_ACCEPTANCE_GOAL })
+    .forEach((result) => {
+      if (!result.acceptanceAssessment || offerAcceptanceByCall.has(result.callId)) return;
+      offerAcceptanceByCall.set(result.callId, {
+        sourceResultId: result.id,
+        acceptanceAssessment: result.acceptanceAssessment,
+        managerSummary: result.managerSummary,
+        confidence: result.confidence,
+        confidenceBand: result.confidenceBand,
+        evidenceAvailability: result.evidenceAvailability,
+        status: result.status,
+        updatedAt: result.updatedAt || result.createdAt
+      });
+    });
+  (calls || []).forEach((call) => {
+    const callId = clean(call.callId || call.call_id);
+    if (!callId || foundationByCall.has(callId)) return;
+    const context = auditEvidenceContext({ validationContext: { call } });
+    const representedParty = foundationExplicitRepresentedParty(context);
+    const longTermTiming = foundationLongTermTimingFromTranscript(context.transcript);
+    if (!representedParty && !longTermTiming) return;
+    foundationByCall.set(callId, {
+      calledOnBehalfOf: representedParty?.label || "",
+      followUpTiming: longTermTiming,
+      customerOutcome: longTermTiming ? "long_term_nurture" : clean(call.localOutcome || call.local_outcome),
+      evidence: [
+        ...(representedParty ? [{ supports: "called_on_behalf_of", speaker: "salesperson", quote: representedParty.quote }] : []),
+        ...(longTermTiming ? [{ supports: "follow_up_timing", speaker: "salesperson", quote: longTermTiming }] : [])
+      ],
+      contextProvenance: "deterministic_transcript_fallback",
+      sourceResultId: ""
+    });
+  });
+  return (results || []).map((result) => ({
+    ...result,
+    foundationContext: result.foundationAssessment
+      ? { ...result.foundationAssessment, sourceResultId: result.id }
+      : foundationByCall.get(result.callId) || null,
+    offerAcceptanceContext: result.acceptanceAssessment
+      ? {
+          sourceResultId: result.id,
+          acceptanceAssessment: result.acceptanceAssessment,
+          managerSummary: result.managerSummary,
+          confidence: result.confidence,
+          confidenceBand: result.confidenceBand,
+          evidenceAvailability: result.evidenceAvailability,
+          status: result.status,
+          updatedAt: result.updatedAt || result.createdAt
+        }
+      : offerAcceptanceByCall.get(result.callId) || null
+  }));
+}
+
+function offerAcceptanceFailureLabel(value) {
+  const error = clean(value);
+  if (/quote must be 500 characters or fewer/i.test(error)) return "Evidence quote exceeded 500 characters";
+  if (/quote was not found in the supplied transcript/i.test(error)) return "Evidence quote was not one exact contiguous transcript excerpt";
+  if (/category must be integer/i.test(error)) return "Category output used the retired string contract";
+  return error.replace(/^Offer Acceptance evaluation output is invalid:\s*/i, "") || "Classification failed validation";
+}
+
+function buildOfferAcceptanceReport(studio = {}, options = {}) {
+  const normalized = normalizeEvaluationStudio(studio);
+  const importId = clean(options.importId);
+  const callIds = options.callIds
+    ? new Set(Array.from(options.callIds).map(clean).filter(Boolean))
+    : null;
+  const calls = Array.isArray(options.calls) ? options.calls : [];
+  const callLookup = new Map(calls.map((call) => [clean(call.callId || call.call_id), call]));
+  const results = listEvaluationResults(normalized, {
+    importId,
+    callIds,
+    evaluationGoal: OFFER_ACCEPTANCE_GOAL
+  });
+  const totals = {
+    classified: 0,
+    accepted: 0,
+    followUpOnly: 0,
+    noSaleSignal: 0,
+    acceptanceRate: null
+  };
+  const groupMaps = {
+    salesperson: new Map(),
+    source: new Map(),
+    date: new Map()
+  };
+  const increment = (map, label, classification) => {
+    const key = clean(label) || "Not supplied";
+    const row = map.get(key) || {
+      label: key,
+      classified: 0,
+      accepted: 0,
+      followUpOnly: 0,
+      noSaleSignal: 0,
+      acceptanceRate: null
+    };
+    row.classified += 1;
+    if (classification === "customer_accepted_offer") row.accepted += 1;
+    if (classification === "interested_follow_up_only") row.followUpOnly += 1;
+    if (classification === "no_sale_signal") row.noSaleSignal += 1;
+    row.acceptanceRate = row.classified ? row.accepted / row.classified : null;
+    map.set(key, row);
+  };
+  for (const result of results) {
+    const classification = clean(result.acceptanceAssessment?.classification);
+    if (!OFFER_ACCEPTANCE_CLASSIFICATIONS.has(Number(result.acceptanceAssessment?.category))) continue;
+    totals.classified += 1;
+    if (classification === "customer_accepted_offer") totals.accepted += 1;
+    if (classification === "interested_follow_up_only") totals.followUpOnly += 1;
+    if (classification === "no_sale_signal") totals.noSaleSignal += 1;
+    const call = callLookup.get(result.callId) || {};
+    increment(groupMaps.salesperson, call.salesperson || "Not supplied", classification);
+    increment(groupMaps.source, call.source || call.customerImportSource || "Not supplied", classification);
+    increment(groupMaps.date, call.date || "Not supplied", classification);
+  }
+  totals.acceptanceRate = totals.classified ? totals.accepted / totals.classified : null;
+  const sortBreakdown = (map, date = false) => Array.from(map.values()).sort((left, right) => date
+    ? String(right.label).localeCompare(String(left.label))
+    : right.accepted - left.accepted || right.classified - left.classified || String(left.label).localeCompare(String(right.label)));
+  const latestRun = normalized.evaluationRuns
+    .filter((run) => (!importId || run.importId === importId)
+      && (run.templateSnapshot?.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+        || /^template_offer_acceptance_classification_v\d+$/.test(run.templateId)))
+    .slice()
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0] || null;
+  const failureCounts = new Map();
+  for (const error of latestRun?.errors || []) {
+    const label = offerAcceptanceFailureLabel(error.error);
+    failureCounts.set(label, (failureCounts.get(label) || 0) + 1);
+  }
+  return {
+    schemaVersion: "sales_dashboard_offer_acceptance_report.v1",
+    definition: "Offer acceptance rate = calls classified as customer accepted offer divided by all successfully classified Offer Acceptance calls. Failed or unclassified calls are excluded.",
+    totals,
+    bySalesperson: sortBreakdown(groupMaps.salesperson),
+    bySource: sortBreakdown(groupMaps.source),
+    byDate: sortBreakdown(groupMaps.date, true),
+    latestRun: latestRun ? {
+      id: latestRun.id,
+      planned: Number(latestRun.plannedCallCount || 0),
+      classified: Number(latestRun.completedCallCount || 0),
+      failed: Number(latestRun.failedCallCount || 0),
+      status: latestRun.status,
+      createdAt: latestRun.createdAt,
+      failureReasons: Array.from(failureCounts, ([label, count]) => ({ label, count })),
+      failures: (latestRun.errors || []).map((error) => ({
+        callId: clean(error.callId),
+        customerId: clean(callLookup.get(clean(error.callId))?.customerId || callLookup.get(clean(error.callId))?.customer_id) || "Not available",
+        category: clean(error.category),
+        reason: offerAcceptanceFailureLabel(error.error)
+      }))
+    } : null
+  };
+}
+
+function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
+  const normalized = normalizeEvaluationStudio(studio);
+  const importId = clean(options.importId);
+  const callIds = options.callIds
+    ? new Set(Array.from(options.callIds).map(clean).filter(Boolean))
+    : null;
+  const calls = Array.isArray(options.calls) ? options.calls : [];
+  const callLookup = new Map(calls.map((call) => [clean(call.callId || call.call_id), call]));
+  const foundationResults = listEvaluationResults(normalized, {
+    importId,
+    callIds,
+    evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL
+  }).filter((result) => result.foundationAssessment);
+  const specialistResults = listEvaluationResults(normalized, { importId, callIds })
+    .filter((result) => FOUNDATION_SPECIALIST_GOALS.includes(result.evaluationGoal));
+  const specialistResultKeys = new Set(specialistResults.map((result) => `${result.callId}::${result.evaluationGoal}`));
+  const totals = {
+    evaluated: 0,
+    usable: 0,
+    measurementEligible: 0,
+    actionableOpportunities: 0,
+    acceptedCandidates: 0,
+    efficiencyGaps: 0,
+    terminalComplete: 0,
+    decisionMakerConfirmed: 0,
+    offerPresented: 0,
+    routedSpecialistChecks: 0,
+    completedSpecialistChecks: 0,
+    quotedAmounts: { AUD: 0, NZD: 0, unknown: 0 },
+    quotedAmountCalls: 0,
+    noProductPitched: 0
+  };
+  const groupMaps = { salesperson: new Map(), source: new Map(), date: new Map(), calledOnBehalfOf: new Map() };
+  const incrementGroup = (map, label, assessment) => {
+    const key = clean(label) || "Not supplied";
+    const lenses = assessment.intelligenceLenses || {};
+    const row = map.get(key) || {
+      label: key,
+      evaluated: 0,
+      measurementEligible: 0,
+      actionableOpportunities: 0,
+      efficiencyGaps: 0,
+      offerPresented: 0,
+      opportunityRate: null,
+      offerPresentationRate: null,
+      efficiencyGapRate: null
+    };
+    row.evaluated += 1;
+    if (lenses.measurement_eligibility === "eligible") row.measurementEligible += 1;
+    if (["actionable", "accepted"].includes(lenses.opportunity_status)) row.actionableOpportunities += 1;
+    if (lenses.efficiency_status === "actionable_gap") row.efficiencyGaps += 1;
+    if (assessment.offerPresented) row.offerPresented += 1;
+    const denominator = row.measurementEligible || 0;
+    row.opportunityRate = denominator ? row.actionableOpportunities / denominator : null;
+    row.offerPresentationRate = denominator ? row.offerPresented / denominator : null;
+    row.efficiencyGapRate = denominator ? row.efficiencyGaps / denominator : null;
+    map.set(key, row);
+  };
+
+  for (const result of foundationResults) {
+    const assessment = result.foundationAssessment || {};
+    const lenses = assessment.intelligenceLenses || {};
+    const routes = assessment.specialistRoutes || {};
+    totals.evaluated += 1;
+    if (result.status === "usable") totals.usable += 1;
+    if (lenses.measurement_eligibility === "eligible") totals.measurementEligible += 1;
+    if (["actionable", "accepted"].includes(lenses.opportunity_status)) totals.actionableOpportunities += 1;
+    if (lenses.opportunity_status === "accepted") totals.acceptedCandidates += 1;
+    if (lenses.efficiency_status === "actionable_gap") totals.efficiencyGaps += 1;
+    if (lenses.efficiency_status === "terminal_complete") totals.terminalComplete += 1;
+    if (assessment.decisionMakerStatus === "confirmed") totals.decisionMakerConfirmed += 1;
+    if (assessment.offerPresented) totals.offerPresented += 1;
+    if (assessment.calledOnBehalfOf === FOUNDATION_NO_PRODUCT_PITCHED) totals.noProductPitched += 1;
+    FOUNDATION_SPECIALIST_GOALS.forEach((goal) => {
+      if (!routes[goal]) return;
+      totals.routedSpecialistChecks += 1;
+      if (specialistResultKeys.has(`${result.callId}::${goal}`)) totals.completedSpecialistChecks += 1;
+    });
+    const amount = assessment.commercialContext?.quoted_amount;
+    const currency = ["AUD", "NZD"].includes(assessment.commercialContext?.currency)
+      ? assessment.commercialContext.currency
+      : "unknown";
+    if (assessment.commercialContext?.quoted_amount_available && Number.isFinite(Number(amount))) {
+      totals.quotedAmounts[currency] += Number(amount);
+      totals.quotedAmountCalls += 1;
+    }
+    const call = callLookup.get(result.callId) || {};
+    incrementGroup(groupMaps.salesperson, call.salesperson, assessment);
+    incrementGroup(groupMaps.source, call.source || call.customerImportSource, assessment);
+    incrementGroup(groupMaps.date, call.date, assessment);
+    incrementGroup(groupMaps.calledOnBehalfOf, assessment.calledOnBehalfOf || "Not captured (older Foundation version)", assessment);
+  }
+  const sortGroups = (map, date = false) => Array.from(map.values()).sort((left, right) => date
+    ? String(right.label).localeCompare(String(left.label))
+    : right.actionableOpportunities - left.actionableOpportunities
+      || right.measurementEligible - left.measurementEligible
+      || String(left.label).localeCompare(String(right.label)));
+  const latestRun = normalized.evaluationRuns
+    .filter((run) => (!importId || run.importId === importId)
+      && (run.templateSnapshot?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+        || /^template_call_intelligence_foundation_v\d+$/.test(run.templateId)))
+    .slice()
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0] || null;
+  return {
+    schemaVersion: "sales_dashboard_call_intelligence_foundation_report.v1",
+    definition: "Foundation results are neutral evidence records used for routing and three independent lenses. Specialist evaluators remain authoritative for acceptance, callback details, record validity, objections, and procedure coaching.",
+    totals,
+    rates: {
+      measurementEligibilityRate: totals.evaluated ? totals.measurementEligible / totals.evaluated : null,
+      opportunityRate: totals.measurementEligible ? totals.actionableOpportunities / totals.measurementEligible : null,
+      offerPresentationRate: totals.measurementEligible ? totals.offerPresented / totals.measurementEligible : null,
+      efficiencyGapRate: totals.measurementEligible ? totals.efficiencyGaps / totals.measurementEligible : null,
+      specialistCompletionRate: totals.routedSpecialistChecks ? totals.completedSpecialistChecks / totals.routedSpecialistChecks : null
+    },
+    bySalesperson: sortGroups(groupMaps.salesperson),
+    bySource: sortGroups(groupMaps.source),
+    byDate: sortGroups(groupMaps.date, true),
+    byCalledOnBehalfOf: sortGroups(groupMaps.calledOnBehalfOf),
+    latestRun: latestRun ? {
+      id: latestRun.id,
+      status: latestRun.status,
+      planned: Number(latestRun.plannedCallCount || 0),
+      classified: Number(latestRun.completedCallCount || 0),
+      failed: Number(latestRun.failedCallCount || 0),
+      specialistRouting: latestRun.specialistRouting || null,
+      createdAt: latestRun.createdAt
+    } : null
+  };
 }
 
 function evaluationResultFacets(result = {}) {
@@ -1996,11 +3676,35 @@ function upsertEvaluationResult(studio = {}, input = {}) {
   const expectsAuditOutput = template?.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
     || run?.templateSnapshot?.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
     || rawOutput.evaluation_goal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL;
+  const expectsOfferAcceptanceOutput = template?.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+    || run?.templateSnapshot?.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+    || rawOutput.evaluation_goal === OFFER_ACCEPTANCE_GOAL;
+  const expectsFoundationOutput = template?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+    || run?.templateSnapshot?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+    || rawOutput.evaluation_goal === CALL_INTELLIGENCE_FOUNDATION_GOAL;
   const reconciledAudit = expectsAuditOutput ? reconcileLeadRecordDispositionAuditOutput(input) : null;
   const validatedAudit = reconciledAudit
     ? validateLeadRecordDispositionAuditResult({
         ...input,
         result: reconciledAudit.output
+      })
+    : null;
+  const reconciledOfferAcceptance = expectsOfferAcceptanceOutput
+    ? reconcileOfferAcceptanceOutput(input)
+    : null;
+  const validatedOfferAcceptance = expectsOfferAcceptanceOutput
+    ? validateOfferAcceptanceResult({
+        ...input,
+        result: reconciledOfferAcceptance.output
+      })
+    : null;
+  const reconciledFoundation = expectsFoundationOutput
+    ? reconcileCallIntelligenceFoundationOutput(input)
+    : null;
+  const validatedFoundation = expectsFoundationOutput
+    ? validateCallIntelligenceFoundationResult({
+        ...input,
+        result: reconciledFoundation.output
       })
     : null;
   const normalizedInput = expectsAuditOutput
@@ -2012,7 +3716,25 @@ function upsertEvaluationResult(studio = {}, input = {}) {
           findings: auditFindingsForNormalization(validatedAudit, input.validationContext || input.validation_context || {})
         }
       }
-    : input;
+    : validatedOfferAcceptance
+      ? {
+          ...input,
+          acceptanceSemanticAdjustments: reconciledOfferAcceptance.adjustments,
+          result: {
+            ...validatedOfferAcceptance,
+            findings: offerAcceptanceFindingsForNormalization(validatedOfferAcceptance)
+          }
+        }
+      : validatedFoundation
+        ? {
+            ...input,
+            foundationRoutingAdjustments: reconciledFoundation.adjustments,
+            result: {
+              ...validatedFoundation,
+              findings: foundationFindingsForNormalization(validatedFoundation)
+            }
+          }
+      : input;
   const result = normalizeEvaluationResult(normalizedInput, {
     run,
     template,
@@ -2142,6 +3864,10 @@ function buildEvaluationStudioInput(call = {}, template = {}, knowledgebaseEntri
 }
 
 module.exports = {
+  CALL_INTELLIGENCE_FOUNDATION_GOAL,
+  CALL_INTELLIGENCE_FOUNDATION_OUTPUT_SCHEMA,
+  CALL_INTELLIGENCE_FOUNDATION_SCHEMA_VERSION,
+  FOUNDATION_SPECIALIST_GOALS,
   EVALUATION_GOALS,
   EVALUATION_RESULT_STATUSES,
   EVALUATION_RUN_STATUSES,
@@ -2153,11 +3879,17 @@ module.exports = {
   LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
   LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_OUTPUT_SCHEMA,
   LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION,
+  OFFER_ACCEPTANCE_GOAL,
+  OFFER_ACCEPTANCE_OUTPUT_SCHEMA,
+  OFFER_ACCEPTANCE_SCHEMA_VERSION,
   archiveEvaluationTemplate,
   archiveKnowledgebaseEntry,
+  buildOfferAcceptanceReport,
+  buildCallIntelligenceFoundationReport,
   buildEvaluationStudioInput,
   buildEvaluationStudioReportRollups,
   buildManagerReviewPrefillCorrections,
+  attachFoundationContextToResults,
   createDefaultEvaluationStudio,
   createEvaluationRun,
   defaultEvaluationGuardrails,
@@ -2180,5 +3912,7 @@ module.exports = {
   upsertEvaluationResult,
   upsertEvaluationTemplate,
   upsertKnowledgebaseEntry,
+  validateOfferAcceptanceResult,
+  validateCallIntelligenceFoundationResult,
   validateLeadRecordDispositionAuditResult
 };

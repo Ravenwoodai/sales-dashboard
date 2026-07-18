@@ -6,6 +6,8 @@
   "main": "src/main.js",
   "scripts": {
     "start": "node src/main.js",
+    "evaluations:overnight": "node scripts/run-overnight-evaluations.js",
+    "evaluations:overnight:check": "node scripts/run-overnight-evaluations.js --once",
     "test": "node --test tests/*.test.js"
   },
   "engines": {

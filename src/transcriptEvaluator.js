@@ -495,6 +495,7 @@ const PATTERNS = {
   longTermDeferral: [
     /\b(?:call|ring|phone|get back to|try|contact|reach)\s+(?:me|us|him|her|them|the owner|the boss)?\s*(?:back|again)?\s*(?:in|after|within)?\s*(?:about|around|roughly)?\s*(?:12|twelve)\s+months?(?:'?\s*time)?\b/i,
     /\b(?:in|after|within)\s+(?:about|around|roughly)?\s*(?:12|twelve)\s+months?(?:'?\s*time)?\b/i,
+    /\b(?:in|after|within)\s+(?:(?:about|around|roughly|approximately|maybe)\s+)?(?:a|one)\s+year(?:'s)?(?:\s+time)?\b/i,
     /\bnext financial year\b/i,
     /\bbefore (?:the )?next financial year\b/i,
     /\b(?:try|call|ring|contact|get back to|reach)\s+(?:me|us|him|her|them)?\s*(?:again|back)?\s+(?:this time )?next year\b/i,

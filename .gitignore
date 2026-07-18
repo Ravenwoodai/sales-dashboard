@@ -4,3 +4,5 @@ node_modules/
 data/
 runtime/*.tmp
 runtime/*.log
+runtime/evaluation-overnight-state.json
+runtime/evaluation-overnight.lock

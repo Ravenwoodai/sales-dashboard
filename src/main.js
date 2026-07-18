@@ -35,10 +35,17 @@ const { readAllocationFile } = require("./allocationCoverage");
 const { activeReportsOnly, buildParkedAllocationDiagnostic, classifyReportVisibility } = require("./allocationParking");
 const { normalizeAlertEvent, resolveAlertLifecycleActor } = require("./alertLifecycle");
 const {
+  attachFoundationContextToResults,
+  buildCallIntelligenceFoundationReport,
+  buildOfferAcceptanceReport,
   buildEvaluationStudioInput,
   buildEvaluationStudioReportRollups,
   buildManagerReviewPrefillCorrections,
+  CALL_INTELLIGENCE_FOUNDATION_GOAL,
   EVALUATION_STUDIO_ACTOR,
+  FOUNDATION_SPECIALIST_GOALS,
+  LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
+  OFFER_ACCEPTANCE_GOAL,
   evaluationStudioSummary,
   listEvaluationResults,
   listEvaluationTemplates,
@@ -62,7 +69,9 @@ const {
   resumeStoredEvaluationRun,
   resolveStorePath,
   saveAiJobReference,
+  saveAiJobReferences,
   saveEvaluationKnowledgebaseEntry,
+  saveEvaluationHarvestBatch,
   saveEvaluationResult,
   saveEvaluationRun,
   saveEvaluationTemplate,
@@ -84,7 +93,12 @@ const BRAND_LOGO_TYPES = {
 };
 const EVALUATION_STUDIO_AUTO_HARVEST_MAX_RUNS = 5;
 const EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS = 100;
+const EVALUATION_STUDIO_SUBMISSION_CONCURRENCY = 12;
+const EVALUATION_STUDIO_SUBMISSION_MAX_ATTEMPTS = 3;
+const EVALUATION_STUDIO_SUBMISSION_RETRY_DELAY_MS = 150;
 const EVALUATION_STUDIO_EXECUTION_CONTRACT_REVISION = "dynamic-schema-v1";
+const EVALUATION_STUDIO_OFFER_ACCEPTANCE_VALIDATION_REVISION = 7;
+const EVALUATION_STUDIO_LEAD_RECORD_AUDIT_VALIDATION_REVISION = 3;
 
 function resolveCsvPath(argv = process.argv.slice(2), env = process.env) {
   const csvFlagIndex = argv.findIndex((arg) => arg === "--csv" || arg === "--csv-path");
@@ -500,12 +514,92 @@ function currentIntelligenceSummary(storePath, importId) {
   };
 }
 
+function importSnapshotReport(importRecord = {}) {
+  const safe = sanitizeImportSummary(importRecord);
+  const totals = safe.totals || {};
+  const rates = safe.rates || {};
+  const rows = [
+    ["Unique calls", totals.uniqueCalls],
+    ["Transcripts available", totals.transcriptAvailable],
+    ["Probable live-human", totals.probableLiveHuman],
+    ["Meaningful conversations", totals.meaningfulConversation],
+    ["Follow-up signals", totals.followUpRequired],
+    ["Risk reviews", totals.riskReviews],
+    ["Transcript coverage", rates.transcriptCoverage === undefined ? "n/a" : `${Number(rates.transcriptCoverage || 0).toFixed(1)}%`],
+    ["Probable live-human rate", rates.probableLiveHuman === undefined ? "n/a" : `${Number(rates.probableLiveHuman || 0).toFixed(1)}%`]
+  ];
+  return {
+    id: safe.id,
+    title: `Import Snapshot — ${safe.sourceName || safe.id || "CSV import"}`,
+    type: "import_snapshot",
+    source: "system",
+    summary: `Stored summary for ${Number(totals.uniqueCalls || 0).toLocaleString("en-AU")} unique calls. Historical import snapshots contain aggregate data, not the original row-level CSV.`,
+    content: [
+      "## Import details",
+      "",
+      `- Import ID: ${safe.id || "Not supplied"}`,
+      `- Source: ${safe.sourceName || "Not supplied"}`,
+      `- Loaded: ${safe.lastImportedAt || "Not supplied"}`,
+      `- Source period: ${safe.dateRange?.display || safe.dateRange?.sourceStart || "Not supplied"}`,
+      "",
+      "## Stored metrics",
+      "",
+      "| Metric | Value |",
+      "| --- | ---: |",
+      ...rows.map(([label, value]) => `| ${label} | ${value ?? 0} |`),
+      "",
+      "This is the complete safe summary retained for this import. Open the current dashboard call drill-downs for row-level proof from the actively loaded CSV."
+    ].join("\n"),
+    createdAt: safe.firstImportedAt || safe.lastImportedAt,
+    updatedAt: safe.lastImportedAt,
+    metadata: safe
+  };
+}
+
+function managerReviewSnapshotReport(reviews = [], calls = []) {
+  const safeRows = reviews.map(sanitizeManagerReviewForPublic);
+  const callLookup = new Map((calls || []).map((call) => [String(call.callId || call.call_id || "").trim(), call]));
+  const escapeCell = (value) => String(value === undefined || value === null ? "" : value).replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  return {
+    id: "current_manager_reviews",
+    title: "Current Manager Reviews",
+    type: "manager_review_snapshot",
+    source: "system",
+    summary: `${safeRows.length.toLocaleString("en-AU")} saved manager review records for the active import.`,
+    content: [
+      "## Saved review records",
+      "",
+      "| Review ID | Call ID | Customer ID | Status | Scope | Reviewer | Updated |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+      ...safeRows.map((row) => {
+        const callId = String(row.callId || "").trim();
+        const call = callLookup.get(callId) || {};
+        const customerId = String(call.customerId || call.customer_id || "").trim() || "Not available";
+        const callCell = callId ? `[${callId}](/calls/${encodeURIComponent(callId)})` : "Not supplied";
+        return `| ${escapeCell(row.id || row.reviewId)} | ${escapeCell(callCell)} | ${escapeCell(customerId)} | ${escapeCell(row.reviewStatus)} | ${escapeCell(row.reviewScope)} | ${escapeCell(row.reviewedBy || row.updatedBy)} | ${escapeCell(row.updatedAt || row.reviewedAt)} |`;
+      }),
+      "",
+      safeRows.length ? "Open a call from the dashboard to inspect its transcript proof and complete review history." : "No manager reviews are stored for the active import."
+    ].join("\n"),
+    updatedAt: safeRows.map((row) => row.updatedAt || row.reviewedAt || "").sort().at(-1) || new Date().toISOString(),
+    metadata: { reviewCount: safeRows.length }
+  };
+}
+
 function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
   const studio = normalizeEvaluationStudio(store.evaluationStudio);
   const resultImportId = query.importId || (query.currentOnly ? currentImportId : "");
   const resultLimit = normalizeLimit(query.limit, 50, 500);
   const resultOffset = Math.max(0, Number(query.offset || 0));
   const callIds = query.callIds || null;
+  const callLookup = new Map((query.calls || []).map((call) => [String(call.callId || call.call_id || "").trim(), call]));
+  const withCustomerId = (row) => {
+    const call = callLookup.get(String(row?.callId || "").trim()) || {};
+    return {
+      ...row,
+      customerId: String(call.customerId || call.customer_id || "").trim() || "Not available"
+    };
+  };
   const resultRows = listEvaluationResults(studio, {
     importId: resultImportId,
     runId: query.runId,
@@ -518,16 +612,58 @@ function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
     operationalClassification: query.operationalClassification,
     recommendation: query.recommendation,
     allegationAssessment: query.allegationAssessment,
+    acceptanceClassification: query.acceptanceClassification,
+    foundationOpportunityStatus: query.foundationOpportunityStatus,
+    foundationMeasurementEligibility: query.foundationMeasurementEligibility,
+    foundationEfficiencyStatus: query.foundationEfficiencyStatus,
+    foundationCalledOnBehalfOf: query.foundationCalledOnBehalfOf,
+    foundationFollowUpTiming: query.foundationFollowUpTiming,
+    foundationSpecialistRoute: query.foundationSpecialistRoute,
+    foundationOfferPresented: query.foundationOfferPresented,
+    foundationQuotedAmountAvailable: query.foundationQuotedAmountAvailable,
+    reportSignal: query.reportSignal,
     confidenceBand: query.confidenceBand,
     evidenceAvailability: query.evidenceAvailability,
     reviewRecommended: query.reviewRecommended,
     evidenceUnavailableOnly: query.evidenceUnavailableOnly,
     includeSuperseded: query.includeSuperseded
   });
+  const resultGroups = [];
+  const resultGroupLookup = new Map();
+  resultRows.forEach((result) => {
+    const key = String(result.callId || "unknown");
+    if (!resultGroupLookup.has(key)) {
+      const group = { callId: key, results: [] };
+      resultGroupLookup.set(key, group);
+      resultGroups.push(group);
+    }
+    resultGroupLookup.get(key).results.push(result);
+  });
+  const selectedResultGroups = resultGroups.slice(resultOffset, resultOffset + resultLimit);
+  const selectedResultRows = selectedResultGroups.flatMap((group) => group.results);
+  const reportRollups = buildEvaluationStudioReportRollups(studio, { importId: resultImportId || currentImportId || "", callIds });
+  reportRollups.priorityExamples = (reportRollups.priorityExamples || []).map(withCustomerId);
+  const evaluationResults = attachFoundationContextToResults(studio, selectedResultRows, query.calls || []).map(withCustomerId);
+  const evidenceQueue = listEvaluationResults(studio, {
+    importId: resultImportId,
+    callIds,
+    reviewRecommended: true
+  }).slice(0, resultLimit).map(withCustomerId);
   return {
     schemaVersion: "sales_dashboard_evaluation_studio_api.v1",
+    overnightAutomation: query.overnightAutomation || null,
     summary: evaluationStudioSummary(studio, currentImportId, { callIds }),
-    reportRollups: buildEvaluationStudioReportRollups(studio, { importId: resultImportId || currentImportId || "", callIds }),
+    reportRollups,
+    offerAcceptanceReport: buildOfferAcceptanceReport(studio, {
+      importId: resultImportId || currentImportId || "",
+      callIds,
+      calls: query.calls || []
+    }),
+    foundationReport: buildCallIntelligenceFoundationReport(studio, {
+      importId: resultImportId || currentImportId || "",
+      callIds,
+      calls: query.calls || []
+    }),
     knowledgebaseEntries: listKnowledgebaseEntries(studio, {
       includeArchived: query.includeArchived,
       category: query.category,
@@ -542,22 +678,39 @@ function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
       .slice()
       .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
       .map(sanitizeUntrustedLegacyDataForPublic),
-    evaluationResults: resultRows.slice(resultOffset, resultOffset + resultLimit),
-    evidenceQueue: listEvaluationResults(studio, {
-      importId: resultImportId,
-      callIds,
-      reviewRecommended: true
-    }).slice(0, resultLimit),
+    evaluationResults,
+    evidenceQueue,
     resultQuery: {
       importId: resultImportId || null,
       filteredCallIds: callIds ? callIds.size : null,
       limit: resultLimit,
       offset: resultOffset,
       matchingResults: resultRows.length,
-      displayedResults: resultRows.slice(resultOffset, resultOffset + resultLimit).length,
-      nextOffset: resultOffset + resultLimit < resultRows.length ? resultOffset + resultLimit : null,
+      matchingCalls: resultGroups.length,
+      displayedResults: selectedResultRows.length,
+      displayedCalls: selectedResultGroups.length,
+      nextOffset: resultOffset + resultLimit < resultGroups.length ? resultOffset + resultLimit : null,
       previousOffset: resultOffset > 0 ? Math.max(0, resultOffset - resultLimit) : null
     }
+  };
+}
+
+function evaluationStudioOvernightStatus(storePath) {
+  const statePath = path.join(path.dirname(storePath), "evaluation-overnight-state.json");
+  let runtime = null;
+  try {
+    runtime = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  } catch {}
+  return {
+    schemaVersion: "sales_dashboard_overnight_status.v1",
+    installed: true,
+    schedule: "22:00-06:00 Australia/Melbourne",
+    submissionCutoff: "04:30 Australia/Melbourne",
+    batchSize: 500,
+    idleRequiredSeconds: 600,
+    memoryFloorGb: 4,
+    behavior: "One Foundation batch at a time, followed by all recommended specialist evaluations.",
+    runtime
   };
 }
 
@@ -678,6 +831,7 @@ function selectIntelligenceExtractionCalls(rows, body = {}, eligibleCallIds = nu
 function selectEvaluationBatchCalls(rows, body = {}, studio = {}, importId = "") {
   const evaluationState = String(body.evaluationState || body.evaluation_state || "unevaluated").trim().toLowerCase();
   const templateId = String(body.templateId || body.template_id || "").trim();
+  const transcriptRows = (rows || []).filter((call) => String(call.transcript || "").trim());
   const existingResults = listEvaluationResults(studio, {
     importId,
     templateId,
@@ -686,14 +840,13 @@ function selectEvaluationBatchCalls(rows, body = {}, studio = {}, importId = "")
   const existingByCall = new Map(existingResults.map((result) => [String(result.callId), result]));
   let eligibleCallIds = null;
   if (evaluationState === "unevaluated") {
-    eligibleCallIds = new Set((rows || []).map((call) => String(call.callId)).filter((callId) => !existingByCall.has(callId)));
+    eligibleCallIds = new Set(transcriptRows.map((call) => String(call.callId)).filter((callId) => !existingByCall.has(callId)));
   } else if (evaluationState === "evaluated") {
     eligibleCallIds = new Set(existingByCall.keys());
   } else if (evaluationState === "failed") {
     eligibleCallIds = new Set(existingResults.filter((result) => result.status === "failed").map((result) => String(result.callId)));
   }
-  return selectIntelligenceExtractionCalls(rows, body, eligibleCallIds)
-    .filter((call) => String(call.transcript || "").trim());
+  return selectIntelligenceExtractionCalls(transcriptRows, body, eligibleCallIds);
 }
 
 function aiJobId(result = {}) {
@@ -714,6 +867,28 @@ function aiJobIsDone(status) {
 
 function aiJobIsFailed(status) {
   return ["failed", "error", "cancelled", "canceled"].includes(String(status || "").toLowerCase());
+}
+
+function offerAcceptanceEvaluationRun(run = {}) {
+  return run.templateSnapshot?.evaluationGoal === OFFER_ACCEPTANCE_GOAL
+    || /^template_offer_acceptance_classification_v\d+$/.test(String(run.templateId || ""));
+}
+
+function leadRecordAuditEvaluationRun(run = {}) {
+  return run.templateSnapshot?.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
+    || /^template_lead_record_disposition_evidence_audit_v\d+$/.test(String(run.templateId || ""));
+}
+
+function evaluationStudioSemanticValidationRevision(run = {}) {
+  if (offerAcceptanceEvaluationRun(run)) return EVALUATION_STUDIO_OFFER_ACCEPTANCE_VALIDATION_REVISION;
+  if (leadRecordAuditEvaluationRun(run)) return EVALUATION_STUDIO_LEAD_RECORD_AUDIT_VALIDATION_REVISION;
+  return 1;
+}
+
+function evaluationStudioSemanticFailureCanRetry(run = {}, job = {}) {
+  return job.terminalFailureCategory === "evaluator_semantic_validation_failed"
+    && (offerAcceptanceEvaluationRun(run) || leadRecordAuditEvaluationRun(run))
+    && Number(job.semanticValidationRevision || 0) < evaluationStudioSemanticValidationRevision(run);
 }
 
 function truthy(value) {
@@ -956,6 +1131,9 @@ async function createEvaluationBatchRun(body = {}, options = {}) {
   const importId = body.importId || state.importRecord.id;
   const currentStore = readStore({ storePath });
   const currentStudio = normalizeEvaluationStudio(currentStore.evaluationStudio);
+  const selectedTemplate = currentStudio.evaluationTemplates.find((template) => template.id === String(body.templateId || body.template_id || "").trim());
+  const autoRouteSpecialists = selectedTemplate?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+    && truthy(body.autoRouteSpecialists ?? body.auto_route_specialists ?? true);
   const calls = selectEvaluationBatchCalls(state.analysis.drilldownRows || [], body, currentStudio, importId);
   if (!calls.length) {
     const error = new Error("No calls with transcript text matched this selection.");
@@ -981,7 +1159,10 @@ async function createEvaluationBatchRun(body = {}, options = {}) {
       evaluationState: body.evaluationState || "unevaluated",
       requestedCallIds: Array.from(parseCallIdFilter(body.callIds || body.call_ids || "")),
       limit: normalizeLimit(body.limit, 100, 50000),
-      sourceType: body.callSelection?.sourceType || "evaluation_studio_local_selection"
+      sourceType: body.callSelection?.sourceType || "evaluation_studio_local_selection",
+      autoRouteSpecialists,
+      parentFoundationRunId: body.callSelection?.parentFoundationRunId || "",
+      specialistGoal: body.callSelection?.specialistGoal || ""
     }
   }, {
     importId,
@@ -995,50 +1176,70 @@ async function createEvaluationBatchRun(body = {}, options = {}) {
   const template = studio.evaluationTemplates.find((item) => item.id === run.templateId);
   const knowledgebase = studio.knowledgebaseEntries.filter((entry) => run.knowledgebaseIds.includes(entry.id));
   const queuedJobs = [];
+  const queuedAiJobReferences = [];
   const errors = [];
-  for (const call of calls) {
-    try {
-      const input = buildEvaluationStudioInput(call, template, knowledgebase, {
-        importId: run.importId,
-        sourceName: state.analysis.sourceName,
-        badLeadClaims: store.badLeadClaims || []
-      });
-      const result = await submitAiTask(input, {
-        config: aiConfig,
-        fetchImpl,
-        taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
-        responseMode: body.responseMode,
-        idempotencyKey: evaluationStudioIdempotencyKey(run, call, template),
-        metadata: {
-          source_system: "sales_dashboard",
-          source_type: "evaluation_studio_batch",
-          source_record_id: call.callId,
-          import_id: run.importId,
-          evaluation_run_id: run.id,
-          evaluation_template_id: template.id,
-          evaluation_goal: template.evaluationGoal
+  for (let offset = 0; offset < calls.length; offset += EVALUATION_STUDIO_SUBMISSION_CONCURRENCY) {
+    const chunk = calls.slice(offset, offset + EVALUATION_STUDIO_SUBMISSION_CONCURRENCY);
+    await Promise.all(chunk.map(async (call) => {
+      try {
+        const input = buildEvaluationStudioInput(call, template, knowledgebase, {
+          importId: run.importId,
+          sourceName: state.analysis.sourceName,
+          badLeadClaims: store.badLeadClaims || []
+        });
+        let result = null;
+        for (let attempt = 1; attempt <= EVALUATION_STUDIO_SUBMISSION_MAX_ATTEMPTS; attempt += 1) {
+          try {
+            result = await submitAiTask(input, {
+              config: aiConfig,
+              fetchImpl,
+              taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+              responseMode: body.responseMode,
+              idempotencyKey: evaluationStudioIdempotencyKey(run, call, template),
+              metadata: {
+                source_system: "sales_dashboard",
+                source_type: "evaluation_studio_batch",
+                source_record_id: call.callId,
+                import_id: run.importId,
+                evaluation_run_id: run.id,
+                evaluation_template_id: template.id,
+                evaluation_goal: template.evaluationGoal
+              }
+            });
+            break;
+          } catch (error) {
+            const transient = !error.status || error.status === 429 || error.status >= 500;
+            if (!transient || attempt === EVALUATION_STUDIO_SUBMISSION_MAX_ATTEMPTS) throw error;
+            await new Promise((resolve) => setTimeout(resolve, EVALUATION_STUDIO_SUBMISSION_RETRY_DELAY_MS * attempt));
+          }
         }
-      });
-      const jobId = aiJobId(result);
-      const status = aiJobStatus(result) || "queued";
-      if (!jobId) throw new Error("Execution layer response did not include a job ID.");
-      saveAiJobReference({
-        importId: run.importId,
-        callId: call.callId,
-        jobId,
-        taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
-        status,
-        metadata: {
-          source: "evaluation_studio",
-          evaluationRunId: run.id,
-          evaluationTemplateId: template.id,
-          evaluationGoal: template.evaluationGoal
-        }
-      }, { storePath });
-      queuedJobs.push({ callId: call.callId, jobId, status });
-    } catch (error) {
-      errors.push({ callId: call.callId, error: error.message });
-    }
+        const jobId = aiJobId(result);
+        const status = aiJobStatus(result) || "queued";
+        if (!jobId) throw new Error("Execution layer response did not include a job ID.");
+        queuedAiJobReferences.push({
+          importId: run.importId,
+          callId: call.callId,
+          jobId,
+          taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+          status,
+          metadata: {
+            source: "evaluation_studio",
+            evaluationRunId: run.id,
+            evaluationTemplateId: template.id,
+            evaluationGoal: template.evaluationGoal
+          }
+        });
+        queuedJobs.push({ callId: call.callId, jobId, status });
+      } catch (error) {
+        errors.push({ callId: call.callId, error: error.message });
+      }
+    }));
+  }
+  const callOrder = new Map(calls.map((call, index) => [String(call.callId), index]));
+  queuedJobs.sort((left, right) => (callOrder.get(String(left.callId)) ?? 0) - (callOrder.get(String(right.callId)) ?? 0));
+  errors.sort((left, right) => (callOrder.get(String(left.callId)) ?? 0) - (callOrder.get(String(right.callId)) ?? 0));
+  if (queuedAiJobReferences.length) {
+    store = saveAiJobReferences(queuedAiJobReferences, { storePath }).store;
   }
   const updated = updateStoredEvaluationRun(run.id, {
     status: queuedJobs.length && errors.length ? "partially_completed" : queuedJobs.length ? "running" : "failed",
@@ -1053,8 +1254,139 @@ async function createEvaluationBatchRun(body = {}, options = {}) {
   return { calls, evaluationRun: run, submitted: true, store };
 }
 
+async function routeFoundationRunSpecialists(runId, options = {}) {
+  const { storePath, aiConfig, fetchImpl, analysis = null } = options;
+  let store = readStore({ storePath });
+  let studio = normalizeEvaluationStudio(store.evaluationStudio);
+  let foundationRun = (studio.evaluationRuns || []).find((run) => run.id === runId);
+  if (!foundationRun || foundationRun.templateSnapshot?.evaluationGoal !== CALL_INTELLIGENCE_FOUNDATION_GOAL) {
+    return { routed: false, reason: "not_foundation_run", store };
+  }
+  if (!foundationRun.callSelection?.autoRouteSpecialists) {
+    return { routed: false, reason: "routing_not_requested", store };
+  }
+  if (!analysis || !Array.isArray(analysis.drilldownRows)) {
+    return { routed: false, reason: "source_transcripts_unavailable", store };
+  }
+  if (foundationRun.specialistRouting?.status === "completed") {
+    return { routed: false, reason: "already_completed", routing: foundationRun.specialistRouting, store };
+  }
+
+  const foundationResults = listEvaluationResults(studio, {
+    importId: foundationRun.importId,
+    runId: foundationRun.id,
+    evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL
+  }).filter((result) => result.status !== "failed" && result.foundationAssessment);
+  const routeCallIds = new Map(FOUNDATION_SPECIALIST_GOALS.map((goal) => [goal, []]));
+  foundationResults.forEach((result) => {
+    const routes = result.foundationAssessment?.specialistRoutes || {};
+    FOUNDATION_SPECIALIST_GOALS.forEach((goal) => {
+      if (routes[goal]) routeCallIds.get(goal).push(result.callId);
+    });
+  });
+
+  const childRuns = [];
+  const skipped = [];
+  const errors = [];
+  for (const goal of FOUNDATION_SPECIALIST_GOALS) {
+    const callIds = Array.from(new Set(routeCallIds.get(goal) || []));
+    if (!callIds.length) {
+      skipped.push({ goal, reason: "no_matching_calls", callCount: 0 });
+      continue;
+    }
+    store = readStore({ storePath });
+    studio = normalizeEvaluationStudio(store.evaluationStudio);
+    const existingChild = (studio.evaluationRuns || []).find((run) =>
+      run.callSelection?.parentFoundationRunId === foundationRun.id
+      && run.callSelection?.specialistGoal === goal
+    );
+    if (existingChild) {
+      childRuns.push({ goal, runId: existingChild.id, callCount: Number(existingChild.plannedCallCount || 0), reused: true });
+      continue;
+    }
+    const template = (studio.evaluationTemplates || []).find((item) =>
+      item.isActive && !item.containsUntrustedLegacyData && item.evaluationGoal === goal
+    );
+    if (!template) {
+      errors.push({ goal, error: "No active specialist template is available." });
+      continue;
+    }
+    try {
+      const child = await createEvaluationBatchRun({
+        templateId: template.id,
+        importId: foundationRun.importId,
+        evaluationState: "unevaluated",
+        selectionMode: "call_ids",
+        callIds: callIds.join(","),
+        limit: callIds.length,
+        submitNow: true,
+        autoRouteSpecialists: false,
+        callSelection: {
+          sourceType: "foundation_specialist_routing",
+          parentFoundationRunId: foundationRun.id,
+          specialistGoal: goal
+        }
+      }, {
+        state: {
+          analysis,
+          importRecord: { id: foundationRun.importId }
+        },
+        storePath,
+        aiConfig,
+        fetchImpl
+      });
+      store = child.store;
+      childRuns.push({
+        goal,
+        runId: child.evaluationRun.id,
+        callCount: child.calls.length,
+        reused: false
+      });
+    } catch (error) {
+      if (/No calls with transcript text matched this selection/i.test(String(error.message || ""))) {
+        skipped.push({ goal, reason: "already_evaluated_or_no_longer_eligible", callCount: callIds.length });
+      } else {
+        errors.push({ goal, error: String(error.message || error).slice(0, 1000) });
+      }
+    }
+  }
+
+  const timestamp = new Date().toISOString();
+  const routing = {
+    schemaVersion: "sales_dashboard_foundation_specialist_routing.v1",
+    status: errors.length ? "completed_with_errors" : "completed",
+    parentRunId: foundationRun.id,
+    foundationResultCount: foundationResults.length,
+    requestedChecks: FOUNDATION_SPECIALIST_GOALS.reduce((total, goal) => total + (routeCallIds.get(goal) || []).length, 0),
+    childRuns,
+    skipped,
+    errors,
+    completedAt: timestamp
+  };
+  const updated = updateStoredEvaluationRun(foundationRun.id, {
+    specialistRouting: routing,
+    runHistory: [
+      ...(foundationRun.runHistory || []),
+      evaluationStudioRunHistoryEvent(foundationRun, "route_specialists", {
+        timestamp,
+        note: `Foundation routing created or reused ${childRuns.length} specialist runs.`,
+        metadata: {
+          requestedChecks: routing.requestedChecks,
+          childRunCount: childRuns.length,
+          skippedCount: skipped.length,
+          errorCount: errors.length
+        }
+      })
+    ].slice(-200)
+  }, { storePath });
+  return { routed: true, routing, evaluationRun: updated.run, store: updated.store };
+}
+
 async function harvestEvaluationStudioRunJobs(runId, options = {}) {
   const { storePath, aiConfig, fetchImpl, analysis = null } = options;
+  const maxJobs = Number.isFinite(Number(options.maxJobs))
+    ? Math.max(1, Math.floor(Number(options.maxJobs)))
+    : Number.POSITIVE_INFINITY;
   let store = readStore({ storePath });
   let studio = normalizeEvaluationStudio(store.evaluationStudio);
   const run = (studio.evaluationRuns || []).find((item) => item.id === runId);
@@ -1087,10 +1419,22 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
   const failed = [];
   const errors = [];
   const timestamp = new Date().toISOString();
-  const updatedJobs = [];
+  const jobUpdates = new Map();
+  const aiJobReferences = [];
+  const resultCandidates = [];
+  const jobsToProcess = jobs.filter((job) => {
+    if (job.resultId) return false;
+    if (job.terminalHandledAt && aiJobIsFailed(job.status) && !evaluationStudioSemanticFailureCanRetry(run, job)) return false;
+    return true;
+  }).slice(0, maxJobs);
+  const processJobIds = new Set(jobsToProcess.map((job) => job.jobId));
 
   for (const jobRef of jobs) {
-    if (jobRef.terminalHandledAt && aiJobIsFailed(jobRef.status)) {
+    if (jobRef.resultId) {
+      jobUpdates.set(jobRef.jobId, jobRef);
+      continue;
+    }
+    if (jobRef.terminalHandledAt && aiJobIsFailed(jobRef.status) && !evaluationStudioSemanticFailureCanRetry(run, jobRef)) {
       failed.push({
         callId: jobRef.callId,
         jobId: jobRef.jobId,
@@ -1099,7 +1443,26 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
         category: jobRef.terminalFailureCategory || "execution_failed",
         alreadyHandled: true
       });
-      updatedJobs.push(jobRef);
+      jobUpdates.set(jobRef.jobId, jobRef);
+      continue;
+    }
+    if (!processJobIds.has(jobRef.jobId)) {
+      jobUpdates.set(jobRef.jobId, jobRef);
+      continue;
+    }
+    const recoveringSemanticFailure = evaluationStudioSemanticFailureCanRetry(run, jobRef);
+    const validationCall = analysis ? findCallProof(analysis, jobRef.callId) : null;
+    if (recoveringSemanticFailure && !String(validationCall?.transcript || "").trim()) {
+      errors.push({
+        callId: jobRef.callId,
+        jobId: jobRef.jobId,
+        error: "Recovery requires the current source transcript to verify an exact evidence excerpt."
+      });
+      jobUpdates.set(jobRef.jobId, {
+        ...jobRef,
+        lastHarvestError: "Recovery deferred until the source transcript is available.",
+        lastCheckedAt: timestamp
+      });
       continue;
     }
     const currentAiJob = (store.aiJobs || []).find((job) =>
@@ -1110,7 +1473,7 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
       const job = await getAiJob(jobRef.jobId, { config: aiConfig, fetchImpl });
       const status = aiJobStatus(job) || jobRef.status || currentAiJob.status || "queued";
       resolvedStatus = status;
-      const savedJob = saveAiJobReference({
+      aiJobReferences.push({
         ...currentAiJob,
         importId: run.importId,
         callId: jobRef.callId,
@@ -1118,14 +1481,16 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
         taskType: currentAiJob.taskType || jobRef.taskType || EVALUATION_STUDIO_TASK_TYPE,
         status,
         metadata: evaluationStudioAiJobMetadata(currentAiJob, run, jobRef)
-      }, { storePath });
-      store = savedJob.store;
+      });
 
       if (aiJobIsDone(status)) {
         const alreadyStored = existingEvaluationStudioJobResult(store, run.id, jobRef.callId, jobRef.jobId);
-        let result = alreadyStored;
         if (!alreadyStored) {
-          const savedResult = saveEvaluationResult({
+          resultCandidates.push({
+            jobRef,
+            status,
+            recoveringSemanticFailure,
+            input: {
             importId: run.importId,
             runId: run.id,
             templateId: run.templateId,
@@ -1133,24 +1498,29 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
             callId: jobRef.callId,
             result: aiJobResultPayload(job),
             validationContext: {
-              call: analysis ? findCallProof(analysis, jobRef.callId) : null
+              call: validationCall
             }
-          }, { storePath });
-          result = savedResult.result;
-          store = savedResult.store;
+            }
+          });
+          continue;
         }
         completed.push({
           callId: jobRef.callId,
           jobId: jobRef.jobId,
           status,
-          resultId: result.id,
-          alreadyStored: Boolean(alreadyStored)
+          resultId: alreadyStored.id,
+          alreadyStored: true
         });
-        updatedJobs.push({
+        jobUpdates.set(jobRef.jobId, {
           ...jobRef,
           status: "completed",
-          resultId: result.id,
-          harvestedAt: timestamp
+          resultId: alreadyStored.id,
+          harvestedAt: timestamp,
+          recoveredAt: evaluationStudioSemanticFailureCanRetry(run, jobRef) ? timestamp : jobRef.recoveredAt,
+          error: "",
+          terminalFailureCategory: "",
+          terminalHandledAt: "",
+          semanticValidationRevision: evaluationStudioSemanticValidationRevision(run)
         });
       } else if (aiJobIsFailed(status)) {
         const reason = evaluationStudioJobError(job) || "Local AI job failed.";
@@ -1160,11 +1530,12 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
           status,
           error: reason
         });
-        updatedJobs.push({
+        jobUpdates.set(jobRef.jobId, {
           ...jobRef,
           status: "failed",
           error: reason,
           terminalFailureCategory: "execution_failed",
+          semanticValidationRevision: evaluationStudioSemanticValidationRevision(run),
           terminalHandledAt: timestamp,
           harvestedAt: timestamp
         });
@@ -1174,7 +1545,7 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
           jobId: jobRef.jobId,
           status
         });
-        updatedJobs.push({
+        jobUpdates.set(jobRef.jobId, {
           ...jobRef,
           status,
           lastCheckedAt: timestamp
@@ -1190,11 +1561,12 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
           error: terminalFailure.error,
           category: terminalFailure.category
         });
-        updatedJobs.push({
+        jobUpdates.set(jobRef.jobId, {
           ...jobRef,
           status: "failed",
           error: terminalFailure.error,
           terminalFailureCategory: terminalFailure.category,
+          semanticValidationRevision: evaluationStudioSemanticValidationRevision(run),
           terminalHandledAt: timestamp,
           harvestedAt: timestamp
         });
@@ -1204,7 +1576,7 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
           jobId: jobRef.jobId,
           error: error.message
         });
-        updatedJobs.push({
+        jobUpdates.set(jobRef.jobId, {
           ...jobRef,
           status: jobRef.status || "queued",
           lastHarvestError: error.message,
@@ -1213,6 +1585,78 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
       }
     }
   }
+
+  if (aiJobReferences.length || resultCandidates.length) {
+    const persisted = saveEvaluationHarvestBatch({
+      aiJobs: aiJobReferences,
+      evaluationResults: resultCandidates.map((candidate) => candidate.input)
+    }, { storePath });
+    store = persisted.store;
+    const savedByJobId = new Map(persisted.results.map((item) => [item.jobId, item]));
+    const errorByJobId = new Map(persisted.resultErrors.map((item) => [item.jobId, item]));
+    for (const candidate of resultCandidates) {
+      const { jobRef, status, recoveringSemanticFailure } = candidate;
+      const saved = savedByJobId.get(jobRef.jobId);
+      if (saved?.result) {
+        completed.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          status,
+          resultId: saved.result.id,
+          alreadyStored: saved.alreadyStored
+        });
+        jobUpdates.set(jobRef.jobId, {
+          ...jobRef,
+          status: "completed",
+          resultId: saved.result.id,
+          harvestedAt: timestamp,
+          recoveredAt: recoveringSemanticFailure ? timestamp : jobRef.recoveredAt,
+          error: "",
+          terminalFailureCategory: "",
+          terminalHandledAt: "",
+          semanticValidationRevision: evaluationStudioSemanticValidationRevision(run)
+        });
+        continue;
+      }
+      const resultError = errorByJobId.get(jobRef.jobId);
+      const error = resultError?.error || Object.assign(new Error(resultError?.message || "Evaluation result could not be stored."), {
+        statusCode: resultError?.statusCode || 0
+      });
+      const terminalFailure = evaluationStudioTerminalHarvestFailure(error, status);
+      if (terminalFailure) {
+        failed.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          status: "failed",
+          error: terminalFailure.error,
+          category: terminalFailure.category
+        });
+        jobUpdates.set(jobRef.jobId, {
+          ...jobRef,
+          status: "failed",
+          error: terminalFailure.error,
+          terminalFailureCategory: terminalFailure.category,
+          semanticValidationRevision: evaluationStudioSemanticValidationRevision(run),
+          terminalHandledAt: timestamp,
+          harvestedAt: timestamp
+        });
+      } else {
+        errors.push({
+          callId: jobRef.callId,
+          jobId: jobRef.jobId,
+          error: String(error?.message || error)
+        });
+        jobUpdates.set(jobRef.jobId, {
+          ...jobRef,
+          status: jobRef.status || "queued",
+          lastHarvestError: String(error?.message || error),
+          lastCheckedAt: timestamp
+        });
+      }
+    }
+  }
+
+  const updatedJobs = jobs.map((job) => jobUpdates.get(job.jobId) || job);
 
   store = readStore({ storePath });
   studio = normalizeEvaluationStudio(store.evaluationStudio);
@@ -1232,7 +1676,7 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
   const event = evaluationStudioRunHistoryEvent(latestRun, "harvest", {
     timestamp,
     newStatus: nextStatus,
-    note: `Harvest checked ${jobs.length} local Evaluation Studio jobs.`,
+    note: `Harvest checked ${processJobIds.size} of ${jobs.length} local Evaluation Studio jobs.`,
     metadata: {
       completed: completed.length,
       pending: pending.length,
@@ -1241,8 +1685,9 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
       harvestKey
     }
   });
+  const completedJobIds = new Set(updatedJobs.filter((job) => aiJobIsDone(job.status)).map((job) => job.jobId));
   const mergedErrors = dedupeEvaluationStudioErrors([
-    ...(Array.isArray(latestRun.errors) ? latestRun.errors : []),
+    ...(Array.isArray(latestRun.errors) ? latestRun.errors : []).filter((item) => !completedJobIds.has(item.jobId)),
     ...failed.filter((item) => !item.alreadyHandled).map((item) => ({
       callId: item.callId,
       jobId: item.jobId,
@@ -1251,7 +1696,7 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
     })),
     ...errors
   ]).slice(-200);
-  const updatedRun = updateStoredEvaluationRun(run.id, {
+  let updatedRun = updateStoredEvaluationRun(run.id, {
     status: nextStatus,
     completedAt,
     queuedJobCount: pendingJobCount,
@@ -1263,6 +1708,25 @@ async function harvestEvaluationStudioRunJobs(runId, options = {}) {
       ? latestRun.runHistory
       : [...(Array.isArray(latestRun.runHistory) ? latestRun.runHistory : []), event].slice(-200)
   }, { storePath });
+
+  const foundationRoutingReady = updatedRun.run.templateSnapshot?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
+    && updatedRun.run.callSelection?.autoRouteSpecialists
+    && pendingJobCount === 0
+    && completedCallCount > 0;
+  if (foundationRoutingReady) {
+    const routed = await routeFoundationRunSpecialists(updatedRun.run.id, {
+      storePath,
+      aiConfig,
+      fetchImpl,
+      analysis
+    });
+    if (routed.evaluationRun) {
+      updatedRun = {
+        run: routed.evaluationRun,
+        store: routed.store
+      };
+    }
+  }
 
   return {
     evaluationRun: updatedRun.run,
@@ -1280,29 +1744,52 @@ function evaluationStudioAutoHarvestCandidate(run = {}, currentImportId = null) 
   if (!["prompt_test", "batch"].includes(run.runType)) return false;
   if (!["queued", "running", "partially_completed"].includes(status)) return false;
   if (currentImportId && run.importId !== currentImportId) return false;
-  if (!jobs.length || jobs.length > EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS) return false;
+  if (!jobs.length) return false;
   return jobs.some((job) => {
     const jobId = String(job.jobId || job.job_id || "").trim();
     if (!jobId || job.resultId) return false;
-    return !(aiJobIsFailed(job.status) && job.terminalHandledAt);
+    return !(aiJobIsFailed(job.status) && job.terminalHandledAt)
+      || evaluationStudioSemanticFailureCanRetry(run, job);
   });
 }
 
 async function autoHarvestEvaluationStudioRuns(options = {}) {
-  const { storePath, aiConfig, fetchImpl, currentImportId = null, analysis = null } = options;
+  const {
+    storePath,
+    aiConfig,
+    fetchImpl,
+    currentImportId = null,
+    analysis = null,
+    maxRuns = EVALUATION_STUDIO_AUTO_HARVEST_MAX_RUNS,
+    maxJobs = EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS
+  } = options;
   let store = readStore({ storePath });
+  if (!analysis || !Array.isArray(analysis.drilldownRows)) {
+    return {
+      checkedRunCount: 0,
+      harvested: [],
+      errors: [],
+      store
+    };
+  }
   const studio = normalizeEvaluationStudio(store.evaluationStudio);
   const candidates = (studio.evaluationRuns || [])
     .filter((run) => evaluationStudioAutoHarvestCandidate(run, currentImportId))
     .slice()
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
-    .slice(0, EVALUATION_STUDIO_AUTO_HARVEST_MAX_RUNS);
+    .slice(0, Math.max(0, Number(maxRuns) || 0));
   const harvested = [];
   const errors = [];
 
   for (const run of candidates) {
     try {
-      const result = await harvestEvaluationStudioRunJobs(run.id, { storePath, aiConfig, fetchImpl, analysis });
+      const result = await harvestEvaluationStudioRunJobs(run.id, {
+        storePath,
+        aiConfig,
+        fetchImpl,
+        analysis,
+        maxJobs: Math.max(1, Number(maxJobs) || 1)
+      });
       store = result.store;
       harvested.push({
         runId: run.id,
@@ -1973,6 +2460,45 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/api/evaluation-studio/progress" && request.method === "GET") {
+      const autoHarvest = await autoHarvestEvaluationStudioRuns({
+        storePath,
+        aiConfig,
+        fetchImpl,
+        currentImportId: state.importRecord?.id || null,
+        analysis: state.analysis,
+        maxRuns: 5,
+        maxJobs: 10
+      });
+      if (autoHarvest.harvested.length) {
+        state.analysis = attachPersistence(state.analysis, autoHarvest.store, state.importRecord?.id || null);
+      }
+      const store = autoHarvest.store || readStore({ storePath });
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      const currentImportId = state.importRecord?.id || null;
+      const evaluationRuns = (studio.evaluationRuns || [])
+        .filter((run) => !run.containsUntrustedLegacyData && (!currentImportId || run.importId === currentImportId))
+        .map((run) => ({
+          id: run.id,
+          status: run.status,
+          completedCallCount: Number(run.completedCallCount || 0),
+          failedCallCount: Number(run.failedCallCount || 0),
+          queuedJobCount: Number(run.queuedJobCount || 0),
+          updatedAt: run.updatedAt || run.createdAt || "",
+          hasPendingJobs: evaluationStudioAutoHarvestCandidate(run, currentImportId)
+        }));
+      sendJson(response, 200, {
+        schemaVersion: "sales_dashboard_evaluation_studio_progress.v1",
+        evaluationRuns,
+        autoHarvest: {
+          checkedRunCount: autoHarvest.checkedRunCount,
+          harvested: autoHarvest.harvested,
+          errors: autoHarvest.errors
+        }
+      });
+      return;
+    }
+
     if (url.pathname === "/api/evaluation-studio" && request.method === "GET") {
       const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
@@ -1987,6 +2513,7 @@ function createServer(options = {}) {
         includeArchived: url.searchParams.get("includeArchived"),
         category: url.searchParams.get("category"),
         tag: url.searchParams.get("tag"),
+        runId: url.searchParams.get("runId") || url.searchParams.get("evaluationRunId"),
         evaluationGoal: url.searchParams.get("evaluationGoal") || url.searchParams.get("goal"),
         currentOnly: url.searchParams.get("currentOnly"),
         callIds,
@@ -1998,8 +2525,21 @@ function createServer(options = {}) {
         operationalClassification: url.searchParams.get("operationalClassification"),
         recommendation: url.searchParams.get("recommendation"),
         allegationAssessment: url.searchParams.get("allegationAssessment"),
+        reportSignal: url.searchParams.get("reportSignal"),
+        acceptanceClassification: url.searchParams.get("acceptanceClassification"),
+        foundationOpportunityStatus: url.searchParams.get("foundationOpportunityStatus"),
+        foundationMeasurementEligibility: url.searchParams.get("foundationMeasurementEligibility"),
+        foundationEfficiencyStatus: url.searchParams.get("foundationEfficiencyStatus"),
+        foundationCalledOnBehalfOf: url.searchParams.get("foundationCalledOnBehalfOf"),
+        foundationFollowUpTiming: url.searchParams.get("foundationFollowUpTiming"),
+        foundationSpecialistRoute: url.searchParams.get("foundationSpecialistRoute"),
+        foundationOfferPresented: url.searchParams.get("foundationOfferPresented"),
+        foundationQuotedAmountAvailable: url.searchParams.get("foundationQuotedAmountAvailable"),
         confidenceBand: url.searchParams.get("confidenceBand"),
-        evidenceAvailability: url.searchParams.get("evidenceAvailability")
+        evidenceAvailability: url.searchParams.get("evidenceAvailability"),
+        reviewRecommended: url.searchParams.get("reviewRecommended") || url.searchParams.get("reviewOnly"),
+        overnightAutomation: evaluationStudioOvernightStatus(storePath),
+        calls: state.analysis?.drilldownRows || []
       });
       sendJson(response, 200, {
         ...payload,
@@ -2287,7 +2827,17 @@ function createServer(options = {}) {
           harvested: autoHarvest.harvested,
           errors: autoHarvest.errors
         },
-        reportRollups: buildEvaluationStudioReportRollups(studio, { importId: importId || "", callIds })
+        reportRollups: buildEvaluationStudioReportRollups(studio, { importId: importId || "", callIds }),
+        foundationReport: buildCallIntelligenceFoundationReport(studio, {
+          importId: importId || state.importRecord?.id || "",
+          callIds,
+          calls: state.analysis?.drilldownRows || []
+        }),
+        offerAcceptanceReport: buildOfferAcceptanceReport(studio, {
+          importId: importId || state.importRecord?.id || "",
+          callIds,
+          calls: state.analysis?.drilldownRows || []
+        })
       });
       return;
     }
@@ -2320,6 +2870,16 @@ function createServer(options = {}) {
         operationalClassification: url.searchParams.get("operationalClassification"),
         recommendation: url.searchParams.get("recommendation"),
         allegationAssessment: url.searchParams.get("allegationAssessment"),
+        reportSignal: url.searchParams.get("reportSignal"),
+        acceptanceClassification: url.searchParams.get("acceptanceClassification"),
+        foundationOpportunityStatus: url.searchParams.get("foundationOpportunityStatus"),
+        foundationMeasurementEligibility: url.searchParams.get("foundationMeasurementEligibility"),
+        foundationEfficiencyStatus: url.searchParams.get("foundationEfficiencyStatus"),
+        foundationCalledOnBehalfOf: url.searchParams.get("foundationCalledOnBehalfOf"),
+        foundationFollowUpTiming: url.searchParams.get("foundationFollowUpTiming"),
+        foundationSpecialistRoute: url.searchParams.get("foundationSpecialistRoute"),
+        foundationOfferPresented: url.searchParams.get("foundationOfferPresented"),
+        foundationQuotedAmountAvailable: url.searchParams.get("foundationQuotedAmountAvailable"),
         confidenceBand: url.searchParams.get("confidenceBand"),
         evidenceAvailability: url.searchParams.get("evidenceAvailability"),
         reviewRecommended: url.searchParams.get("reviewRecommended") || url.searchParams.get("reviewOnly"),
@@ -2825,6 +3385,7 @@ function createServer(options = {}) {
           randomSeed: form.get("randomSeed") || "sales-dashboard-local-sample",
           limit: form.get("limit") || 100,
           submitNow: form.get("submitNow") || "true",
+          autoRouteSpecialists: form.get("autoRouteSpecialists") || "false",
           callSelection: { sourceType: "evaluation_studio_form" }
         };
         const result = await createEvaluationBatchRun(body, { state, storePath, aiConfig, fetchImpl });
@@ -3001,6 +3562,39 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname.startsWith("/imports/") && request.method === "GET") {
+      const id = decodeURIComponent(url.pathname.replace("/imports/", ""));
+      const store = readStore({ storePath });
+      const importRecord = store.imports.find((item) => item.id === id);
+      response.writeHead(importRecord ? 200 : 404, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end(renderReportPage(importRecord ? importSnapshotReport(importRecord) : null, {
+        pageKicker: "Stored import snapshot",
+        backHref: "/?view=records#history",
+        backLabel: "Back to Import History"
+      }));
+      return;
+    }
+
+    if (url.pathname === "/manager-reviews" && request.method === "GET") {
+      const store = readStore({ storePath });
+      const reviews = (store.managerReviews || [])
+        .map(normalizeManagerReview)
+        .filter((review) => !managerReviewContainsUntrustedLegacyData(review) && (!state.importRecord?.id || review.importId === state.importRecord.id));
+      response.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end(renderReportPage(managerReviewSnapshotReport(reviews, state.analysis?.drilldownRows || []), {
+        pageKicker: "Manager review records",
+        backHref: "/?view=reviews#alerts",
+        backLabel: "Back to Alerts & Reviews"
+      }));
+      return;
+    }
+
     if (url.pathname === "/drilldown" && request.method === "GET") {
       const result = buildDrilldownResult(analysisForRequest(state, url, storePath), Object.fromEntries(url.searchParams.entries()));
       response.writeHead(200, {
@@ -3035,6 +3629,14 @@ function createServer(options = {}) {
             updatedAt: intelligenceAudit.updated_at || job.updatedAt
           }
           : job);
+      const studio = normalizeEvaluationStudio(store.evaluationStudio);
+      const evaluationResults = attachFoundationContextToResults(studio, listEvaluationResults(studio, {
+        importId: state.importRecord?.id || "",
+        callId
+      }), call ? [call] : []).map((result) => ({
+        ...result,
+        customerId: String(call?.customerId || call?.customer_id || "").trim() || "Not available"
+      }));
       response.writeHead(call ? 200 : 404, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
@@ -3044,6 +3646,7 @@ function createServer(options = {}) {
         reviews,
         aiJobs,
         intelligenceAudit,
+        evaluationResults,
         aiStatus: publicAiExecutionStatus(aiConfig),
         importId: state.importRecord?.id || null,
         returnTo: url.searchParams.get("returnTo") || `/calls/${encodeURIComponent(callId)}`
@@ -3057,7 +3660,9 @@ function createServer(options = {}) {
         aiConfig,
         fetchImpl,
         currentImportId: state.importRecord?.id || null,
-        analysis: state.analysis
+        analysis: state.analysis,
+        maxRuns: 5,
+        maxJobs: 10
       });
       if (autoHarvest.harvested.length) {
         state.analysis = attachPersistence(state.analysis, autoHarvest.store, state.importRecord?.id || null);
@@ -3065,7 +3670,18 @@ function createServer(options = {}) {
       const store = autoHarvest.store || readStore({ storePath });
       const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
       const resultFilters = {
+        runId: url.searchParams.get("runId") || "",
         evaluationGoal: url.searchParams.get("evaluationGoal") || "",
+        reportSignal: url.searchParams.get("reportSignal") || "",
+        acceptanceClassification: url.searchParams.get("acceptanceClassification") || "",
+        foundationOpportunityStatus: url.searchParams.get("foundationOpportunityStatus") || "",
+        foundationMeasurementEligibility: url.searchParams.get("foundationMeasurementEligibility") || "",
+        foundationEfficiencyStatus: url.searchParams.get("foundationEfficiencyStatus") || "",
+        foundationCalledOnBehalfOf: url.searchParams.get("foundationCalledOnBehalfOf") || "",
+        foundationFollowUpTiming: url.searchParams.get("foundationFollowUpTiming") || "",
+        foundationSpecialistRoute: url.searchParams.get("foundationSpecialistRoute") || "",
+        foundationOfferPresented: url.searchParams.get("foundationOfferPresented") || "",
+        foundationQuotedAmountAvailable: url.searchParams.get("foundationQuotedAmountAvailable") || "",
         resultStatus: url.searchParams.get("resultStatus") || "",
         recordClassification: url.searchParams.get("recordClassification") || "",
         recordReason: url.searchParams.get("recordReason") || "",
@@ -3075,20 +3691,26 @@ function createServer(options = {}) {
         confidenceBand: url.searchParams.get("confidenceBand") || "",
         evidenceAvailability: url.searchParams.get("evidenceAvailability") || "",
         reviewRecommended: url.searchParams.get("reviewRecommended") || "",
+        salesperson: url.searchParams.get("salesperson") || "",
+        customerImportSource: url.searchParams.get("customerImportSource") || "",
+        dateFrom: url.searchParams.get("dateFrom") || "",
+        dateTo: url.searchParams.get("dateTo") || "",
         limit: url.searchParams.get("limit") || "25",
         offset: url.searchParams.get("offset") || "0"
       };
+      const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
+      const studioAnalysis = analysisForRequest(state, url, storePath);
       const studioView = evaluationStudioApiPayload(store, state.importRecord?.id || null, {
         ...resultFilters,
         currentOnly: true,
-        callIds
+        callIds,
+        overnightAutomation: evaluationStudioOvernightStatus(storePath),
+        calls: studioAnalysis?.drilldownRows || []
       });
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
       });
-      const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
-      const studioAnalysis = analysisForRequest(state, url, storePath);
       response.end(renderEvaluationStudioPage(studioAnalysis, {
         businessSegment: activeBusinessSegment,
         studioView,
@@ -3107,7 +3729,9 @@ function createServer(options = {}) {
     const dashboardAnalysis = analysisForRequest(state, url, storePath);
     const filteredCallIds = new Set((dashboardAnalysis.drilldownRows || []).map((row) => row.callId));
     const defaultQueueFilters = {
+      all: {},
       waste: { wasteRisk: "1" },
+      repeated_short: { repeatedShortAttempt: "1" },
       manager_review: { managerReview: "1" },
       llm_completed: { llmStatus: "completed" },
       llm_queued: { llmStatus: "queued" },
@@ -3124,6 +3748,7 @@ function createServer(options = {}) {
         managerReview: url.searchParams.get("managerReview") || defaultQueueFilters.managerReview || "",
         wasteRisk: url.searchParams.get("wasteRisk") || defaultQueueFilters.wasteRisk || "",
         highQuality: url.searchParams.get("highQuality") || defaultQueueFilters.highQuality || "",
+        repeatedShortAttempt: url.searchParams.get("repeatedShortAttempt") || defaultQueueFilters.repeatedShortAttempt || "",
         llmStatus: url.searchParams.get("llmStatus") || defaultQueueFilters.llmStatus || "",
         callIds: url.searchParams.get("callIds") || "",
         limit: url.searchParams.get("intelligenceLimit") || 40

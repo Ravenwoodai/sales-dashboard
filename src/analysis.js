@@ -12,6 +12,8 @@ const { buildAiVoiceAssistantModel, linkAiVoiceAssistantOutcomes } = require("./
 const { buildLeadReattemptModel } = require("./leadReattemptAnalytics");
 const { buildLeadHarvestModel } = require("./leadHarvestAnalytics");
 const { buildSystemAudioModel } = require("./systemAudioAnalytics");
+const { buildSelfSourcingAttributionModel } = require("./selfSourcingAttribution");
+const { buildWeeklyLeadIntelligenceModel } = require("./weeklyLeadIntelligence");
 const {
   SOURCE_TIMEZONE_LABEL,
   formatSourceDateParts,
@@ -828,6 +830,8 @@ function buildDashboardView(items, options = {}) {
   const leadReattempt = buildLeadReattemptModel(items);
   const leadHarvest = buildLeadHarvestModel(items);
   const systemAudio = buildSystemAudioModel(items);
+  const selfSourcingAttribution = buildSelfSourcingAttributionModel(items);
+  const weeklyLeadIntelligence = buildWeeklyLeadIntelligenceModel();
   const alerts = buildAlerts(items);
   const reviewQueue = items
     .filter((item) => item.evaluation.risk.reviewRequired || item.evaluation.opportunity.followUpRequired)
@@ -860,6 +864,8 @@ function buildDashboardView(items, options = {}) {
     leadReattempt,
     leadHarvest,
     systemAudio,
+    selfSourcingAttribution,
+    weeklyLeadIntelligence,
     leadUtilization: buildLeadUtilizationModel(items),
     alerts,
     reviewQueue,
@@ -1345,6 +1351,8 @@ function analyzeCsvText(csvText, options = {}) {
   const leadReattempt = buildLeadReattemptModel(items);
   const leadHarvest = buildLeadHarvestModel(items);
   const systemAudio = buildSystemAudioModel(items);
+  const selfSourcingAttribution = buildSelfSourcingAttributionModel(items);
+  const weeklyLeadIntelligence = buildWeeklyLeadIntelligenceModel();
   const allocationRowsOption = options.allocationRows || options.allocations?.rows || [];
   const allocationConfigured = Boolean(
     options.parkedAllocation?.configured ||
@@ -1411,6 +1419,8 @@ function analyzeCsvText(csvText, options = {}) {
     leadReattempt,
     leadHarvest,
     systemAudio,
+    selfSourcingAttribution,
+    weeklyLeadIntelligence,
     businessSegmentMetrics,
     businessSegmentViews,
     leadUtilization,

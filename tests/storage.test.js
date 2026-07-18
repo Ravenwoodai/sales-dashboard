@@ -58,6 +58,30 @@ function tempStorePath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sales-dashboard-store-")), "state.json");
 }
 
+test("writeStore retries transient Windows rename contention without losing the update", () => {
+  const storePath = tempStorePath();
+  const originalRenameSync = fs.renameSync;
+  let attempts = 0;
+  fs.renameSync = (...args) => {
+    attempts += 1;
+    if (attempts <= 2) {
+      const error = new Error("temporary Windows file lock");
+      error.code = "EPERM";
+      throw error;
+    }
+    return originalRenameSync(...args);
+  };
+  try {
+    writeStore({ ...createEmptyStore(), reports: [{ id: "rename-retry-proof" }] }, { storePath });
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+
+  assert.equal(attempts, 3);
+  assert.equal(readStore({ storePath }).reports[0].id, "rename-retry-proof");
+  assert.equal(fs.readdirSync(path.dirname(storePath)).some((name) => name.endsWith(".tmp")), false);
+});
+
 function sampleCsv() {
   const row = {
     dialled_phone_number: "4123456",

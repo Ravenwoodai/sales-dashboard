@@ -130,6 +130,59 @@ test("call drill-down returns sanitized raw fields and full local transcript pro
   assert.match(result.rows[0].transcript, /Please call me back later today/);
 });
 
+test("transcript governance drill-downs expose exact usable and review-only call sets", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "governance-usable",
+      call_duration_seconds: "90",
+      CallTotalSeconds: "92",
+      transcription_text: "Outbound call Salesperson: I am calling about the annual community journal. Customer: Yes, please explain the offer and email the details."
+    }),
+    row({
+      call_id: "governance-low",
+      call_duration_seconds: "2",
+      CallTotalSeconds: "3",
+      transcription_text: "hello"
+    }),
+    row({
+      call_id: "governance-unusable",
+      call_duration_seconds: "0",
+      CallTotalSeconds: "0",
+      transcription_text: ""
+    })
+  ]));
+
+  const usable = buildDrilldownResult(analysis, { metric: "calls.transcriptUsableForCoaching" });
+  const reviewOnly = buildDrilldownResult(analysis, { metric: "calls.lowOrUnusableTranscript" });
+  const multipleBands = buildDrilldownResult(analysis, { metric: "calls.unique", confidenceBand: "low,unusable" });
+
+  assert.deepEqual(usable.rows.map((item) => item.callId), ["governance-usable"]);
+  assert.deepEqual(reviewOnly.rows.map((item) => item.callId).sort(), ["governance-low", "governance-unusable"]);
+  assert.deepEqual(multipleBands.rows.map((item) => item.callId).sort(), ["governance-low", "governance-unusable"]);
+});
+
+test("dashboard and Evaluation Studio expose drill-down links for backed aggregates and mark terminal metadata", async () => {
+  await withServer(csv([row({ Salesperson: "Riley Example", CustomerImportSource: "GoogleMaps" })]), async ({ baseUrl }) => {
+    const dashboard = await fetch(`${baseUrl}/?view=intelligence`).then((response) => response.text());
+    assert.match(dashboard, /metric=calls\.transcriptUsableForCoaching/);
+    assert.match(dashboard, /metric=calls\.lowOrUnusableTranscript/);
+    assert.match(dashboard, /metric=calls\.unique&amp;salesperson=Riley\+Example/);
+    assert.match(dashboard, /intelligenceQueue=repeated_short/);
+    assert.match(dashboard, /data-drilldown="not-applicable"/);
+    assert.match(dashboard, /href="\/imports\/import_[^"&]+"/);
+    assert.match(dashboard, /href="\/manager-reviews"/);
+    const importHref = dashboard.match(/href="(\/imports\/import_[^"&]+)"/)[1];
+    assert.equal((await fetch(`${baseUrl}${importHref}`)).status, 200);
+    assert.equal((await fetch(`${baseUrl}/manager-reviews`)).status, 200);
+
+    const studio = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
+    assert.match(studio, /reportSignal=callbackOpportunities/);
+    assert.match(studio, /reportSignal=possibleWasteIndicators/);
+    assert.match(studio, /reportSignal=coachingOpportunities/);
+    assert.match(studio, /metric=calls\.transcriptAvailable/);
+  });
+});
+
 test("call proof page shows transcript timeline before detected signal excerpts", async () => {
   await withServer(csv([
     row({
@@ -247,6 +300,7 @@ test("source-quality drill-down filters New Business calls by Record Age thresho
     recordAgeBucket: "181-365 days"
   });
   assert.deepEqual(cohort.rows.map((item) => item.callId), ["old-new", "manual-old-new", "old-warm"]);
+  assert.equal(buildDrilldownResult(analysis, { metric: "source.recordAgeAvailable" }).count, 4);
 });
 
 test("AI call assistant drill-down filters bail and handled encounters", () => {
@@ -1528,10 +1582,13 @@ test("dashboard exposes Evaluation Studio APIs, queued runs, and management UI",
     assert.equal(initial.summary.activeKnowledgebaseEntries >= 1, true);
     assert.equal(initial.summary.activeTemplates >= 1, true);
     assert.equal(initial.knowledgebaseEntries.some((entry) => entry.sourceProject === "Neuron-Compute-Training"), true);
+    assert.equal(initial.evaluationTemplates.some((template) => template.evaluationGoal === "offer_acceptance_classification"), true);
     const initialPage = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
     assert.match(initialPage, /Choose calls and run an evaluation/);
     assert.match(initialPage, /Preview selection/);
     assert.match(initialPage, /Evaluation Results/);
+    assert.match(initialPage, /Offer Acceptance \(Sale Signal\) Review/);
+    assert.match(initialPage, /<option value="template_call_intelligence_foundation_v6" selected>Call Intelligence Foundation/);
     assert.doesNotMatch(initialPage, /Pending manager approval/);
 
     const kbResponse = await fetch(`${baseUrl}/api/evaluation-studio/knowledgebase`, {
@@ -2153,10 +2210,17 @@ test("Evaluation Studio auto-harvests completed queued prompt tests on Studio AP
     assert.equal(store.evaluationStudio.evaluationRuns[0].status, "running");
     assert.equal(store.evaluationStudio.evaluationResults.length, 0);
 
+    const progress = await fetch(`${baseUrl}/api/evaluation-studio/progress?currentOnly=true`).then((apiResponse) => apiResponse.json());
+    assert.equal(progress.schemaVersion, "sales_dashboard_evaluation_studio_progress.v1");
+    assert.equal(progress.autoHarvest.checkedRunCount, 1);
+    assert.equal(progress.autoHarvest.harvested.length, 1);
+    assert.equal(progress.autoHarvest.harvested[0].status, "completed");
+    assert.equal(progress.evaluationRuns[0].status, "completed");
+    assert.equal(progress.evaluationRuns[0].completedCallCount, 1);
+    assert.equal(progress.evaluationRuns[0].hasPendingJobs, false);
+
     const refreshedStudio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((apiResponse) => apiResponse.json());
-    assert.equal(refreshedStudio.autoHarvest.checkedRunCount, 1);
-    assert.equal(refreshedStudio.autoHarvest.harvested.length, 1);
-    assert.equal(refreshedStudio.autoHarvest.harvested[0].status, "completed");
+    assert.equal(refreshedStudio.autoHarvest.checkedRunCount, 0);
     assert.equal(refreshedStudio.summary.byStatus.completed, 1);
     assert.equal(refreshedStudio.evaluationRuns[0].status, "completed");
     assert.equal(refreshedStudio.evaluationResults.length, 1);
@@ -2311,6 +2375,275 @@ test("Evaluation Studio terminal semantic failures are harvested once and stop r
   assert.equal(fetchRequests.filter((request) => String(request.url).includes("/jobs/")).length, 1);
 });
 
+test("Call Intelligence Foundation automatically routes only eligible specialist evaluations", async () => {
+  const fetchRequests = [];
+  const callId = "foundation-routing-call";
+  const transcript = "Outbound call Salesperson: I am calling on behalf of the local yearbook. Customer: Please send the information and call me tomorrow afternoon.";
+  const foundationPayload = {
+    schema_version: "call_intelligence_foundation.v3",
+    evaluation_goal: "call_intelligence_foundation",
+    call_id: callId,
+    status: "usable",
+    confidence: 0.9,
+    evidence_availability: "available",
+    transcript_quality: "high",
+    contact_result: "live_decision_maker",
+    decision_maker_status: "confirmed",
+    conversation_stage: "purpose_explained",
+    offer_presented: false,
+    price_presented: false,
+    objection_present: false,
+    customer_outcome: "callback_requested",
+    next_step_status: "actionable",
+    follow_up_timing: "tomorrow afternoon",
+    lead_record_signal: "none",
+    called_on_behalf_of: "the local yearbook",
+    commercial_context: { product_or_package: "", quoted_amount_available: false, quoted_amount: 0, currency: "unknown" },
+    intelligence_lenses: {
+      opportunity_status: "actionable",
+      measurement_eligibility: "eligible",
+      efficiency_status: "efficient_progression"
+    },
+    specialist_routes: {
+      offer_acceptance_classification: false,
+      callback_opportunity: false,
+      objection_handling: false,
+      procedure_adherence: false,
+      lead_record_disposition_evidence_audit: false
+    },
+    evidence: [{
+      supports: "called_on_behalf_of",
+      speaker: "salesperson",
+      quote: "I am calling on behalf of the local yearbook."
+    }, {
+      supports: "next_step_status",
+      speaker: "customer",
+      quote: "Please send the information and call me tomorrow afternoon."
+    }],
+    manager_review_recommended: false,
+    manager_summary: "The customer requested information and an actionable callback.",
+    limitations: [],
+    findings: []
+  };
+
+  await withServer(csv([row({ call_id: callId, transcription_text: transcript })]), async ({ baseUrl, storePath }) => {
+    const studio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const foundationTemplate = studio.evaluationTemplates.find((item) => item.evaluationGoal === "call_intelligence_foundation");
+    assert.ok(foundationTemplate);
+
+    const submitted = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        templateId: foundationTemplate.id,
+        callIds: callId,
+        selectionMode: "call_ids",
+        evaluationState: "all",
+        limit: 1,
+        submitNow: true,
+        autoRouteSpecialists: true
+      })
+    }).then((response) => response.json());
+    assert.equal(submitted.evaluationRun.status, "running");
+
+    const foundationRefresh = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const parent = foundationRefresh.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
+    assert.equal(parent.status, "completed");
+    assert.equal(parent.specialistRouting.status, "completed");
+    assert.deepEqual(parent.specialistRouting.childRuns.map((run) => run.goal).sort(), ["callback_opportunity", "procedure_adherence"]);
+    assert.equal(parent.specialistRouting.requestedChecks, 2);
+    assert.equal(foundationRefresh.evaluationResults.some((result) => result.evaluationGoal === "call_intelligence_foundation"), true);
+
+    const specialistRefresh = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const goals = specialistRefresh.evaluationResults.map((result) => result.evaluationGoal);
+    assert.equal(goals.includes("callback_opportunity"), true);
+    assert.equal(goals.includes("procedure_adherence"), true);
+    assert.equal(goals.includes("offer_acceptance_classification"), false);
+    assert.equal(goals.includes("objection_handling"), false);
+    assert.equal(goals.includes("lead_record_disposition_evidence_audit"), false);
+    assert.equal(specialistRefresh.foundationReport.totals.routedSpecialistChecks, 2);
+    assert.equal(specialistRefresh.foundationReport.totals.completedSpecialistChecks, 2);
+    const html = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
+    assert.match(html, /Opportunity, Measurement & Efficiency/);
+    assert.match(html, /Automatically route Foundation results to the five specialist evaluators/);
+    assert.match(html, /Call Intelligence Foundation/);
+    assert.match(html, /Called on behalf of/);
+    assert.match(html, /the local yearbook/);
+    assert.match(html, /Callback timing/);
+    assert.match(html, /tomorrow afternoon/);
+    assert.match(html, /2 \/ 2/);
+    assert.match(html, /foundationOpportunityStatus=actionable_or_accepted/);
+    assert.match(html, /foundationMeasurementEligibility=eligible/);
+    assert.match(html, /class="evaluation-result-card"/);
+    assert.match(html, /data-evaluation-studio-progress/);
+    assert.match(html, /\/api\/evaluation-studio\/progress\?currentOnly=true/);
+    assert.match(html, /sales-dashboard-evaluation-studio-refresh-state\.v1/);
+    assert.match(html, /completedCallCount/);
+    assert.match(html, /window\.scrollTo/);
+
+    const storedParent = readStore({ storePath }).evaluationStudio.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
+    assert.equal(storedParent.runHistory.some((event) => event.action === "route_specialists"), true);
+  }, {
+    env: {
+      SALES_DASHBOARD_AI_ENABLED: "true",
+      SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
+    },
+    fetchImpl: async (url, options = {}) => {
+      fetchRequests.push({ url, options });
+      if (String(url).endsWith("/run-task")) {
+        const requestBody = JSON.parse(options.body);
+        const goal = requestBody.metadata.evaluation_goal;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ job_id: `${goal}-job`, status: "queued" })
+        };
+      }
+      const jobId = decodeURIComponent(String(url).split("/").at(-1));
+      const goal = jobId.replace(/-job$/, "");
+      const resultPayload = goal === "call_intelligence_foundation"
+        ? foundationPayload
+        : {
+            schema_version: "sales_dashboard_evaluation_result.v1",
+            evaluation_goal: goal,
+            call_id: callId,
+            status: "usable",
+            confidence: 0.86,
+            evidence_availability: "available",
+            transcript_quality: "high",
+            findings: [{
+              field: goal === "callback_opportunity" ? "callback_requested" : "procedure_stage",
+              value: goal === "callback_opportunity" ? true : "purpose_explained",
+              evidence: "Please send the information and call me tomorrow afternoon.",
+              confidence: 0.86,
+              manager_review_recommended: false
+            }],
+            manager_summary: `${goal} specialist result.`,
+            limitations: []
+          };
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ job: { id: jobId, status: "done", result_payload: resultPayload } })
+      };
+    }
+  });
+
+  assert.equal(fetchRequests.filter((request) => String(request.url).endsWith("/run-task")).length, 3);
+});
+
+test("large Evaluation Studio runs submit concurrently and auto-harvest in bounded chunks", async () => {
+  let runTaskAttempts = 0;
+  const calls = Array.from({ length: 101 }, (_, index) => row({
+    call_id: `bounded-${String(index + 1).padStart(3, "0")}`,
+    customer_id: `customer-bounded-${index + 1}`,
+    AllocatedLeadID: `lead-bounded-${index + 1}`,
+    transcription_text: "Outbound call Customer: Please send the information and call tomorrow. Agent: I will call tomorrow."
+  }));
+  await withServer(csv(calls), async ({ baseUrl }) => {
+    const studio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity");
+    const submitted = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        templateId: template.id,
+        evaluationState: "all",
+        selectionMode: "oldest",
+        limit: 101,
+        submitNow: true
+      })
+    }).then((response) => response.json());
+    assert.equal(submitted.evaluationRun.queuedJobs.length, 101);
+    assert.equal(runTaskAttempts, 102);
+
+    const first = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const firstRun = first.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
+    assert.equal(first.autoHarvest.harvested[0].completed, 100);
+    assert.equal(firstRun.completedCallCount, 100);
+    assert.equal(firstRun.queuedJobCount, 1);
+    assert.equal(firstRun.status, "running");
+
+    const second = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const secondRun = second.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
+    assert.equal(second.autoHarvest.harvested[0].completed, 1);
+    assert.equal(secondRun.completedCallCount, 101);
+    assert.equal(secondRun.queuedJobCount, 0);
+    assert.equal(secondRun.status, "completed");
+  }, {
+    env: {
+      SALES_DASHBOARD_AI_ENABLED: "true",
+      SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
+    },
+    fetchImpl: async (url, options = {}) => {
+      if (String(url).endsWith("/run-task")) {
+        runTaskAttempts += 1;
+        if (runTaskAttempts === 1) throw new Error("fetch failed");
+        const requestBody = JSON.parse(options.body);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ job_id: `${requestBody.metadata.source_record_id}-job`, status: "queued" })
+        };
+      }
+      const jobId = decodeURIComponent(String(url).split("/").at(-1));
+      const callId = jobId.replace(/-job$/, "");
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          job: {
+            id: jobId,
+            status: "done",
+            result_payload: {
+              schema_version: "sales_dashboard_evaluation_result.v1",
+              evaluation_goal: "callback_opportunity",
+              call_id: callId,
+              status: "usable",
+              confidence: 0.85,
+              evidence_availability: "available",
+              transcript_quality: "high",
+              findings: [{
+                field: "callback_requested",
+                value: true,
+                evidence: "Please send the information and call tomorrow.",
+                confidence: 0.85,
+                manager_review_recommended: false
+              }],
+              manager_summary: "Customer requested information and a callback.",
+              limitations: []
+            }
+          }
+        })
+      };
+    }
+  });
+});
+
+test("Evaluation Studio fills the requested batch from transcript-bearing calls before applying the limit", async () => {
+  const calls = [
+    row({ call_id: "no-transcript-oldest", call_date: "01/07/2026", call_time: "08:00:00", transcription_text: "" }),
+    row({ call_id: "with-transcript-next", call_date: "01/07/2026", call_time: "08:01:00", transcription_text: "Customer: Hello. Agent: I am calling about a local community publication." })
+  ];
+  await withServer(csv(calls), async ({ baseUrl }) => {
+    const studio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "call_intelligence_foundation");
+    const preview = await fetch(`${baseUrl}/api/evaluation-studio/selection-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        templateId: template.id,
+        evaluationState: "unevaluated",
+        selectionMode: "oldest",
+        limit: 1
+      })
+    }).then((response) => response.json());
+
+    assert.equal(preview.matchingCalls, 1);
+    assert.equal(preview.preview[0].callId, "with-transcript-next");
+  });
+});
+
 test("dashboard exposes system audio audit section and API", async () => {
   await withServer(csv([
     row({
@@ -2404,10 +2737,180 @@ test("Evaluation Studio presents lead-record results as a concise decision with 
   assert.match(html, /Continue normal workflow/);
   assert.doesNotMatch(html, /<dt>Salesperson allegation<\/dt>/);
   assert.equal((html.match(/Customer: Please send the information to info@example\.com\./g) || []).length, 1);
-  assert.equal((html.match(/class="column-tooltip" role="tooltip"/g) || []).length, 6);
-  assert.match(html, /Usable means enough evidence was available for this evaluator to make a decision/);
-  assert.match(html, /It is advisory and does not change the lead, claim or CRM/);
-  assert.match(html, /It is not a probability of sale/);
+  assert.match(html, /class="evaluation-result-card"/);
+  assert.match(html, /class="evaluation-result-facts"/);
+  assert.match(html, /Open transcript/);
+  assert.match(html, /Evidence sufficient/);
+  assert.match(html, /authoritative current outcome and summary/i);
+  assert.match(html, /It is not the probability that payment or fulfilment occurred/);
+});
+
+test("Evaluation Studio presents Offer Acceptance outcomes and reportable rates instead of generic audit fields", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "accepted-display",
+      Salesperson: "Seller A",
+      CustomerImportSource: "Referral",
+      call_date: "16/07/2026",
+      transcription_text: "Salesperson: The package is $550. Customer: Yes, please book that for us."
+    })
+  ]));
+  const html = renderEvaluationStudioPage(analysis, {
+    studioView: {
+      summary: { results: 1, activeTemplates: 1, activeKnowledgebaseEntries: 0 },
+      knowledgebaseEntries: [],
+      evaluationTemplates: [],
+      evaluationRuns: [{
+        id: "offer-display-run",
+        runType: "batch",
+        templateSnapshot: { name: "Offer Acceptance (Sale Signal) Review" }
+      }],
+      evidenceQueue: [],
+      reportRollups: { totals: {}, signalRows: [], priorityExamples: [] },
+      offerAcceptanceReport: {
+        totals: { classified: 1, accepted: 1, followUpOnly: 0, noSaleSignal: 0, acceptanceRate: 1 },
+        bySalesperson: [{ label: "Seller A", classified: 1, accepted: 1, followUpOnly: 0, noSaleSignal: 0, acceptanceRate: 1 }],
+        bySource: [{ label: "Referral", classified: 1, accepted: 1, followUpOnly: 0, noSaleSignal: 0, acceptanceRate: 1 }],
+        byDate: [{ label: "16/07/2026", classified: 1, accepted: 1, followUpOnly: 0, noSaleSignal: 0, acceptanceRate: 1 }],
+        latestRun: { planned: 1, classified: 1, failed: 0, failureReasons: [] }
+      },
+      resultQuery: { matchingResults: 1, offset: 0, limit: 25 },
+      evaluationResults: [{
+        id: "accepted-result",
+        runId: "offer-display-run",
+        callId: "accepted-display",
+        evaluationGoal: "offer_acceptance_classification",
+        templateVersion: 2,
+        status: "usable",
+        confidence: 0.95,
+        evidenceAvailability: "available",
+        managerSummary: "The customer explicitly accepted the presented $550 package.",
+        acceptanceAssessment: {
+          category: 3,
+          classification: "customer_accepted_offer",
+          offerPresented: true,
+          customerCommitment: "explicit_unconditional_agreement",
+          unresolvedCondition: false,
+          offerEvidence: { quote: "The package is $550.", summary: "A $550 package was presented." },
+          customerResponseEvidence: { quote: "Yes, please book that for us.", summary: "The customer asked to book the offer." }
+        }
+      }]
+    }
+  });
+
+  assert.match(html, /Offer Acceptance Performance/);
+  assert.match(html, /Offer acceptance rate/);
+  assert.match(html, /100\.0%/);
+  assert.match(html, /Customer accepted offer/);
+  assert.match(html, /Customer ID:[\s\S]*customer-1/);
+  assert.match(html, /Record summary/);
+  assert.match(html, /This records acceptance of the offer/);
+  assert.match(html, /Offer Acceptance \(Sale Signal\) Review/);
+  assert.match(html, /Batch evaluation · Template v2/);
+  assert.match(html, /Seller A/);
+  assert.match(html, /Referral/);
+  assert.match(html, /Accepted ÷ Classified/);
+  assert.match(html, /Offer acceptance result/);
+  assert.match(html, /class="evaluation-result-card"/);
+  assert.match(html, /evaluationGoal=offer_acceptance_classification&amp;acceptanceClassification=customer_accepted_offer/);
+  assert.match(html, /salesperson=Seller\+A/);
+  assert.match(html, /customerImportSource=Referral/);
+  assert.match(html, /dateFrom=2026-07-16&amp;dateTo=2026-07-16/);
+  assert.doesNotMatch(html, />Not Supplied</);
+  assert.doesNotMatch(html, />usable</i);
+});
+
+test("Foundation result cards surface authoritative acceptance and always show Customer ID", () => {
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "foundation-accepted-display",
+      customer_id: "customer-accepted-42",
+      Salesperson: "Seller B",
+      transcription_text: "Salesperson: The supporter package is $550. Customer: Yes, I will pay next Wednesday."
+    }),
+    row({
+      call_id: "foundation-no-customer-display",
+      customer_id: "",
+      transcription_text: "Salesperson: I can send the information. Customer: Please email it."
+    })
+  ]));
+  const acceptedAssessment = {
+    category: 3,
+    classification: "customer_accepted_offer",
+    offerPresented: true,
+    customerCommitment: "explicit_unconditional_agreement",
+    unresolvedCondition: false
+  };
+  const foundationAssessment = {
+    calledOnBehalfOf: "ACT Emergency Service Volunteers",
+    followUpTiming: "next Wednesday",
+    intelligenceLenses: {
+      opportunity_status: "actionable",
+      measurement_eligibility: "eligible",
+      efficiency_status: "efficient_progression"
+    },
+    specialistRoutes: { offer_acceptance_classification: true }
+  };
+  const html = renderEvaluationStudioPage(analysis, {
+    studioView: {
+      summary: { results: 3 },
+      knowledgebaseEntries: [],
+      evaluationTemplates: [],
+      evaluationRuns: [],
+      evidenceQueue: [],
+      reportRollups: { totals: {}, signalRows: [], priorityExamples: [] },
+      offerAcceptanceReport: { totals: {}, bySalesperson: [], bySource: [], byDate: [] },
+      foundationReport: { totals: {}, rates: {}, bySalesperson: [], bySource: [], byDate: [], byCalledOnBehalfOf: [] },
+      resultQuery: { matchingResults: 3, matchingCalls: 2, offset: 0, limit: 25 },
+      evaluationResults: [{
+        id: "foundation-accepted-result",
+        callId: "foundation-accepted-display",
+        evaluationGoal: "call_intelligence_foundation",
+        status: "usable",
+        confidence: 0.92,
+        evidenceAvailability: "available",
+        managerSummary: "Foundation found an actionable next step.",
+        foundationAssessment,
+        offerAcceptanceContext: {
+          sourceResultId: "offer-result",
+          acceptanceAssessment: acceptedAssessment,
+          managerSummary: "The customer accepted the offer and agreed to pay next Wednesday.",
+          confidence: 0.95,
+          evidenceAvailability: "available",
+          status: "usable"
+        }
+      }, {
+        id: "offer-accepted-result",
+        callId: "foundation-accepted-display",
+        evaluationGoal: "offer_acceptance_classification",
+        status: "usable",
+        confidence: 0.95,
+        evidenceAvailability: "available",
+        managerSummary: "The customer accepted the offer and agreed to pay next Wednesday.",
+        acceptanceAssessment: acceptedAssessment
+      }, {
+        id: "foundation-no-customer-result",
+        callId: "foundation-no-customer-display",
+        evaluationGoal: "call_intelligence_foundation",
+        status: "usable",
+        confidence: 0.8,
+        evidenceAvailability: "available",
+        managerSummary: "The customer requested information.",
+        foundationAssessment
+      }]
+    }
+  });
+
+  assert.match(html, /Customer accepted offer/);
+  assert.match(html, /Authoritative Offer Acceptance/);
+  assert.match(html, /95\.0%/);
+  assert.match(html, /Outcome confidence 95\.0%/);
+  assert.match(html, /Customer ID:[\s\S]*customer-accepted-42/);
+  assert.match(html, /Customer ID:[\s\S]*Not available/);
+  assert.match(html, /Record summary/);
+  assert.equal((html.match(/data-call-id="foundation-accepted-display"/g) || []).length, 1);
+  assert.match(html, /2 evaluations:/);
+  assert.match(html, /Evaluation Results Grouped by Call/);
 });
 
 test("all UI data-table headings provide accessible descriptions", async () => {

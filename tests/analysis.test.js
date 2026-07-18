@@ -1020,6 +1020,30 @@ test("local evaluator treats 12-month callback wording as long-term deferral, no
   assert.match(deferralEvidence.text, /12 months|next financial year/i);
 });
 
+test("local evaluator lets a final in-a-year agreement override an earlier callback request", () => {
+  const evaluation = evaluateCall({
+    call_id: "48562953",
+    CallTotalSeconds: "239",
+    call_duration_seconds: "226",
+    transcription_text: [
+      "Outbound call David Simpson (CWA): I've been asked to give you a call on behalf of the local paramedics. Later this year, I'm putting together our official Ambulance Active Journal.",
+      "David Simpson (CWA): We are asking local businesses to support your AMBOs by running a support ad in that journal.",
+      "Customer: I have to sort this out. Give me a ring back. I said I'm all for it. I'm just quite busy at the moment.",
+      "Customer: I am possibly selling the store. It just hasn't been great.",
+      "David Simpson (CWA): What we might do is contact you a little bit later on, maybe in a year's time, and see if it's still going. How's that sound?",
+      "Customer: Yes, sounds good. Thank you very much."
+    ].join(" ")
+  });
+
+  assert.equal(evaluation.contact.probableLiveHuman, true);
+  assert.equal(evaluation.opportunity.longTermDeferral, true);
+  assert.equal(evaluation.opportunity.requestedCallback, false);
+  assert.equal(evaluation.opportunity.followUpRequired, false);
+  assert.equal(evaluation.outcome.localCategory, "long_term_deferral");
+  assert.equal(evaluation.evidence.some((item) => item.signal === "follow_up"), false);
+  assert.match(evaluation.evidence.find((item) => item.signal === "long_term_deferral").text, /in a year's time/i);
+});
+
 test("local evaluator normalizes human-like Voicemail speaker turns to Customer", () => {
   const transcript = [
     "Outbound call Lior Carter (CWA): How they support our community. Can our volunteers count on your support?",

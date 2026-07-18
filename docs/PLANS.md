@@ -16,9 +16,21 @@
 This file tracks execution plans for Sales Dashboard.
 
 ## Active Plans
-- None.
+
+### Weekly Lead Intelligence
+- Goal: make the two supplied weekly spreadsheet exports visible as a safe, isolated operational intelligence section.
+- Scope: supply mix, weekly import trend, workflow-field catalogue, and the lead-generator next-week handoff rule; no change to active call metrics or commercial attribution.
+- Verification: `node --test tests/*.test.js` passes 150/150; live dashboard at `http://127.0.0.1:3040/?view=team` contains the section.
+- Status: complete.
 
 ## Completed Plans
+### Self-Sourcing Attribution Audit
+- Goal: test whether New Business calls disproportionately target long-held CRM records without turning a historical source label into proof of lead ownership.
+- Scope shipped: isolated `src/selfSourcingAttribution.js` model, Team & Sources audit panel, 90-day and 365-day call/record cohorts, confirmed-import and salesperson-created splits, source-breakdown evidence, and a regression test.
+- Risks handled: no Crystal Report dependency; no phone matching; no use of legacy disposition/note fields; no claims of online discovery, neglect, sales, revenue, or reattribution.
+- Verification: `node --test tests/selfSourcingAttribution.test.js tests/analysis.test.js tests/drilldown.test.js`.
+- Status: complete.
+
 ### Untrusted Legacy Field Exclusion
 - Goal: prevent unreliable legacy human disposition and unknown-model note fields from influencing any active product conclusion.
 - Scope shipped: central exclusion policy, optional import contract, transcript-only local evaluation, removal from metrics/alerts/filters/reports/UI/APIs/manager-review prefill/AI inputs, historical report and alert filtering, and invariance regression tests.
@@ -166,7 +178,70 @@ This file tracks execution plans for Sales Dashboard.
 - Verification: preserved CAL-14, CAL-17, CAL-18, and hedged-closure patterns are covered by focused tests; `node --test tests/*.test.js` passes 145/145.
 - Status: complete.
 
+### Offer Acceptance Evaluation Studio Template
+- Goal: let managers run an editable Studio evaluator that distinguishes no sale signal, interested/follow-up only, and direct customer acceptance of a presented offer using the team's own transcript threshold.
+- Scope shipped: seeded active `Offer Acceptance (Sale Signal) Review` template, strict `offer_acceptance_classification.v1` result schema with a numeric integer category contract, non-destructive current-store reconciliation, transcript-quote verification, category/classification consistency checks, category 3 commitment and unresolved-condition enforcement, stored acceptance assessment, and visible normalized Studio findings. The v2 template requires short contiguous evidence excerpts; local ingestion may shorten a model quote only when the retained excerpt is still verified verbatim. Studio now shows accepted/follow-up/no-signal outcomes, acceptance rate, latest-run failures, salesperson/source/date breakdowns, and the evaluation template/run type/version used for every result instead of generic lead-audit columns. Recoverable historical quote-format failures are reprocessed once per validation revision, and recovery defers when the source transcript is unavailable.
+- Risks handled: salesperson assertions and administrative acknowledgements cannot establish category 3; partner/owner/manager/finance approval and later decisions remain category 2; category 3 is explicitly separated from payment, fulfilment, recognized revenue, and CRM closure.
+- Verification: manager-labelled transcript calibrations, v1-to-v2 template reconciliation, numeric category contract, proof-preserving quote repair, reporting rollups, and tailored result rendering are represented in focused tests; `node --test tests/*.test.js` passes 159/159. The live 10-call run was recovered to 10 classified and zero failed after storing only transcript-verified excerpts.
+- Status: complete.
+
+### Call Intelligence Foundation And Specialist Routing
+- Goal: establish one well-rounded, neutral daily transcript pass that identifies opportunity, measurement eligibility, and efficiency without weakening or replacing the five existing specialist evaluators.
+- Scope shipped: active editable `Call Intelligence Foundation` template v6 using schema `call_intelligence_foundation.v3`; required represented-party capture with `No product pitched` fallback and meaningful exact proof; local repair of explicit `on behalf of` evidence; final-state reconciliation with `long_term_nurture`; exact transcript-grounded callback timing normalized as a finding and shared across result rows for the same call; strict contact/stage/outcome/commercial-context/evidence validation; three independent lenses with no composite score; selective specialist routes; non-destructive child runs; specialist-authoritative reporting; salesperson/source/date/represented-organisation breakdowns; evaluation-type visibility; 12-way bounded submission with three idempotent transient retries; and 100-job bounded automatic harvest passes.
+- Risks handled: the model cannot self-route unsupported specialist work, long-term nurture cannot enter the active callback route, earlier provisional wording cannot override the final agreed state, existing specialist results are not overwritten, accepted candidates are not treated as accepted until the Offer Acceptance specialist classifies them, and Foundation output cannot establish payment, revenue, ROI, fulfilment, or CRM closure. Template v1 is archived because its optional numeric amount contract was ambiguous; later schemas preserve explicit amount availability and exact proof.
+- Verification: strict schema/proof/routing/report tests, proof-relevance and transcript-derived represented-party repair tests, transient-submission retry coverage, end-to-end specialist routing, and the 101-call harvest boundary are included. `node --test tests/*.test.js` passes 169/169. Ten representative high-quality live-customer calls completed with ten usable represented-party results and exact proof; an earlier random edge-case set separately verified `No product pitched`. A later sequential New Business search stopped at attempt 12 when call 48544948 produced authoritative Offer Acceptance category 3 at 95% confidence. The observed worker remains unproven at 10,000/day.
+- Status: complete.
+
+### Evaluation Result Drilldowns And Responsive Layout
+- Goal: let managers inspect the exact stored calls behind every visible Evaluation Studio aggregate without horizontal navigation.
+- Scope shipped: filtered drilldown links on Foundation and Offer Acceptance metric cards, breakdown labels/counts/outcomes/rates, Foundation-specific result filters, per-call latest-run failure proof, full-width responsive result cards, direct transcript actions, and stacked mobile table rows.
+- Risks handled: drilldowns are read-only views over existing stored results and preserve the original evaluator definitions, denominators, confidence, evidence and provenance; no evaluation, call record, manager review, alert, claim or CRM value is mutated.
+- Verification: `node --test tests/*.test.js` passes 169/169. Live Chromium CDP measurements show document width equals viewport width, zero overflowing tables, and visible result/transcript actions at 1256px desktop and 390px mobile.
+- Status: complete.
+
+### Dashboard-Wide Drill-Down Coverage
+- Goal: make every result, count, rate, salesperson, source, date, classification, and evidence-backed label inspectable down to the contributing calls or stored evaluation results.
+- Scope shipped: exact call/result filters across all seven dashboard workspaces and Evaluation Studio; linked overview, provenance, transcript-governance, AI-assistant, system-audio, reattempt, harvest, source-attribution, intelligence, team/source, manager-review, import-history, alert, evaluation-run, and evaluation-result values; user-facing historical import snapshots and a saved-manager-review report; and explicit terminal-state labelling where no underlying row set exists.
+- Intentional terminal values: database/configuration metadata, zero-row `Unprocessed`, the non-expressible inverse `Records excluded`, and fixed Weekly Lead Intelligence summary cells whose source snapshot has no row-level export contract. The weekly snapshot cards still open the fullest available origin, trend, and workflow tables.
+- Risks handled: drill-downs are read-only and preserve active global filters, exact evaluator result semantics, evidence, denominators, and provenance; no call, evaluation, review, alert, claim, import, or CRM record is mutated.
+- Verification: `node --test tests/*.test.js` passes 171/171. Live desktop and 390px mobile rendering showed no horizontal page overflow; exact Foundation, Offer Acceptance, transcript-quality, salesperson, source, date, callback-timing, run, import, and manager-review destinations returned populated pages.
+- Status: complete.
+
+### Authoritative Call Outcome Summary And Customer Identity
+- Goal: prevent Foundation candidate labels from obscuring a completed specialist decision and keep the imported Customer ID visible on every call-facing record.
+- Scope shipped: latest authoritative Offer Acceptance context is reconciled onto every stored result for the same call; result cards promote the specialist outcome, confidence, and evidence context while retaining the individual evaluator's own finding; each result has a render-time plain-language record summary; call proof pages have a current outcome summary; and Customer ID (or explicit `Not available`) is visible on result cards, attention/results tables, report examples, failure records, lead-harvest rows, manager-review snapshots, APIs, and call pages.
+- Risks handled: summaries are deterministic views over stored results, so they create no model calls, evaluation cost, validation failures, or historical rewrites. Accepted means transcript evidence of offer acceptance, not proof of payment, fulfilment, recognised revenue, or CRM closure.
+- Verification: `node --test tests/*.test.js` passes 173/173. Live call 48544948 now shows `Customer accepted offer`, Customer ID 16830601, authoritative 95% Offer Acceptance confidence, the Foundation result as secondary context, and the payment/fulfilment limitation on both its Studio card and call page. Desktop and 390px mobile document widths match their viewports.
+- Status: complete.
+
+### Evaluation Results Grouped By Call
+- Goal: stop repeated transcripts looking like duplicate records when Foundation and specialist evaluators have all assessed the same call.
+- Scope shipped: Evaluation Results now renders one top-level record per call with Customer ID, salesperson, source, date, authoritative current outcome, outcome confidence, summary, and evaluation count. Foundation and specialist results are nested behind one expandable evaluation list, where each evaluator retains its own outcome, confidence, evidence, provenance, and transcript action. Result pagination now counts call groups and never splits one call's evaluations across pages; call identity values remain direct drill-down links.
+- Risks handled: grouping is a display and paging change only. Stored evaluation history is preserved, specialist routing remains auditable, individual evaluator findings are not merged, and one accepted call cannot look like several accepted customers merely because several evaluators ran.
+- Verification: `node --test tests/*.test.js` passes 173/173. Live call 48544948 renders once with four nested evaluations, Customer ID 16830601, authoritative `Customer accepted offer` at 95% confidence, and working salesperson/source/date drill-downs. Chromium measurements show no horizontal page overflow at 1256px or 390px.
+- Status: complete.
+
+### Live Evaluation Studio Progress Refresh
+- Goal: keep report totals and grouped results current while long Foundation and specialist runs remain in the same running state.
+- Scope shipped: the Studio now polls a lightweight progress endpoint every five seconds, harvests a bounded ten jobs across each of at most five active runs, and reloads when status, completed, failed, queued, or update values change. Reloads preserve scroll position, expanded call evaluations, batch-selection inputs, prompt-test inputs, and result-filter inputs. A visible label distinguishes live updating from current settled results, overlapping poll requests are blocked, and terminal partially-completed runs no longer poll forever merely because historical job IDs remain.
+- Risks handled: the normal full Studio API retains its existing 100-job bounded harvest contract; the browser poll uses a smaller payload and bounded work to avoid repeated full-result downloads and overlapping expensive requests. Stored results, evaluator semantics, specialist routing, failures, and historical runs are unchanged.
+- Verification: `node --test tests/*.test.js` passes 173/173, including the new progress endpoint and refresh contract. The live Studio advanced from the stale screenshot's 63 calls / 63 evaluations to 181 calls / 509 evaluations and now correctly shows `Current stored results` after all jobs became terminal. Chromium measurements at 1256px and 390px show no horizontal overflow.
+- Status: complete.
+
+### Controlled Foundation Scale-Out
+- Goal: evaluate every transcript with Call Intelligence Foundation and run every deterministic specialist recommendation without accepting silent semantic loss or overloading the local worker.
+- Scope shipped: trusted contact/result reconciliation, exact-evidence repair or conservative removal, terminal/no-product routing suppression, category-2 Offer Acceptance reconciliation, revisioned historical recovery, and transcript-first batch limiting. Scale-out uses oldest unevaluated transcript calls, one parent at a time, automatic specialist routing, a 200-call canary, then 500-call batches only after parent and children drain.
+- Runtime scaling: Evaluation Studio now persists submitted AI-job references and harvested validated results in bounded batches rather than rewriting the entire JSON store once per job. Semantic failures remain isolated per job, successful results remain versioned, and run/routing updates remain separate auditable writes.
+- Verification: `node --test tests/*.test.js` passes 184/184. Canary and the first three 500-call boundaries passed. Third parent `eval_run_6264155b63b1720d01e3` plus recovery `eval_run_c19789006c76a83eff4c` provide 500 unique successful Foundation results; all 315 requested specialists completed, 1,127/1,127 excerpts verify exactly, and route/duplicate/worker/database gates are clean. Dataset coverage is 1,880/16,108 with 14,228 remaining.
+- Operating gate: do not submit the next parent while any current parent or child is pending. Require less than 2% failures for every run, zero routing errors, complete route coverage, exact evidence, worker queue/running zero, and healthy database state before the next 500.
+- Status: safely paused by user request after the third 500-call gate; still in progress until every transcript-bearing call and recommended specialist route is complete.
+
 ## Planning Rules
 - Keep the MVP grounded in current CSV evidence.
 - Do not add sales/revenue claims until reliable fields exist.
 - Treat LLM outputs as a future versioned layer, not as a hidden replacement for deterministic checks.
+### Idle-Aware Overnight Evaluation Backlog
+- Goal: finish all transcript-bearing calls through Call Intelligence Foundation and every recommended specialist without degrading normal daytime PC performance.
+- Scope shipped: daily 22:00-06:00 Melbourne wake-capable task, system-awake/display-off controller lifetime, one 500-call parent at a time, automatic specialist completion, 04:30 submission cutoff, durable status/log, duplicate-controller lock, service preflight/recovery, Studio status panel, and fail-closed 2% Foundation/specialist quality boundaries.
+- Execution safety: the Execution Layer admits the next protected job only in-window, after 600 seconds of user inactivity, and with at least 4 GB available physical memory. Running work finishes; no new protected claim is made when a gate closes.
+- Status: complete and enabled for the 18 July 2026 22:00 window.
