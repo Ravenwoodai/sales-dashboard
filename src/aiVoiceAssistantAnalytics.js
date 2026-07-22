@@ -63,35 +63,15 @@ function aiAssistantFor(item) {
 }
 
 function linkAiVoiceAssistantOutcomes(items, maxDateTime) {
-  const keyToLaterItems = new Map();
-
-  [...items].reverse().forEach((item) => {
+  (items || []).forEach((item) => {
     const aiAssistant = aiAssistantFor(item);
-    const keys = entityKeys(item.row);
-    const laterMatches = keys.flatMap((key) => keyToLaterItems.get(key) || []);
-    const uniqueLaterMatches = Array.from(new Map(laterMatches.map((match) => [callIdFor(match), match])).values());
-
-    if (aiAssistant.detected) {
-      const laterMeaningful = uniqueLaterMatches.find((match) => match.evaluation?.contact?.meaningfulConversation);
-      const laterHuman = laterMeaningful || uniqueLaterMatches.find((match) => match.evaluation?.contact?.probableLiveHuman);
-      const futureCall = laterMeaningful || laterHuman || null;
-      const insufficientFutureData = !futureCall && (!item.dateTime || !maxDateTime || maxDateTime.getTime() - item.dateTime.getTime() < FUTURE_WINDOW_MS);
-
-      aiAssistant.followThrough = {
-        status: futureCall
-          ? laterMeaningful ? "future_meaningful_conversation" : "future_human_contact"
-          : insufficientFutureData ? "insufficient_future_data" : "not_seen_in_future_data",
-        futureHumanContact: Boolean(laterHuman),
-        futureMeaningfulConversation: Boolean(laterMeaningful),
-        futureCallId: futureCall ? callIdFor(futureCall) : ""
-      };
-    }
-
-    keys.forEach((key) => {
-      const existing = keyToLaterItems.get(key) || [];
-      existing.push(item);
-      keyToLaterItems.set(key, existing);
-    });
+    if (!aiAssistant.detected) return;
+    aiAssistant.followThrough = {
+      status: "not_evaluated",
+      futureHumanContact: null,
+      futureMeaningfulConversation: null,
+      futureCallId: null
+    };
   });
 }
 
@@ -100,14 +80,14 @@ function seedGroup(name, extras = {}) {
     name,
     calls: 0,
     encounters: 0,
-    highConfidenceEncounters: 0,
-    handledSuccessfully: 0,
-    bailed: 0,
-    partial: 0,
-    futureHumanContact: 0,
-    futureMeaningfulConversation: 0,
-    insufficientFutureData: 0,
-    totalResponseWords: 0,
+    highConfidenceEncounters: null,
+    handledSuccessfully: null,
+    bailed: null,
+    partial: null,
+    futureHumanContact: null,
+    futureMeaningfulConversation: null,
+    insufficientFutureData: null,
+    totalResponseWords: null,
     tacticCounts: {},
     ...extras
   };
@@ -133,15 +113,6 @@ function addItemToGroup(group, item) {
   if (!aiAssistant.detected) return;
 
   group.encounters += 1;
-  if (Number(aiAssistant.confidence || 0) >= 0.85) group.highConfidenceEncounters += 1;
-  if (aiAssistant.handledSuccessfully) group.handledSuccessfully += 1;
-  else if (aiAssistant.bailed) group.bailed += 1;
-  else group.partial += 1;
-  if (aiAssistant.followThrough?.futureHumanContact) group.futureHumanContact += 1;
-  if (aiAssistant.followThrough?.futureMeaningfulConversation) group.futureMeaningfulConversation += 1;
-  if (aiAssistant.followThrough?.status === "insufficient_future_data") group.insufficientFutureData += 1;
-  group.totalResponseWords += Number(aiAssistant.responseWordCount || 0);
-  addTactics(group, aiAssistant);
 }
 
 function topTactic(group) {
@@ -153,15 +124,15 @@ function finalizeGroup(group) {
   return {
     ...group,
     encounterRate: percent(group.encounters, group.calls),
-    highConfidenceRate: percent(group.highConfidenceEncounters, group.encounters),
-    handledRate: percent(group.handledSuccessfully, group.encounters),
-    bailRate: percent(group.bailed, group.encounters),
-    partialRate: percent(group.partial, group.encounters),
-    futureHumanContactRate: percent(group.futureHumanContact, group.encounters),
-    futureMeaningfulConversationRate: percent(group.futureMeaningfulConversation, group.encounters),
-    insufficientFutureDataRate: percent(group.insufficientFutureData, group.encounters),
-    averageResponseWords: group.encounters ? Math.round(group.totalResponseWords / group.encounters) : 0,
-    topTactic: tactic?.label || "No clear tactic",
+    highConfidenceRate: null,
+    handledRate: null,
+    bailRate: null,
+    partialRate: null,
+    futureHumanContactRate: null,
+    futureMeaningfulConversationRate: null,
+    insufficientFutureDataRate: null,
+    averageResponseWords: null,
+    topTactic: "Not evaluated",
     topTacticKey: tactic?.key || ""
   };
 }
@@ -178,42 +149,7 @@ function groupedRows(items, keyFn, seedFn) {
 }
 
 function buildTacticRows(items) {
-  const groups = new Map();
-  items.forEach((item) => {
-    const aiAssistant = aiAssistantFor(item);
-    if (!aiAssistant.detected) return;
-
-    Object.entries(aiAssistant.tactics || {}).forEach(([key, present]) => {
-      if (!present) return;
-      if (!groups.has(key)) {
-        groups.set(key, {
-          key,
-          label: TACTIC_LABELS[key] || key,
-          encounters: 0,
-          handledSuccessfully: 0,
-          bailed: 0,
-          futureHumanContact: 0,
-          futureMeaningfulConversation: 0
-        });
-      }
-      const group = groups.get(key);
-      group.encounters += 1;
-      if (aiAssistant.handledSuccessfully) group.handledSuccessfully += 1;
-      if (aiAssistant.bailed) group.bailed += 1;
-      if (aiAssistant.followThrough?.futureHumanContact) group.futureHumanContact += 1;
-      if (aiAssistant.followThrough?.futureMeaningfulConversation) group.futureMeaningfulConversation += 1;
-    });
-  });
-
-  return Array.from(groups.values())
-    .map((group) => ({
-      ...group,
-      handledRate: percent(group.handledSuccessfully, group.encounters),
-      bailRate: percent(group.bailed, group.encounters),
-      futureHumanContactRate: percent(group.futureHumanContact, group.encounters),
-      futureMeaningfulConversationRate: percent(group.futureMeaningfulConversation, group.encounters)
-    }))
-    .sort((a, b) => b.encounters - a.encounters || b.handledRate - a.handledRate || a.label.localeCompare(b.label));
+  return [];
 }
 
 function buildAiVoiceAssistantModel(items) {
@@ -258,13 +194,13 @@ function buildAiVoiceAssistantModel(items) {
         time: clean(item.row.call_time),
         salesperson: salespersonFor(item),
         source: sourceFor(item),
-        confidence: aiAssistant.confidence,
+        confidence: null,
         responseClassification: aiAssistant.responseClassification,
         handledSuccessfully: aiAssistant.handledSuccessfully,
         bailed: aiAssistant.bailed,
         tacticLabels: aiAssistant.tacticLabels || [],
         futureStatus: aiAssistant.followThrough?.status || "",
-        futureCallId: aiAssistant.followThrough?.futureCallId || "",
+        futureCallId: null,
         evidence: aiAssistant.evidence?.text || ""
       };
     });
@@ -272,10 +208,10 @@ function buildAiVoiceAssistantModel(items) {
   return {
     schemaVersion: "sales_dashboard_ai_voice_assistant.v1",
     definitions: {
-      encounter: "Explicit AI call-assistant or screened-call language detected in the transcript.",
-      bail: "AI assistant encountered but the salesperson did not leave a useful name, reason, callback, or contact-detail response.",
-      handledSuccessfully: "Salesperson gave a structured response, usually combining reason for calling with identification, callback, or contact details.",
-      futureHumanContact: "A later call to the same stable customer/lead/contact reached a probable live human in the available data."
+      encounter: "Exact AI call-assistant or screened-call wording detected in a Customer, Voicemail, or unlabeled transcript turn.",
+      bail: "Not evaluated.",
+      handledSuccessfully: "Not evaluated.",
+      futureHumanContact: "Not evaluated; a later matching call does not prove human contact or recovery."
     },
     totals: finalizedTotals,
     trendRows,

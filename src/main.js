@@ -8,28 +8,42 @@ const {
   checkAiExecutionHealth,
   EVALUATION_STUDIO_TASK_TYPE,
   getAiJob,
-  INTELLIGENCE_TASK_TYPE,
   publicAiExecutionStatus,
+  recordAiJobFeedback,
   resolveAiExecutionConfig,
-  submitAiTask,
-  submitTranscriptIntelligenceExtraction,
-  submitTranscriptEvaluation
+  submitAiTask
 } = require("./aiExecutionLayer");
+const {
+  localModelCapabilityCatalog,
+  localModelCapabilityDecision,
+  localModelCapabilitySummary,
+  isOperationalEvaluationResult,
+  SUBMISSION_USE
+} = require("./localModelCapability");
+const {
+  createDraftManifest,
+  freezeManifest,
+  readValidationLab,
+  saveManifestLabels,
+  validationLabView,
+  writeValidationLab
+} = require("./evaluationValidationLab");
+const { buildVoicemailInboundReport } = require("./voicemailRecovery");
 const { analyzeCsvText, attachInternalItems, buildFilteredAnalysis, internalItemsFor } = require("./analysis");
 const { buildDrilldownResult, findCallProof } = require("./drilldown");
 const { normalizeFilterState } = require("./globalFilters");
 const { summarizeLeadReattemptRecords } = require("./leadReattemptAnalytics");
-const { summarizeLeadHarvestRecords } = require("./leadHarvestAnalytics");
 const { summarizeSystemAudioRecords } = require("./systemAudioAnalytics");
+const {
+  buildSalesOpportunityActionCentre,
+  buildSalesOpportunityManagementBrief,
+  filterSalesOpportunityRecords
+} = require("./salesOpportunityActionCentre");
 const {
   getIntelligenceSummary,
   listCallIntelligence,
-  listLlmJobs,
-  markLlmJobFailed,
-  markLlmJobQueued,
   replaceImportIntelligence,
-  resolveIntelligenceDbPath,
-  saveLlmIntelligenceResult
+  resolveIntelligenceDbPath
 } = require("./intelligenceDatabase");
 const { readAllocationFile } = require("./allocationCoverage");
 const { activeReportsOnly, buildParkedAllocationDiagnostic, classifyReportVisibility } = require("./allocationParking");
@@ -42,10 +56,13 @@ const {
   buildEvaluationStudioReportRollups,
   buildManagerReviewPrefillCorrections,
   CALL_INTELLIGENCE_FOUNDATION_GOAL,
+  CALLBACK_OPPORTUNITY_GOAL,
   EVALUATION_STUDIO_ACTOR,
   FOUNDATION_SPECIALIST_GOALS,
   LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL,
   OFFER_ACCEPTANCE_GOAL,
+  OBJECTION_HANDLING_GOAL,
+  PROCEDURE_ADHERENCE_GOAL,
   evaluationStudioSummary,
   listEvaluationResults,
   listEvaluationTemplates,
@@ -103,6 +120,55 @@ const EVALUATION_STUDIO_SUBMISSION_RETRY_DELAY_MS = 150;
 const EVALUATION_STUDIO_EXECUTION_CONTRACT_REVISION = "dynamic-schema-v1";
 const EVALUATION_STUDIO_OFFER_ACCEPTANCE_VALIDATION_REVISION = 7;
 const EVALUATION_STUDIO_LEAD_RECORD_AUDIT_VALIDATION_REVISION = 3;
+const EVALUATION_STUDIO_TYPED_SPECIALIST_VALIDATION_REVISION = 3;
+
+function capabilityQuarantineError(decision) {
+  const error = new Error(`Local-model capability ${decision.capabilityId} is unavailable: ${decision.reason}. Historical outputs remain research-only.`);
+  error.code = "LOCAL_MODEL_CAPABILITY_QUARANTINED";
+  error.status = 423;
+  error.statusCode = 423;
+  error.payload = { capability: decision };
+  return error;
+}
+
+function assertEvaluationTemplateSubmissionAllowed(template = {}, body = {}, aiConfig = {}) {
+  const outputSchema = template.outputSchema || {};
+  const schemaVersion = outputSchema.properties?.schema_version?.const || outputSchema.$id || "";
+  const submissionContext = {
+    use: SUBMISSION_USE,
+    taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
+    evaluationGoal: template.evaluationGoal,
+    model: body.model || aiConfig.model,
+    providerModel: body.providerModel,
+    modelDigest: body.modelDigest,
+    promptHash: template.promptHash,
+    schemaVersion,
+    schemaHash: crypto.createHash("sha256").update(JSON.stringify(outputSchema)).digest("hex"),
+    inferenceSettingsHash: body.inferenceSettingsHash,
+    inferenceSettings: body.inferenceSettings,
+    executionContractRevision: body.executionContractRevision,
+    populationId: template.supportedPopulation?.populationId,
+    populationDefinitionHash: template.supportedPopulation?.definitionHash,
+    metadata: {
+      evaluation_goal: template.evaluationGoal,
+      source_type: body.sourceType || "evaluation_studio"
+    }
+  };
+  const decision = localModelCapabilityDecision(submissionContext);
+  if (!decision.permitted) throw capabilityQuarantineError(decision);
+  return {
+    decision,
+    submissionContext: {
+      ...submissionContext,
+      model: decision.promotionContract?.model_key,
+      providerModel: decision.promotionContract?.provider_model,
+      modelDigest: decision.promotionContract?.model_digest,
+      inferenceSettingsHash: decision.promotionContract?.inference_settings_hash,
+      inferenceSettings: decision.promotionContract?.inference_settings,
+      executionContractRevision: decision.promotionContract?.execution_contract_revision
+    }
+  };
+}
 
 function resolveCsvPath(argv = process.argv.slice(2), env = process.env) {
   const csvFlagIndex = argv.findIndex((arg) => arg === "--csv" || arg === "--csv-path");
@@ -303,14 +369,11 @@ function publicAnalysis(analysis) {
 
 function llmReviewState(row = {}) {
   const status = String(row.llm_status || "not_requested").trim() || "not_requested";
-  const quality = String(row.llm_result_quality || "").trim();
   const hasResult = Boolean(String(row.llm_result_json || "").trim());
-  const validQuality = ["complete_json", "salvaged_raw", "salvage_available"].includes(quality);
-  if (status === "completed" && hasResult && validQuality) return "LLM-reviewed";
-  if (status === "failed" || (status === "completed" && (!hasResult || !validQuality))) return "Failed";
-  if (status === "queued") return "Unprocessed";
-  if (status === "not_requested") return "Not requested";
-  return status || "not_requested";
+  if (hasResult) return "Research-only archive";
+  if (status === "queued") return "Retired queue record";
+  if (status === "failed" || status === "completed") return "Retired historical record";
+  return "No research artifact";
 }
 
 function filterContextForStore(store, importId, intelligenceRows = []) {
@@ -448,6 +511,20 @@ function analysisForRequest(state, url, storePath) {
       ? summarizeFilteredIntelligence(intelligenceRows.filter((row) => filteredCallIds.has(row.call_id)))
       : filtered.intelligence
   }, internalItemsFor(filtered));
+}
+
+function salesOpportunityActionCentreForRequest(state, url, storePath) {
+  const analysis = analysisForRequest(state, url, storePath);
+  const store = readStore({ storePath });
+  return {
+    analysis,
+    centre: buildSalesOpportunityActionCentre({
+      studio: store.evaluationStudio,
+      importId: state.importRecord?.id || "",
+      calls: analysis.drilldownRows || [],
+      leadHarvestRecords: analysis.leadHarvest?.records || []
+    })
+  };
 }
 
 function evaluationStudioCallIdsForRequest(state, url, storePath) {
@@ -625,6 +702,10 @@ function evaluationStudioApiPayload(store, currentImportId = null, query = {}) {
     foundationSpecialistRoute: query.foundationSpecialistRoute,
     foundationOfferPresented: query.foundationOfferPresented,
     foundationQuotedAmountAvailable: query.foundationQuotedAmountAvailable,
+    spielCallHandlingQuality: query.spielCallHandlingQuality,
+    spielSpielQuality: query.spielSpielQuality,
+    spielCallPurpose: query.spielCallPurpose,
+    spielPrimaryReasonCode: query.spielPrimaryReasonCode,
     reportSignal: query.reportSignal,
     confidenceBand: query.confidenceBand,
     evidenceAvailability: query.evidenceAvailability,
@@ -707,15 +788,15 @@ function evaluationStudioOvernightStatus(storePath) {
   } catch {}
   return {
     schemaVersion: "sales_dashboard_overnight_status.v1",
-    installed: true,
-    schedule: "22:00-06:00 Australia/Melbourne",
-    submissionCutoff: "04:30 Australia/Melbourne",
-    foundationBatchSize: Math.min(500, Math.max(1, Number(process.env.SALES_DASHBOARD_OVERNIGHT_BATCH_SIZE || 500))),
-    specialistRecoveryBatchSize: Math.min(250, Math.max(1, Number(process.env.SALES_DASHBOARD_OVERNIGHT_SPECIALIST_BATCH_SIZE || 100))),
-    idleRequiredSeconds: 600,
-    memoryFloorGb: 4,
-    behavior: "Missing current typed specialist checks are recovered first in bounded batches; any recovery quality failure halts submissions. Foundation resumes only after that backlog is empty.",
-    runtime
+    installed: false,
+    schedule: "Disabled by local-model capability quarantine",
+    submissionCutoff: null,
+    foundationBatchSize: 0,
+    specialistRecoveryBatchSize: 0,
+    idleRequiredSeconds: null,
+    memoryFloorGb: null,
+    behavior: "No automatic local-model evaluation is authorised. The former runtime state is retained as research-only audit history.",
+    runtime: runtime ? { ...runtime, researchOnly: true, authority: "none" } : null
   };
 }
 
@@ -868,11 +949,31 @@ function aiJobResultPayload(result = {}) {
 
 function evaluationExecutionAudit(result = {}) {
   const job = result.job && typeof result.job === "object" ? result.job : result;
+  // Authority metadata must be supplied by the Execution Layer in the
+  // server-owned job envelope. Never trust model_metadata emitted inside the
+  // model's result_payload; that content is model-controlled.
+  const runtimeMetadata = job.execution_provenance && typeof job.execution_provenance === "object" && !Array.isArray(job.execution_provenance)
+    ? job.execution_provenance
+    : job.model_metadata && typeof job.model_metadata === "object" && !Array.isArray(job.model_metadata)
+      ? job.model_metadata
+    : {};
   return {
+    taskType: job.task_type || job.taskType || "",
     modelMetadata: {
       model: job.model_used || job.modelUsed || job.model || "",
-      providerModel: job.provider_model || job.providerModel || "",
-      route: job.route_id || job.routeId || ""
+      providerModel: runtimeMetadata.provider_model || runtimeMetadata.providerModel || "",
+      route: job.route_id || job.routeId || "",
+      modelDigest: runtimeMetadata.model_digest || runtimeMetadata.modelDigest || "",
+      capabilityId: runtimeMetadata.capability_id || runtimeMetadata.capabilityId || "",
+      capabilityRegisterHash: runtimeMetadata.capability_register_hash || runtimeMetadata.capabilityRegisterHash || "",
+      promotionContractHash: runtimeMetadata.promotion_contract_hash || runtimeMetadata.promotionContractHash || "",
+      schemaHash: runtimeMetadata.schema_hash || runtimeMetadata.schemaHash || "",
+      inferenceSettingsHash: runtimeMetadata.inference_settings_hash || runtimeMetadata.inferenceSettingsHash || "",
+      inferenceSettings: runtimeMetadata.inference_settings || runtimeMetadata.inferenceSettings || null,
+      executionContractRevision: runtimeMetadata.execution_contract_revision || runtimeMetadata.executionContractRevision || "",
+      populationId: runtimeMetadata.population_id || runtimeMetadata.populationId || "",
+      populationDefinitionHash: runtimeMetadata.population_definition_hash || runtimeMetadata.populationDefinitionHash || "",
+      provenanceAuthority: runtimeMetadata.provenance_authority || runtimeMetadata.provenanceAuthority || ""
     },
     executionMetadata: {
       promptTokens: job.prompt_tokens ?? job.promptTokens ?? null,
@@ -902,15 +1003,22 @@ function leadRecordAuditEvaluationRun(run = {}) {
     || /^template_lead_record_disposition_evidence_audit_v\d+$/.test(String(run.templateId || ""));
 }
 
+function typedSpecialistEvaluationRun(run = {}) {
+  return [CALLBACK_OPPORTUNITY_GOAL, OBJECTION_HANDLING_GOAL, PROCEDURE_ADHERENCE_GOAL]
+    .includes(run.templateSnapshot?.evaluationGoal)
+    || /^template_(?:callback_opportunity|objection_handling|procedure_adherence)_v\d+$/.test(String(run.templateId || ""));
+}
+
 function evaluationStudioSemanticValidationRevision(run = {}) {
   if (offerAcceptanceEvaluationRun(run)) return EVALUATION_STUDIO_OFFER_ACCEPTANCE_VALIDATION_REVISION;
   if (leadRecordAuditEvaluationRun(run)) return EVALUATION_STUDIO_LEAD_RECORD_AUDIT_VALIDATION_REVISION;
+  if (typedSpecialistEvaluationRun(run)) return EVALUATION_STUDIO_TYPED_SPECIALIST_VALIDATION_REVISION;
   return 1;
 }
 
 function evaluationStudioSemanticFailureCanRetry(run = {}, job = {}) {
   return job.terminalFailureCategory === "evaluator_semantic_validation_failed"
-    && (offerAcceptanceEvaluationRun(run) || leadRecordAuditEvaluationRun(run))
+    && (offerAcceptanceEvaluationRun(run) || leadRecordAuditEvaluationRun(run) || typedSpecialistEvaluationRun(run))
     && Number(job.semanticValidationRevision || 0) < evaluationStudioSemanticValidationRevision(run);
 }
 
@@ -1030,6 +1138,16 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
     throw error;
   }
 
+  const preflightStore = readStore({ storePath });
+  const preflightStudio = normalizeEvaluationStudio(preflightStore.evaluationStudio);
+  const preflightTemplate = preflightStudio.evaluationTemplates.find((item) => item.id === String(body.templateId || body.template_id || "").trim());
+  if (!preflightTemplate) {
+    const error = new Error("A current Evaluation Studio template is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const capabilityPreflight = assertEvaluationTemplateSubmissionAllowed(preflightTemplate, body, aiConfig);
+
   const submitNow = truthy(body.submitNow || body.submit || body.runNow);
   const importId = body.importId || state.importRecord.id;
   const initial = saveEvaluationRun({
@@ -1067,6 +1185,19 @@ async function createEvaluationPromptTest(body = {}, options = {}) {
       fetchImpl,
       taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
       responseMode: body.responseMode,
+      capabilityId: capabilityPreflight.decision.capabilityId,
+      evaluationGoal: template.evaluationGoal,
+      model: capabilityPreflight.submissionContext.model,
+      providerModel: capabilityPreflight.submissionContext.providerModel,
+      modelDigest: capabilityPreflight.submissionContext.modelDigest,
+      promptHash: capabilityPreflight.submissionContext.promptHash,
+      schemaVersion: capabilityPreflight.submissionContext.schemaVersion,
+      schemaHash: capabilityPreflight.submissionContext.schemaHash,
+      inferenceSettingsHash: capabilityPreflight.submissionContext.inferenceSettingsHash,
+      inferenceSettings: capabilityPreflight.submissionContext.inferenceSettings,
+      executionContractRevision: capabilityPreflight.submissionContext.executionContractRevision,
+      populationId: capabilityPreflight.submissionContext.populationId,
+      populationDefinitionHash: capabilityPreflight.submissionContext.populationDefinitionHash,
       idempotencyKey: evaluationStudioIdempotencyKey(run, call, template),
       metadata: {
         source_system: "sales_dashboard",
@@ -1156,8 +1287,14 @@ async function createEvaluationBatchRun(body = {}, options = {}) {
   const currentStore = readStore({ storePath });
   const currentStudio = normalizeEvaluationStudio(currentStore.evaluationStudio);
   const selectedTemplate = currentStudio.evaluationTemplates.find((template) => template.id === String(body.templateId || body.template_id || "").trim());
+  if (!selectedTemplate) {
+    const error = new Error("A current Evaluation Studio template is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const capabilityPreflight = assertEvaluationTemplateSubmissionAllowed(selectedTemplate, body, aiConfig);
   const autoRouteSpecialists = selectedTemplate?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
-    && truthy(body.autoRouteSpecialists ?? body.auto_route_specialists ?? true);
+    && truthy(body.autoRouteSpecialists ?? body.auto_route_specialists ?? false);
   const calls = selectEvaluationBatchCalls(state.analysis.drilldownRows || [], body, currentStudio, importId);
   if (!calls.length) {
     const error = new Error("No calls with transcript text matched this selection.");
@@ -1219,6 +1356,19 @@ async function createEvaluationBatchRun(body = {}, options = {}) {
               fetchImpl,
               taskType: body.taskType || EVALUATION_STUDIO_TASK_TYPE,
               responseMode: body.responseMode,
+              capabilityId: capabilityPreflight.decision.capabilityId,
+              evaluationGoal: template.evaluationGoal,
+              model: capabilityPreflight.submissionContext.model,
+              providerModel: capabilityPreflight.submissionContext.providerModel,
+              modelDigest: capabilityPreflight.submissionContext.modelDigest,
+              promptHash: capabilityPreflight.submissionContext.promptHash,
+              schemaVersion: capabilityPreflight.submissionContext.schemaVersion,
+              schemaHash: capabilityPreflight.submissionContext.schemaHash,
+              inferenceSettingsHash: capabilityPreflight.submissionContext.inferenceSettingsHash,
+              inferenceSettings: capabilityPreflight.submissionContext.inferenceSettings,
+              executionContractRevision: capabilityPreflight.submissionContext.executionContractRevision,
+              populationId: capabilityPreflight.submissionContext.populationId,
+              populationDefinitionHash: capabilityPreflight.submissionContext.populationDefinitionHash,
               idempotencyKey: evaluationStudioIdempotencyKey(run, call, template),
               metadata: {
                 source_system: "sales_dashboard",
@@ -1286,6 +1436,16 @@ async function routeFoundationRunSpecialists(runId, options = {}) {
   if (!foundationRun || foundationRun.templateSnapshot?.evaluationGoal !== CALL_INTELLIGENCE_FOUNDATION_GOAL) {
     return { routed: false, reason: "not_foundation_run", store };
   }
+  const routingCapability = localModelCapabilityDecision({
+    evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL,
+    taskType: EVALUATION_STUDIO_TASK_TYPE,
+    model: foundationRun.executionModel || "",
+    promptHash: foundationRun.templateSnapshot?.promptHash || "",
+    schemaVersion: foundationRun.templateSnapshot?.outputSchema?.properties?.schema_version?.const || ""
+  });
+  if (!routingCapability.permitted) {
+    return { routed: false, reason: "foundation_capability_quarantined", capability: routingCapability, store };
+  }
   if (!foundationRun.callSelection?.autoRouteSpecialists) {
     return { routed: false, reason: "routing_not_requested", store };
   }
@@ -1299,7 +1459,8 @@ async function routeFoundationRunSpecialists(runId, options = {}) {
   const foundationResults = listEvaluationResults(studio, {
     importId: foundationRun.importId,
     runId: foundationRun.id,
-    evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL
+    evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL,
+    operationalOnly: true
   }).filter((result) => result.status !== "failed" && result.foundationAssessment);
   const routeCallIds = new Map(FOUNDATION_SPECIALIST_GOALS.map((goal) => [goal, []]));
   foundationResults.forEach((result) => {
@@ -1789,6 +1950,18 @@ async function autoHarvestEvaluationStudioRuns(options = {}) {
     maxJobs = EVALUATION_STUDIO_AUTO_HARVEST_MAX_JOBS
   } = options;
   let store = readStore({ storePath });
+  const capabilityPolicy = localModelCapabilitySummary();
+  if (!capabilityPolicy.liveSubmissionPermitted || !capabilityPolicy.operationalConsumptionPermitted) {
+    return {
+      checkedRunCount: 0,
+      harvested: [],
+      errors: [],
+      disabled: true,
+      disabledReason: "No exact local-model capability is promoted for submission and operational consumption.",
+      capabilityPolicy,
+      store
+    };
+  }
   if (!analysis || !Array.isArray(analysis.drilldownRows)) {
     return {
       checkedRunCount: 0,
@@ -1840,6 +2013,17 @@ async function autoHarvestEvaluationStudioRuns(options = {}) {
   };
 }
 
+function publicAutoHarvestStatus(autoHarvest = {}) {
+  return {
+    disabled: autoHarvest.disabled === true,
+    disabledReason: autoHarvest.disabledReason || "",
+    checkedRunCount: Number(autoHarvest.checkedRunCount || 0),
+    harvested: autoHarvest.harvested || [],
+    errors: autoHarvest.errors || [],
+    capabilityPolicy: autoHarvest.capabilityPolicy || localModelCapabilitySummary()
+  };
+}
+
 function createServer(options = {}) {
   const env = options.env || process.env;
   const csvPath = options.csvPath || resolveCsvPath(options.argv || process.argv.slice(2), env);
@@ -1851,6 +2035,28 @@ function createServer(options = {}) {
 
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
+
+    const evaluationStudioMutation = !["GET", "HEAD"].includes(request.method)
+      && (url.pathname.startsWith("/api/evaluation-studio/") || url.pathname.startsWith("/evaluation-studio/"));
+    const permittedReadOnlyStudioPost = request.method === "POST"
+      && url.pathname === "/api/evaluation-studio/selection-preview";
+    const permittedValidationLabMutation = request.method === "POST" && (
+      url.pathname === "/evaluation-studio/validation-lab/manifests"
+      || /^\/evaluation-studio\/validation-lab\/manifests\/[^/]+\/(?:labels|freeze)$/.test(url.pathname)
+    );
+    const retiredStudioResultIngestion = request.method === "POST"
+      && url.pathname === "/api/evaluation-studio/results";
+    if (evaluationStudioMutation && !permittedReadOnlyStudioPost && !permittedValidationLabMutation && !retiredStudioResultIngestion) {
+      sendJson(response, 423, {
+        ok: false,
+        error: "Evaluation Studio is a read-only research archive while no local-model capability is promoted.",
+        code: "EVALUATION_STUDIO_RESEARCH_ARCHIVE_LOCKED",
+        researchOnly: true,
+        authority: "none",
+        capabilityPolicy: localModelCapabilitySummary()
+      });
+      return;
+    }
 
     if (url.pathname === "/branding/logo" && request.method === "GET") {
       const logoPath = findBrandLogo(storePath);
@@ -1910,8 +2116,46 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/api/local-model-capabilities" && request.method === "GET") {
+      try {
+        sendJson(response, 200, { ok: true, capabilityPolicy: localModelCapabilitySummary() });
+      } catch (error) {
+        sendJson(response, 503, { ok: false, error: error.message, liveSubmissionPermitted: false, operationalConsumptionPermitted: false });
+      }
+      return;
+    }
+
     if (url.pathname === "/api/summary") {
       sendJson(response, 200, publicAnalysis(analysisForRequest(state, url, storePath)));
+      return;
+    }
+
+    if (url.pathname === "/api/sales-opportunities" && request.method === "GET") {
+      const { analysis, centre } = salesOpportunityActionCentreForRequest(state, url, storePath);
+      const selected = filterSalesOpportunityRecords(centre, Object.fromEntries(url.searchParams.entries()));
+      sendJson(response, 200, {
+        ...centre,
+        records: selected.records,
+        query: selected.query,
+        filterState: analysis.filterState || null,
+        filterSummary: analysis.filterSummary || null
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/sales-opportunities/brief" && request.method === "GET") {
+      const { centre } = salesOpportunityActionCentreForRequest(state, url, storePath);
+      const report = buildSalesOpportunityManagementBrief(centre, { baseUrl: `http://${request.headers.host || "127.0.0.1:3040"}` });
+      if (url.searchParams.get("format") === "markdown") {
+        response.writeHead(200, {
+          "Content-Type": "text/markdown; charset=utf-8",
+          "Content-Disposition": "attachment; filename=\"sales-opportunity-action-centre-current.md\"",
+          "Cache-Control": "no-store"
+        });
+        response.end(report.content);
+      } else {
+        sendJson(response, 200, { report });
+      }
       return;
     }
 
@@ -2063,64 +2307,11 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/lead-harvest" && request.method === "GET") {
-      const query = Object.fromEntries(url.searchParams.entries());
-      const requestAnalysis = analysisForRequest(state, url, storePath);
-      const requestedSegment = String(query.businessSegment || query.segment || "new").trim().toLowerCase().replace(/[-\s]+/g, "_");
-      const businessSegment = ["warm", "warm_business", "existing", "existing_business", "previous", "previous_sales"].includes(requestedSegment)
-        ? "warm"
-        : requestedSegment === "all" || requestedSegment === "all_business"
-          ? ""
-          : "new";
-      const source = String(query.source || "").trim();
-      const salesperson = String(query.salesperson || "").trim();
-      const status = String(query.status || query.harvestStatus || "").trim();
-      const confidenceBand = String(query.confidenceBand || query.confidence || "").trim();
-      const objectionType = String(query.objectionType || query.objection || "").trim();
-      const handlingType = String(query.handlingType || query.salespersonHandlingType || "").trim();
-      const sort = String(query.sort || query.order || "").trim().toLowerCase();
-      const limit = Math.max(1, Math.min(Number(query.limit || 10000), 10000));
-      const offset = Math.max(0, Number(query.offset || 0));
-      const leadHarvest = businessSegment && requestAnalysis?.businessSegmentViews?.[businessSegment]?.leadHarvest
-        ? requestAnalysis.businessSegmentViews[businessSegment].leadHarvest
-        : requestAnalysis?.leadHarvest || {};
-      const records = (leadHarvest.records || []).filter((record) => {
-        if (businessSegment && record.businessSegment !== businessSegment) return false;
-        if (source && record.source !== source) return false;
-        if (salesperson && record.salesperson !== salesperson) return false;
-        if (status && record.status !== status) return false;
-        if (confidenceBand && record.confidenceBand !== confidenceBand) return false;
-        if (objectionType && record.objectionType !== objectionType) return false;
-        if (handlingType && record.salespersonHandlingType !== handlingType) return false;
-        return true;
-      }).sort((a, b) => {
-        if (sort === "oldest" || sort === "oldest_first") return Number(a.timestamp || 0) - Number(b.timestamp || 0) || String(a.callId || "").localeCompare(String(b.callId || ""));
-        if (sort === "newest" || sort === "newest_first") return Number(b.timestamp || 0) - Number(a.timestamp || 0) || String(a.callId || "").localeCompare(String(b.callId || ""));
-        return 0;
-      });
-      const visibleRecords = records.slice(offset, offset + limit);
-      sendJson(response, 200, {
-        schemaVersion: leadHarvest.schemaVersion || "sales_dashboard_lead_harvest.v1",
-        definitions: leadHarvest.definitions || {},
-        ...summarizeLeadHarvestRecords(records),
-        records: visibleRecords,
-        query: {
-          businessSegment,
-          source,
-          salesperson,
-          status,
-          confidenceBand,
-          objectionType,
-          handlingType,
-          sort,
-          limit,
-          offset,
-          displayedRecords: visibleRecords.length,
-          matchingRecords: records.length,
-          nextOffset: offset + limit < records.length ? offset + limit : null,
-          previousOffset: offset > 0 ? Math.max(0, offset - limit) : null
-        },
-        filterState: requestAnalysis.filterState || null,
-        filterSummary: requestAnalysis.filterSummary || null
+      sendJson(response, 410, {
+        ok: false,
+        status: "retired",
+        error: "Lead Harvest automation is retired because its deterministic semantic rules failed the frozen accuracy audit.",
+        permittedAlternative: "/api/lead-reattempts exposes neutral stable-ID activity and restricted literal no-contact facts only."
       });
       return;
     }
@@ -2267,221 +2458,29 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/intelligence/llm-extractions" && request.method === "POST") {
-      try {
-        if (!state.analysis || !state.importRecord?.id) {
-          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
-          return;
-        }
-        const body = await readJsonBody(request);
-        const businessSegment = String(body.businessSegment || body.segment || "").trim();
-        const eligibleCallIds = body.includePreviouslyAttempted
-          ? null
-          : new Set(listCallIntelligence({
-            storePath,
-            importId: state.importRecord.id,
-            businessSegment,
-            callIds: body.callIds || body.call_ids || body.callId || body.call_id || "",
-            llmStatus: body.llmStatus || "not_requested",
-            limit: 5000
-          }).map((call) => call.call_id));
-        const calls = selectIntelligenceExtractionCalls(state.analysis.drilldownRows || [], body, eligibleCallIds);
-        const queued = [];
-        const completed = [];
-        const errors = [];
-
-        for (const call of calls) {
-          try {
-            const deterministic = buildCallIntelligence(call, {
-              importId: state.importRecord.id,
-              inputHash: state.analysis.inputHash,
-              sourceName: state.analysis.sourceName
-            });
-            const result = await submitTranscriptIntelligenceExtraction(call, deterministic, {
-              config: aiConfig,
-              fetchImpl,
-              importId: state.importRecord.id,
-              sourceName: state.analysis.sourceName,
-              maxTranscriptChars: body.maxTranscriptChars || 8000,
-              responseMode: body.responseMode,
-              metadata: {
-                source: "bulk_intelligence_extraction",
-                businessSegment: businessSegment || null
-              }
-            });
-            const jobId = aiJobId(result);
-            const status = aiJobStatus(result) || "queued";
-            const saved = saveAiJobReference({
-              importId: state.importRecord.id,
-              callId: call.callId,
-              jobId,
-              taskType: INTELLIGENCE_TASK_TYPE,
-              status,
-              metadata: {
-                source: "bulk_intelligence_extraction",
-                intelligenceDbPath: resolveIntelligenceDbPath({ storePath })
-              }
-            }, { storePath });
-            if (aiJobIsDone(status)) {
-              saveLlmIntelligenceResult({
-                storePath,
-                importId: state.importRecord.id,
-                callId: call.callId,
-                jobId,
-                result: aiJobResultPayload(result)
-              });
-              completed.push({ callId: call.callId, jobId, status });
-            } else if (aiJobIsFailed(status)) {
-              markLlmJobFailed({
-                storePath,
-                importId: state.importRecord.id,
-                callId: call.callId,
-                jobId,
-                reason: result.error || result.job?.error || "Local LLM job failed"
-              });
-              errors.push({ callId: call.callId, jobId, error: result.error || result.job?.error || "Local LLM job failed" });
-            } else {
-              markLlmJobQueued({
-                storePath,
-                importId: state.importRecord.id,
-                callId: call.callId,
-                jobId
-              });
-              queued.push({ callId: call.callId, jobId, status: saved.aiJob.status });
-            }
-          } catch (error) {
-            errors.push({ callId: call.callId, error: error.message });
-          }
-        }
-
-        const summary = currentIntelligenceSummary(storePath, state.importRecord.id);
-        state.analysis = updateAnalysisPreservingItems(state.analysis, {
-          intelligence: summary,
-          persistence: dashboardPersistence(readStore({ storePath }), state.importRecord.id)
-        });
-        sendJson(response, errors.length ? 207 : 202, {
-          ok: errors.length === 0,
-          requested: calls.length,
-          queued: queued.length,
-          completed: completed.length,
-          errors,
-          queuedCalls: queued,
-          completedCalls: completed,
-          summary
-        });
-      } catch (error) {
-        sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
-      }
+      sendJson(response, 410, {
+        ok: false,
+        error: "Legacy transcript intelligence is retired. It truncated transcripts and emitted uncalibrated semantic scores.",
+        code: "LEGACY_LOCAL_MODEL_EVALUATOR_RETIRED"
+      });
       return;
     }
 
     if (url.pathname === "/api/intelligence/llm-harvest" && request.method === "POST") {
-      try {
-        if (!state.analysis || !state.importRecord?.id) {
-          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
-          return;
-        }
-        const body = await readJsonBody(request);
-        const importId = body.importId || body.import_id || state.importRecord.id;
-        const queuedJobs = listLlmJobs({
-          storePath,
-          importId,
-          businessSegment: body.businessSegment || body.segment || "",
-          limit: body.limit || 100
-        });
-        const completed = [];
-        const pending = [];
-        const failed = [];
-        const errors = [];
-
-        for (const row of queuedJobs) {
-          try {
-            const job = await getAiJob(row.llm_job_id, { config: aiConfig, fetchImpl });
-            const status = aiJobStatus(job);
-            if (aiJobIsDone(status)) {
-              saveLlmIntelligenceResult({
-                storePath,
-                importId: row.import_id,
-                callId: row.call_id,
-                jobId: row.llm_job_id,
-                result: aiJobResultPayload(job)
-              });
-              completed.push({ callId: row.call_id, jobId: row.llm_job_id, status });
-            } else if (aiJobIsFailed(status)) {
-              markLlmJobFailed({
-                storePath,
-                importId: row.import_id,
-                callId: row.call_id,
-                jobId: row.llm_job_id,
-                reason: job.error || job.job?.error || "Local LLM job failed"
-              });
-              failed.push({ callId: row.call_id, jobId: row.llm_job_id, status, error: job.error || job.job?.error || "" });
-            } else {
-              pending.push({ callId: row.call_id, jobId: row.llm_job_id, status: status || "queued" });
-            }
-          } catch (error) {
-            errors.push({ callId: row.call_id, jobId: row.llm_job_id, error: error.message });
-          }
-        }
-
-        const summary = currentIntelligenceSummary(storePath, importId);
-        if (state.importRecord.id === importId) {
-          state.analysis = updateAnalysisPreservingItems(state.analysis, {
-            intelligence: summary,
-            persistence: dashboardPersistence(readStore({ storePath }), state.importRecord.id)
-          });
-        }
-
-        sendJson(response, errors.length ? 207 : 200, {
-          ok: errors.length === 0,
-          inspected: queuedJobs.length,
-          completed,
-          pending,
-          failed,
-          errors,
-          summary
-        });
-      } catch (error) {
-        sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
-      }
+      sendJson(response, 410, {
+        ok: false,
+        error: "Legacy local-model intelligence harvesting is retired. Historical payloads remain research-only.",
+        code: "LEGACY_LOCAL_MODEL_EVALUATOR_RETIRED"
+      });
       return;
     }
 
     if (url.pathname === "/api/intelligence/llm-results" && request.method === "POST") {
-      try {
-        if (!state.analysis || !state.importRecord?.id) {
-          sendJson(response, 400, { ok: false, error: "No current import is loaded." });
-          return;
-        }
-
-        const body = await readJsonBody(request, 10 * 1024 * 1024);
-        const importId = body.importId || body.import_id || state.importRecord.id;
-        const callId = body.callId || body.call_id || body.source_record_id || body.metadata?.source_record_id || "";
-        const jobId = body.jobId || body.job_id || body.id || body.job?.id || body.job?.job_id || "";
-        let result = body.result || body.output || body.response || body.data || body.payload || body.job || null;
-
-        if (!result && jobId && body.fetchJob !== false) {
-          result = await getAiJob(jobId, { config: aiConfig, fetchImpl });
-        }
-
-        const saved = saveLlmIntelligenceResult({
-          storePath,
-          importId,
-          callId,
-          jobId,
-          result: result || body
-        });
-        const summary = currentIntelligenceSummary(storePath, importId);
-        if (state.importRecord.id === importId) {
-          state.analysis = updateAnalysisPreservingItems(state.analysis, {
-            intelligence: summary,
-            persistence: dashboardPersistence(readStore({ storePath }), state.importRecord.id)
-          });
-        }
-
-        sendJson(response, 200, { ok: true, saved: { importId: saved.importId, callId: saved.callId, jobId: saved.jobId }, summary });
-      } catch (error) {
-        sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
-      }
+      sendJson(response, 410, {
+        ok: false,
+        error: "Legacy local-model intelligence result ingestion is retired. Historical payloads remain research-only.",
+        code: "LEGACY_LOCAL_MODEL_EVALUATOR_RETIRED"
+      });
       return;
     }
 
@@ -2515,11 +2514,7 @@ function createServer(options = {}) {
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_evaluation_studio_progress.v1",
         evaluationRuns,
-        autoHarvest: {
-          checkedRunCount: autoHarvest.checkedRunCount,
-          harvested: autoHarvest.harvested,
-          errors: autoHarvest.errors
-        }
+        autoHarvest: publicAutoHarvestStatus(autoHarvest)
       });
       return;
     }
@@ -2560,19 +2555,34 @@ function createServer(options = {}) {
         foundationSpecialistRoute: url.searchParams.get("foundationSpecialistRoute"),
         foundationOfferPresented: url.searchParams.get("foundationOfferPresented"),
         foundationQuotedAmountAvailable: url.searchParams.get("foundationQuotedAmountAvailable"),
+        spielCallHandlingQuality: url.searchParams.get("spielCallHandlingQuality"),
+        spielSpielQuality: url.searchParams.get("spielSpielQuality"),
+        spielCallPurpose: url.searchParams.get("spielCallPurpose"),
+        spielPrimaryReasonCode: url.searchParams.get("spielPrimaryReasonCode"),
         confidenceBand: url.searchParams.get("confidenceBand"),
         evidenceAvailability: url.searchParams.get("evidenceAvailability"),
         reviewRecommended: url.searchParams.get("reviewRecommended") || url.searchParams.get("reviewOnly"),
         overnightAutomation: evaluationStudioOvernightStatus(storePath),
         calls: state.analysis?.drilldownRows || []
       });
+      const validation = readValidationLab({ storePath });
       sendJson(response, 200, {
         ...payload,
-        autoHarvest: {
-          checkedRunCount: autoHarvest.checkedRunCount,
-          harvested: autoHarvest.harvested,
-          errors: autoHarvest.errors
-        }
+        autoHarvest: publicAutoHarvestStatus(autoHarvest),
+        capabilityCatalog: localModelCapabilityCatalog(),
+        validationLab: { ...validationLabView(validation.lab, state.analysis?.drilldownRows || []), readError: validation.error },
+        voicemailInbound: buildVoicemailInboundReport(state.analysis?.drilldownRows || [])
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/evaluation-studio/validation-lab" && request.method === "GET") {
+      const validation = readValidationLab({ storePath });
+      sendJson(response, validation.error ? 503 : 200, {
+        ok: !validation.error,
+        validationLab: { ...validationLabView(validation.lab, state.analysis?.drilldownRows || []), readError: validation.error },
+        capabilityCatalog: localModelCapabilityCatalog(),
+        voicemailInbound: buildVoicemailInboundReport(state.analysis?.drilldownRows || [])
       });
       return;
     }
@@ -2671,11 +2681,7 @@ function createServer(options = {}) {
       const studio = normalizeEvaluationStudio(store.evaluationStudio);
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_evaluation_studio_runs_api.v1",
-        autoHarvest: {
-          checkedRunCount: autoHarvest.checkedRunCount,
-          harvested: autoHarvest.harvested,
-          errors: autoHarvest.errors
-        },
+        autoHarvest: publicAutoHarvestStatus(autoHarvest),
         evaluationRuns: (studio.evaluationRuns || [])
           .filter((run) => !run.containsUntrustedLegacyData && (!url.searchParams.get("importId") || run.importId === url.searchParams.get("importId")))
           .slice()
@@ -2726,6 +2732,18 @@ function createServer(options = {}) {
           sendJson(response, 400, { ok: false, error: "No current import is loaded." });
           return;
         }
+        const capabilityPolicy = localModelCapabilitySummary();
+        if (!capabilityPolicy.operationalConsumptionPermitted || !capabilityPolicy.liveSubmissionPermitted) {
+          sendJson(response, 200, {
+            ok: true,
+            blocked: true,
+            blocker: "No Foundation or specialist capability is independently promoted for submission and operational consumption.",
+            capabilityPolicy,
+            backlog: { totalChecks: 0, totalCalls: 0, byGoal: [], researchInventoryExcluded: true },
+            nextBatch: null
+          });
+          return;
+        }
         const store = readStore({ storePath });
         const importId = url.searchParams.get("importId") || state.importRecord.id;
         const availableCallIds = new Set((state.analysis.drilldownRows || [])
@@ -2769,6 +2787,14 @@ function createServer(options = {}) {
 
     if (url.pathname.startsWith("/api/evaluation-studio/runs/") && url.pathname.endsWith("/harvest") && request.method === "POST") {
       try {
+        const capabilityPolicy = localModelCapabilitySummary();
+        if (!capabilityPolicy.operationalConsumptionPermitted) {
+          throw capabilityQuarantineError({
+            capabilityId: "evaluation_run_harvest",
+            reason: "no_promoted_operational_capability",
+            ...capabilityPolicy
+          });
+        }
         const runId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/runs/".length, -"/harvest".length));
         const result = await harvestEvaluationStudioRunJobs(runId, {
           storePath,
@@ -2814,6 +2840,14 @@ function createServer(options = {}) {
 
     if (url.pathname.startsWith("/api/evaluation-studio/runs/") && url.pathname.endsWith("/resume") && request.method === "POST") {
       try {
+        const capabilityPolicy = localModelCapabilitySummary();
+        if (!capabilityPolicy.liveSubmissionPermitted) {
+          throw capabilityQuarantineError({
+            capabilityId: "evaluation_run_resume",
+            reason: "no_promoted_submission_capability",
+            ...capabilityPolicy
+          });
+        }
         const runId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/runs/".length, -"/resume".length));
         const body = await readJsonBody(request);
         const result = resumeStoredEvaluationRun(runId, {
@@ -2872,11 +2906,7 @@ function createServer(options = {}) {
       const callIds = evaluationStudioCallIdsForRequest(state, url, storePath);
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_evaluation_studio_report_rollups_api.v1",
-        autoHarvest: {
-          checkedRunCount: autoHarvest.checkedRunCount,
-          harvested: autoHarvest.harvested,
-          errors: autoHarvest.errors
-        },
+        autoHarvest: publicAutoHarvestStatus(autoHarvest),
         reportRollups: buildEvaluationStudioReportRollups(studio, { importId: importId || "", callIds }),
         foundationReport: buildCallIntelligenceFoundationReport(studio, {
           importId: importId || state.importRecord?.id || "",
@@ -2930,6 +2960,10 @@ function createServer(options = {}) {
         foundationSpecialistRoute: url.searchParams.get("foundationSpecialistRoute"),
         foundationOfferPresented: url.searchParams.get("foundationOfferPresented"),
         foundationQuotedAmountAvailable: url.searchParams.get("foundationQuotedAmountAvailable"),
+        spielCallHandlingQuality: url.searchParams.get("spielCallHandlingQuality"),
+        spielSpielQuality: url.searchParams.get("spielSpielQuality"),
+        spielCallPurpose: url.searchParams.get("spielCallPurpose"),
+        spielPrimaryReasonCode: url.searchParams.get("spielPrimaryReasonCode"),
         confidenceBand: url.searchParams.get("confidenceBand"),
         evidenceAvailability: url.searchParams.get("evidenceAvailability"),
         reviewRecommended: url.searchParams.get("reviewRecommended") || url.searchParams.get("reviewOnly"),
@@ -2960,11 +2994,7 @@ function createServer(options = {}) {
       });
       sendJson(response, 200, {
         schemaVersion: "sales_dashboard_evaluation_studio_results_api.v1",
-        autoHarvest: {
-          checkedRunCount: autoHarvest.checkedRunCount,
-          harvested: autoHarvest.harvested,
-          errors: autoHarvest.errors
-        },
+        autoHarvest: publicAutoHarvestStatus(autoHarvest),
         results: visibleResults,
         query: {
           importId: importId || null,
@@ -2981,31 +3011,11 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/evaluation-studio/results" && request.method === "POST") {
-      try {
-        const body = await readJsonBody(request, 5 * 1024 * 1024);
-        const resultPayload = body.result || body.output || body.response || body.data || body.payload || body.job || body;
-        const resultCallId = String(body.callId || body.call_id || resultPayload.call_id || resultPayload.callId || "").trim();
-        const payload = {
-          ...body,
-          importId: body.importId || body.import_id || state.importRecord?.id || "current",
-          runId: body.runId || body.evaluationRunId || body.evaluation_run_id,
-          templateId: body.templateId || body.evaluationTemplateId || body.template_id,
-          jobId: body.jobId || body.job_id || body.id || body.job?.id || body.job?.job_id,
-          result: resultPayload,
-          validationContext: {
-            call: resultCallId ? findCallProof(state.analysis, resultCallId) : null
-          }
-        };
-        const result = saveEvaluationResult(payload, { storePath });
-        state.analysis = attachPersistence(state.analysis, result.store, state.importRecord?.id || null);
-        sendJson(response, 201, {
-          ok: true,
-          evaluationResult: result.result,
-          persistence: dashboardPersistence(result.store, state.importRecord?.id || null)
-        });
-      } catch (error) {
-        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
-      }
+      sendJson(response, 410, {
+        ok: false,
+        error: "Direct Evaluation Studio result ingestion is retired. Results may enter the archive only through a server-verified Execution Layer harvest under an exact promoted capability contract.",
+        researchArchivePreserved: true
+      });
       return;
     }
 
@@ -3019,6 +3029,13 @@ function createServer(options = {}) {
           sendJson(response, 404, { ok: false, error: "Evaluation Studio result not found." });
           return;
         }
+        if (!isOperationalEvaluationResult(evaluationResult)) {
+          throw capabilityQuarantineError({
+            capabilityId: evaluationResult.localModelCapability?.capabilityId || evaluationResult.evaluationGoal || "unknown",
+            reason: "research_only_result_cannot_create_manager_work",
+            resultId: evaluationResult.id
+          });
+        }
         const review = saveManagerReview(buildManagerReviewFromEvaluationResult(evaluationResult, {
           ...body,
           importId: body.importId || evaluationResult.importId || state.importRecord?.id || "current"
@@ -3030,6 +3047,42 @@ function createServer(options = {}) {
           review: sanitizeManagerReviewForPublic(review.review),
           persistence: dashboardPersistence(review.store, state.importRecord?.id || null)
         });
+      } catch (error) {
+        sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
+      }
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/evaluation-studio/results/") && url.pathname.endsWith("/semantic-feedback") && request.method === "POST") {
+      try {
+        const resultId = decodeURIComponent(url.pathname.slice("/api/evaluation-studio/results/".length, -"/semantic-feedback".length));
+        const body = await readJsonBody(request);
+        const store = readStore({ storePath });
+        const evaluationResult = findEvaluationStudioResult(store, resultId, body.importId || state.importRecord?.id || "");
+        if (!evaluationResult) {
+          sendJson(response, 404, { ok: false, error: "Evaluation Studio result not found." });
+          return;
+        }
+        if (!evaluationResult.jobId) {
+          sendJson(response, 400, { ok: false, error: "This historical result has no Execution Layer job ID." });
+          return;
+        }
+        const feedback = await recordAiJobFeedback(evaluationResult.jobId, {
+          label: body.label,
+          notes: body.notes,
+          metadata: {
+            source_system: "sales_dashboard",
+            source_type: "semantic_audit",
+            evaluation_result_id: evaluationResult.id,
+            evaluation_goal: evaluationResult.evaluationGoal,
+            expected_decision: body.expectedDecision || null,
+            actual_decision: body.actualDecision || null,
+            evidence_relevance: body.evidenceRelevance || null,
+            failure_type: body.failureType || null,
+            promotion_outcome: body.promotionOutcome || null
+          }
+        }, { config: aiConfig, fetchImpl });
+        sendJson(response, 201, { ok: true, evaluationResultId: evaluationResult.id, jobId: evaluationResult.jobId, feedback });
       } catch (error) {
         sendJson(response, error.statusCode || error.status || 400, { ok: false, error: error.message, details: error.payload || null });
       }
@@ -3091,37 +3144,11 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/ai/transcript-evaluation" && request.method === "POST") {
-      try {
-        const body = await readJsonBody(request);
-        const call = findCallProof(state.analysis, body.callId);
-        if (!call) {
-          sendJson(response, 404, { ok: false, error: "Call not found" });
-          return;
-        }
-        const result = await submitTranscriptEvaluation(call, {
-          config: aiConfig,
-          fetchImpl,
-          importId: body.importId || state.importRecord?.id || null,
-          sourceName: state.analysis.sourceName,
-          responseMode: body.responseMode,
-          metadata: body.metadata || {}
-        });
-        const saved = saveAiJobReference({
-          importId: state.importRecord?.id || "current",
-          callId: call.callId,
-          jobId: result.job_id,
-          taskType: aiConfig.taskType,
-          status: result.status || "submitted",
-          metadata: {
-            source: "api",
-            executionLayerBaseUrl: aiConfig.baseUrl
-          }
-        }, { storePath });
-        state.analysis = attachPersistence(state.analysis, saved.store, state.importRecord?.id || null);
-        sendJson(response, 202, { ok: true, job: saved.aiJob, executionLayerResponse: result });
-      } catch (error) {
-        sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
-      }
+      sendJson(response, 410, {
+        ok: false,
+        error: "The generic transcript-evaluation route is retired because it has no promoted capability or valid task binding.",
+        code: "GENERIC_LOCAL_MODEL_ROUTE_RETIRED"
+      });
       return;
     }
 
@@ -3129,7 +3156,13 @@ function createServer(options = {}) {
       try {
         const jobId = decodeURIComponent(url.pathname.replace("/api/ai/jobs/", ""));
         const job = await getAiJob(jobId, { config: aiConfig, fetchImpl });
-        sendJson(response, 200, { ok: true, job: stripTrustedClaimContextForPublic(job) });
+        sendJson(response, 200, {
+          ok: true,
+          researchOnly: true,
+          authority: "none",
+          warning: "Historical execution evidence only. This response cannot drive any dashboard metric, queue, customer action, or staff judgement.",
+          job: stripTrustedClaimContextForPublic(job)
+        });
       } catch (error) {
         sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
       }
@@ -3402,6 +3435,7 @@ function createServer(options = {}) {
           name: form.get("name") || "",
           evaluationGoal: form.get("evaluationGoal") || "",
           tags: form.get("tags") || "",
+          knowledgebaseIds: form.get("knowledgebaseIds") || "",
           instructions: form.get("instructions") || "",
           outputSchema: form.get("outputSchema") || "",
           sourceProject: "Sales Dashboard",
@@ -3509,6 +3543,14 @@ function createServer(options = {}) {
 
     if (url.pathname.startsWith("/evaluation-studio/runs/") && url.pathname.endsWith("/resume") && request.method === "POST") {
       try {
+        const capabilityPolicy = localModelCapabilitySummary();
+        if (!capabilityPolicy.liveSubmissionPermitted) {
+          throw capabilityQuarantineError({
+            capabilityId: "evaluation_run_resume",
+            reason: "no_promoted_submission_capability",
+            ...capabilityPolicy
+          });
+        }
         const runId = decodeURIComponent(url.pathname.slice("/evaluation-studio/runs/".length, -"/resume".length));
         const form = await readFormBody(request);
         const returnTo = form.get("returnTo") || "/evaluation-studio";
@@ -3575,38 +3617,11 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/ai/transcript-evaluations" && request.method === "POST") {
-      try {
-        const form = await readFormBody(request);
-        const callId = form.get("callId") || "";
-        const returnTo = form.get("returnTo") || `/calls/${encodeURIComponent(callId)}`;
-        const call = findCallProof(state.analysis, callId);
-        if (!call) {
-          sendJson(response, 404, { ok: false, error: "Call not found" });
-          return;
-        }
-        const result = await submitTranscriptEvaluation(call, {
-          config: aiConfig,
-          fetchImpl,
-          importId: form.get("importId") || state.importRecord?.id || null,
-          sourceName: state.analysis.sourceName
-        });
-        const saved = saveAiJobReference({
-          importId: state.importRecord?.id || "current",
-          callId: call.callId,
-          jobId: result.job_id,
-          taskType: aiConfig.taskType,
-          status: result.status || "submitted",
-          metadata: {
-            source: "call_page",
-            executionLayerBaseUrl: aiConfig.baseUrl
-          }
-        }, { storePath });
-        state.analysis = attachPersistence(state.analysis, saved.store, state.importRecord?.id || null);
-        response.writeHead(303, { Location: returnTo });
-        response.end();
-      } catch (error) {
-        sendJson(response, error.status || 400, { ok: false, error: error.message, details: error.payload || null });
-      }
+      sendJson(response, 410, {
+        ok: false,
+        error: "The generic call-page local-model action is retired. No promoted capability exists.",
+        code: "GENERIC_LOCAL_MODEL_ROUTE_RETIRED"
+      });
       return;
     }
 
@@ -3618,6 +3633,21 @@ function createServer(options = {}) {
         sourceName: state.analysis.sourceName,
         importId: state.importRecord?.id || null
       });
+      return;
+    }
+
+    if (url.pathname === "/reports/sales-opportunity-action-centre-current" && request.method === "GET") {
+      const { centre } = salesOpportunityActionCentreForRequest(state, url, storePath);
+      const report = buildSalesOpportunityManagementBrief(centre, { baseUrl: `http://${request.headers.host || "127.0.0.1:3040"}` });
+      response.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end(renderReportPage(report, {
+        pageKicker: "Evidence-backed management brief",
+        backHref: "/?view=opportunities",
+        backLabel: "Back to Opportunity Action Centre"
+      }));
       return;
     }
 
@@ -3725,6 +3755,91 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/evaluation-studio/validation-lab/manifests" && request.method === "POST") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) throw new Error("No current import is loaded.");
+        const form = await readFormBody(request);
+        const validation = readValidationLab({ storePath });
+        if (validation.error) {
+          const error = new Error(validation.error);
+          error.statusCode = 503;
+          throw error;
+        }
+        const store = readStore({ storePath });
+        const result = createDraftManifest(validation.lab, Object.fromEntries(form.entries()), {
+          calls: state.analysis.drilldownRows || [],
+          importId: state.importRecord.id,
+          runtimePath: path.resolve(__dirname, "..", "runtime"),
+          repositoryPath: path.resolve(__dirname, ".."),
+          studio: store.evaluationStudio
+        });
+        writeValidationLab(result.lab, { storePath });
+        response.writeHead(303, { Location: `/evaluation-studio?manifestId=${encodeURIComponent(result.manifest.id)}#validation-lab` });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message, authority: "benchmark_truth_only" });
+      }
+      return;
+    }
+
+    const validationLabelMatch = url.pathname.match(/^\/evaluation-studio\/validation-lab\/manifests\/([^/]+)\/labels$/);
+    if (validationLabelMatch && request.method === "POST") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) throw new Error("No current import is loaded.");
+        const manifestId = decodeURIComponent(validationLabelMatch[1]);
+        const form = await readFormBody(request);
+        const validation = readValidationLab({ storePath });
+        if (validation.error) {
+          const error = new Error(validation.error);
+          error.statusCode = 503;
+          throw error;
+        }
+        const result = saveManifestLabels(validation.lab, manifestId, [{
+          callId: form.get("callId"),
+          expectedDecision: form.get("expectedDecision"),
+          caseType: form.get("caseType"),
+          supportStatus: form.get("supportStatus"),
+          critical: form.get("critical"),
+          controllingReason: form.get("controllingReason"),
+          evidenceTurnIndexes: form.getAll("evidenceTurnIndex")
+        }], { calls: state.analysis.drilldownRows || [] });
+        writeValidationLab(result.lab, { storePath });
+        response.writeHead(303, { Location: `/evaluation-studio?manifestId=${encodeURIComponent(manifestId)}#validation-lab` });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message, authority: "benchmark_truth_only" });
+      }
+      return;
+    }
+
+    const validationFreezeMatch = url.pathname.match(/^\/evaluation-studio\/validation-lab\/manifests\/([^/]+)\/freeze$/);
+    if (validationFreezeMatch && request.method === "POST") {
+      try {
+        if (!state.analysis || !state.importRecord?.id) throw new Error("No current import is loaded.");
+        const manifestId = decodeURIComponent(validationFreezeMatch[1]);
+        const validation = readValidationLab({ storePath });
+        if (validation.error) {
+          const error = new Error(validation.error);
+          error.statusCode = 503;
+          throw error;
+        }
+        const store = readStore({ storePath });
+        const result = freezeManifest(validation.lab, manifestId, {
+          calls: state.analysis.drilldownRows || [],
+          importId: state.importRecord.id,
+          runtimePath: path.resolve(__dirname, "..", "runtime"),
+          repositoryPath: path.resolve(__dirname, ".."),
+          studio: store.evaluationStudio
+        });
+        writeValidationLab(result.lab, { storePath });
+        response.writeHead(303, { Location: `/evaluation-studio?manifestId=${encodeURIComponent(manifestId)}#validation-lab` });
+        response.end();
+      } catch (error) {
+        sendJson(response, error.statusCode || 400, { ok: false, error: error.message, authority: "benchmark_truth_only" });
+      }
+      return;
+    }
+
     if (url.pathname === "/evaluation-studio" && request.method === "GET") {
       const autoHarvest = await autoHarvestEvaluationStudioRuns({
         storePath,
@@ -3753,6 +3868,10 @@ function createServer(options = {}) {
         foundationSpecialistRoute: url.searchParams.get("foundationSpecialistRoute") || "",
         foundationOfferPresented: url.searchParams.get("foundationOfferPresented") || "",
         foundationQuotedAmountAvailable: url.searchParams.get("foundationQuotedAmountAvailable") || "",
+        spielCallHandlingQuality: url.searchParams.get("spielCallHandlingQuality") || "",
+        spielSpielQuality: url.searchParams.get("spielSpielQuality") || "",
+        spielCallPurpose: url.searchParams.get("spielCallPurpose") || "",
+        spielPrimaryReasonCode: url.searchParams.get("spielPrimaryReasonCode") || "",
         resultStatus: url.searchParams.get("resultStatus") || "",
         recordClassification: url.searchParams.get("recordClassification") || "",
         recordReason: url.searchParams.get("recordReason") || "",
@@ -3778,6 +3897,11 @@ function createServer(options = {}) {
         overnightAutomation: evaluationStudioOvernightStatus(storePath),
         calls: studioAnalysis?.drilldownRows || []
       });
+      const validation = readValidationLab({ storePath });
+      const validationView = {
+        ...validationLabView(validation.lab, studioAnalysis?.drilldownRows || []),
+        readError: validation.error
+      };
       response.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
@@ -3785,7 +3909,12 @@ function createServer(options = {}) {
       response.end(renderEvaluationStudioPage(studioAnalysis, {
         businessSegment: activeBusinessSegment,
         studioView,
-        resultFilters
+        resultFilters,
+        capabilityPolicy: localModelCapabilitySummary(),
+        capabilityCatalog: localModelCapabilityCatalog(),
+        validationLab: validationView,
+        voicemailInbound: buildVoicemailInboundReport(studioAnalysis?.drilldownRows || []),
+        selectedManifestId: url.searchParams.get("manifestId") || ""
       }));
       return;
     }
@@ -3797,7 +3926,29 @@ function createServer(options = {}) {
     const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
     const dashboardView = url.searchParams.get("view") || "overview";
     const intelligenceQueue = url.searchParams.get("intelligenceQueue") || "waste";
-    const dashboardAnalysis = analysisForRequest(state, url, storePath);
+    let dashboardAnalysis = analysisForRequest(state, url, storePath);
+    if (dashboardView === "opportunities") {
+      const store = readStore({ storePath });
+      const centre = buildSalesOpportunityActionCentre({
+        studio: store.evaluationStudio,
+        importId: state.importRecord?.id || "",
+        calls: dashboardAnalysis.drilldownRows || [],
+        leadHarvestRecords: dashboardAnalysis.leadHarvest?.records || []
+      });
+      const selected = filterSalesOpportunityRecords(centre, {
+        opportunityStage: url.searchParams.get("opportunityStage") || "",
+        opportunityQueue: url.searchParams.get("opportunityQueue") || "",
+        limit: url.searchParams.get("opportunityLimit") || 100,
+        offset: url.searchParams.get("opportunityOffset") || 0
+      });
+      dashboardAnalysis = updateAnalysisPreservingItems(dashboardAnalysis, {
+        salesOpportunityActionCentre: {
+          ...centre,
+          records: selected.records,
+          query: selected.query
+        }
+      });
+    }
     const filteredCallIds = new Set((dashboardAnalysis.drilldownRows || []).map((row) => row.callId));
     const defaultQueueFilters = {
       all: {},
@@ -3829,7 +3980,9 @@ function createServer(options = {}) {
       businessSegment: activeBusinessSegment,
       dashboardView,
       intelligenceQueue,
-      intelligenceCalls
+      intelligenceCalls,
+      opportunityStage: url.searchParams.get("opportunityStage") || "",
+      opportunityQueue: url.searchParams.get("opportunityQueue") || ""
     }));
   });
 }

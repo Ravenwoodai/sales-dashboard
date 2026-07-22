@@ -321,3 +321,124 @@ Consequences:
 - the existing 22:00-06:00 Melbourne, 04:30 cutoff, 10-minute idle, 4 GB RAM, and single-controller gates remain authoritative
 - SQLite uses WAL, full synchronous durability, indexed operational fields, per-record hashes, and incremental upserts; existing code receives a transparently hydrated Studio object
 - the live migration keeps a timestamped pre-migration JSON rollback copy and verifies record counts plus `PRAGMA integrity_check`
+
+## ADR-027 - Make Opportunity Reporting Readiness-First And Typed-Authority-Only
+Date: 2026-07-19
+Status: Accepted
+Decision: Build sales opportunity reporting as a read-only projection with explicit stage denominators, evaluation coverage before comparison, and action queues that use current typed specialist decisions for specialist questions. Foundation-only routes remain labelled candidates pending specialist evaluation; historical generic specialists never become current decisions.
+Context: The current import has 16,108 transcript-bearing calls but only 1,880 current Foundation results, concentrated chronologically, while specialist recovery is incomplete. The data supports useful call actions but not representative salesperson/source rankings or verified downstream commercial outcomes.
+Consequences:
+- the opportunity screen shows readiness and date distribution before cohort metrics and never sorts cohorts as a leaderboard
+- every displayed count, rate, stage, queue, salesperson, source, and date resolves to contributing call records under the same global filters
+- accepted offer is authoritative only at the transcript signal level; payment, fulfilment, recognised revenue, and CRM won stay separate
+- no later stable-ID match is described only within the uploaded data window, never as proof of an overdue or missed follow-up
+- the management brief is generated dynamically from current stored evidence and can be downloaded without persisting or changing evaluations
+
+## ADR-028 - Separate Spiel Quality From Sale Outcome And Grade By Applicable Scope
+Date: 2026-07-19
+Status: Accepted
+Decision: Add a typed `spiel_quality.v1` evaluator with separate Call Handling Quality and Spiel Quality bands. Classify call purpose first, use `spiel_and_handling` only when a meaningful offer was delivered, use `handling_only` for applicable non-pitch work, and keep Offer Acceptance as the sole authority for accepted-offer reporting.
+Context: Manager calibration established that a rejected call can be Strong, an accepted sale can Need Improvement, and situational judgement can justify withdrawing instead of forcing another objection response. Material payment, customer-boundary, and operational-accuracy failures must still control the quality result.
+Consequences:
+- ratings are Strong, Acceptable, Needs Improvement, Poor, or Not Assessable; no numeric composite is stored
+- material payment-term mismatch, wrong product/document, avoidable customer-detail error, or incomplete opt-out caps Call Handling Quality at Needs Improvement unless Poor is supported
+- quality explanations, strengths, coaching, and manager summaries are reconciled with deterministic material findings so contradictory text is not displayed
+- five calibrated knowledge entries remain visible drafts and are scoped only to this evaluator; unrelated approved knowledge is never injected automatically
+- the evaluator is selectable in Studio but is not yet a sixth automatic Foundation route
+- team comparison waits for representative coverage and at least 20 assessable calls per salesperson
+
+## ADR-029 - Require Independent Promotion Evidence For Spiel Quality
+Date: 2026-07-20
+Status: Accepted
+Decision: Keep Spiel & Call Handling Quality template v2 available only as an opt-in, unpromoted evaluator until a newly selected and predeclared unseen 10-call audit reaches at least 9/10 exact Call Handling/Spiel band pairs with zero missed critical safeguards. A replay of records used to design a reconciliation fix is regression evidence and cannot satisfy the promotion gate.
+Context: Six independent unseen gates completed 60/60 jobs with zero execution failures, but their original exact band-pair agreement was 8/10, 7/10, 8/10, 7/10, 4/10, and 3/10. The fifth missed one critical post-hardship payment-plan safeguard; the sixth missed two and also produced two material reciprocal scope-denominator defects. Earlier stored replay reaches 10/10 on the fifth set and 39/40 on the preceding corpus, but counting replay as a pass would overstate generalisation. The sixth failed result was preserved without tuning, replay, relabelling, or an additional sample.
+Consequences:
+- the corrected rules remain active for opt-in call-level coaching and are covered by deterministic regressions
+- the evaluator is not auto-routed from Foundation and cannot drive automated salesperson ranking, disciplinary action, or operational decisions
+- Offer Acceptance remains authoritative for accepted-offer reporting
+- the next promotion attempt must use calls not inspected during this calibration and must declare expected outcomes before model inference
+- the full audit, run IDs, expected labels, original results, and replay distinction are preserved in `runtime/SPIEL_QUALITY_VALIDATION_2026-07-20.md`
+
+## ADR-030 - Bound Spiel Automation To Demonstrated Qwen3 30B Capability
+Date: 2026-07-20
+Status: Accepted
+Decision: Make the local Qwen3 30B evaluator's demonstrated capability the hard ceiling for Spiel Quality automation. Template v3 may score narrow categories supported by clear chronological transcript facts and deterministic safeguards. When purpose, payment permission, speaker identity, commitment state, or an unvalidated category remains ambiguous, it must abstain with both bands Not Assessable and require human review rather than guess.
+Context: The sixth v2 gate completed reliably at the infrastructure level but matched only 3/10 frozen decisions. Errors clustered around chronology, seller-initiated payment flexibility after hardship, purpose/scope, and reconciliation overrides. Increasing prompt detail alone would overstate what the local model can judge consistently. The manager explicitly requires aggressive but respectful objection handling to remain acceptable and asked that the system never be expanded beyond what Qwen can accurately handle.
+Consequences:
+- deterministic facts protect only clear, general chronological boundaries; call-specific phrase piles are not a promotion strategy
+- explicit customer requests for payment flexibility remain permissible, seller-initiated flexibility after clear hardship/refusal remains material, and vague permission requires human review
+- capability abstention is a first-class safe outcome and is visibly distinguished from transcript unavailability
+- an audit cannot pass by abstaining on everything: at least seven of ten calls must be supported and correctly scored
+- unsafe scoring of a frozen human-review case is a gate failure even if the final band happens to look plausible
+- v3 remains opt-in and unpromoted; 10/10 stored-payload replay is regression evidence, while all historical v2 failures remain unchanged
+
+## ADR-031 - Make Qwen A Fact Extractor And Promote Spiel Lanes Separately
+Date: 2026-07-21
+Status: Accepted
+Decision: Implement Spiel v4 as an isolated candidate in which Qwen3 30B may only extract a closed set of chronological transcript events with exact evidence. Deterministic code owns every purpose, scope, state, safeguard, quality, denominator, and reporting decision. Unsupported calls are `not_scored` with no human-review queue. Promotion is lane-specific and requires two unchanged, disjoint, genuinely unseen 25-call gates plus a separate manager decision.
+Context: The comprehensive evaluator audit showed that valid JSON and plausible explanations did not make Qwen reliable at authority, chronology, conditional commitment, confirmation, objection outcomes, or complete quality decisions. Expanding the all-in-one prompt exceeded the useful capability boundary. The manager approved building around Qwen's demonstrated literal extraction strengths and approved a temporary exclusive audit window so resource contention cannot contaminate controlled gates.
+Consequences:
+- complete rendered input is capped at 6,000 tokens with a 900-token completion cap and 1,292-token reserve inside the 8,192-token route contract; transcripts are never truncated for scoring
+- exact local validation rejects fabricated, non-contiguous, wrong-speaker, wrong-turn, unordered, or extra-schema output
+- critical local facts cannot be erased by model omission; unresolved broad triggers abstain
+- terminal no-contact and deterministic exclusions do not receive Qwen jobs
+- Gate A and Gate B use exact frozen configuration and transcript hashes, one batch each, no replay, and separate thresholds for contract, facts, purpose, scope, bands, safeguards, and complete decisions
+- the exclusive window may pause only explicitly identified competing local-model resources, must capture original states, and must prove complete restoration; a broad process kill or missing restoration proof is prohibited
+- the legacy v3 evaluator remains unchanged, opt-in, unpromoted, and outside v4 promotion evidence
+
+## ADR-032 - Reduce Qwen To One-Fact Local-Span Selection
+Date: 2026-07-21
+Status: Accepted
+Decision: Retire Spiel v4 from promotion after its failed Gate A and build v5 as an isolated capability harness. Each Qwen job asks one atomic factual question and may return only `present`, `absent`, or `uncertain` plus pre-numbered local evidence-span IDs. Local code owns the source quote, speaker, turn, chronology, every deterministic decision, and every quality result. Each fact lane and each dependent decision lane is promoted separately through two perfect, unchanged, globally disjoint unseen gates followed by an explicit manager action.
+Context: Corrected v4 Gate A R2 completed 19/20 jobs, but only 4/20 responses met the extraction contract after removing trusted Execution Layer metadata. The completed failures were not cosmetic: Qwen misassigned turns and speakers, reordered events, copied non-exact quotes, and populated irrelevant subject/timing fields. Asking one prompt to locate up to twelve heterogeneous facts exceeded the demonstrated Qwen3 30B boundary even though Qwen was no longer the final band judge.
+Consequences:
+- Qwen no longer copies quote text or supplies speakers, turns, timing fields, event order, purpose, scope, safeguards, bands, or reasons
+- the application segments the complete transcript into exact overlapping spans of at most 180 characters and materialises evidence only from validated selected IDs
+- the trusted `model_metadata` transport field is separated before validating the model's closed output
+- every fact lane begins unvalidated and cannot be consumed by scoring until two 10/10 unseen gates and manager promotion
+- each deterministic quality rule later requires its own two perfect unseen gates; an unpromoted dependency produces no score
+- v5 remains outside Evaluation Studio routing, production result storage, rankings, discipline, finance, and operations until the relevant lanes are independently promoted
+- no v5 model batch is authorised by implementation alone; the first authority gate must receive direct-quote manager confirmation and separate inference authorisation
+
+## ADR-033 - Stop Same-Model Decomposition After Narrow Semantic Failure
+Date: 2026-07-22
+Status: Accepted
+Decision: Treat repeated semantic failure on narrow unseen facts as evidence that the product boundary is incompatible with the current local model. After an atomic or otherwise narrow factual gate fails, no further Qwen prompt variant, decomposition, successor version, or adjacent fact lane may be used to rescue the evaluator family. Valid JSON, exact quotes, job completion, and passing software tests remain technical evidence only.
+Context: Qwen3 30B completed the broad and specialist infrastructure reliably but failed the actual decisions. The frozen all-evaluator audit found Foundation authority 17/25, objections 16/25 and efficiency 9/25; Offer Acceptance 18/25; Callback 15/25; Objection 10/25; Procedure 7/21; and no complete active evaluator promoted. Spiel then failed v3, v4, and three atomic v5 lanes at 8/10, 6/10 and 5/10 exact fact decisions. V6 would continue the same-model decomposition pattern without evidence that the model can reliably retrieve the required semantic span.
+Consequences:
+- the Qwen Spiel family is stopped; v6 remains untested and no further label freeze or model batch is permitted
+- reopening requires a materially different model digest or a product boundary where the model owns no semantic decision, plus a new frozen hypothesis, budget, unseen set, and explicit manager authorisation
+- every local-model workflow must follow `docs/LOCAL_MODEL_CAPABILITY_POLICY.md` and the current machine-readable capability register
+- technical validation and semantic promotion are reported separately
+- unpromoted evaluators cannot be described as authoritative or used for automatic routes, queues, denominators, rankings, coaching, compliance, discipline, finance, lead actions, or CRM decisions
+
+## ADR-034 - Make The Zero-Promoted Boundary The Product Boundary
+Date: 2026-07-22
+Status: Accepted
+Decision: Bind every model submission and operational-consumption path to the validated capability register, quarantine active unpromoted work, and reduce the active product to source facts, exact stable-ID relationships, closed literal transcript detections, and manager-authored overlays. Historical model artifacts remain readable only as research with authority `none`.
+Context: The semantic audit proved that the system's technical controls were stronger than its evaluator accuracy. The UI, controllers, APIs, reports, and derived database still exposed or could revive outputs that had never earned semantic promotion. That created false confidence and a risk of continued token spend after the model boundary had already failed.
+Consequences:
+- 20 audited local-model capabilities remain registered and zero are promoted
+- a missing, invalid, changed, or unpromoted capability fails closed before network access or active-state mutation
+- queued jobs/runs are quarantined non-destructively and the scheduled evaluation task is absent/disabled
+- Evaluation Studio becomes a read-only research archive; run creation, prompt tests, resume, harvest, and result ingestion are unavailable
+- Lead Harvest, model-backed opportunity actions, semantic team panels, automatic specialist routing, and operational model rollups are retired/unavailable
+- active semantic database fields remain null; exact literal evidence and explicit manager overlays are the only transcript-derived active claims
+- the separate Execution Layer may continue serving other projects but cannot implicitly enable Sales Dashboard
+- a future evaluator must earn separate semantic promotion on genuinely unseen evidence before any operational route is restored
+
+## ADR-035 - Separate Benchmark Truth And Deterministic Recovery Evidence From Historical Research
+Date: 2026-07-22
+Status: Accepted
+Decision: Rebuild Evaluation Studio as a controlled validation laboratory with four hard-separated surfaces: a read-only capability catalog, an isolated human-labelled benchmark store, a deterministic voicemail/inbound evidence lane, and the immutable historical evaluator archive. Benchmark writes may create manifests, record exact-evidence labels in batches of at most five, and freeze complete manifests; they never submit a model, mutate historical research, or grant authority.
+Context: The prior Studio made technically completed model work look more useful than independent semantic audits justified. Future candidates need a falsifiable unseen promotion path, while managers also need useful facts that can be derived without asking the failed Qwen family to make semantic decisions.
+Consequences:
+- `data/store/evaluation-validation-lab.json` is separate from operational manager review and `evaluation-studio.sqlite`
+- prior-audit/current-result call IDs and any prior Validation Lab manifests are excluded from genuinely-unseen selection through a stable exclusion fingerprint
+- every frozen decision, including unsupported, requires an exact transcript quote and resolved chronological turn index
+- smoke (10), development (50), promotion (at least 100), and shadow (25) partitions have different evidentiary roles; only a balanced frozen promotion set can test eligibility
+- candidate reports expose false positives, false negatives, abstentions, unsupported errors, evidence integrity, critical errors, category results, resource use, and stop-rule status
+- no comparison changes the capability register; even a passing candidate is only eligible for separate external approval
+- the deterministic voicemail lane may state exact prompt, wording, chronology, stable-ID linkage, later inbound observation, elapsed time, and source-proven handler facts
+- corrupt chronology, missing stable IDs, multiple plausible inbound records, intervening matching outbound attempts, and missing handler proof become unknown/not-scored
+- callback causation, receptiveness, sale, conversion, gross profit, and ROI remain unknown unless an authoritative source such as CRM supplies them

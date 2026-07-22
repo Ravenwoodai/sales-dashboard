@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const { BAD_LEAD_CLAIM_REASONS, selectBadLeadClaimsForEvaluation } = require("./badLeadClaim");
 const { buildCallIntelligenceAggregate } = require("./callIntelligenceAggregate");
+const { evaluationResultCapability, isOperationalEvaluationResult } = require("./localModelCapability");
 const { parseTranscriptTurns } = require("./transcriptEvaluator");
 
 const EVALUATION_STUDIO_SCHEMA_VERSION = "sales_dashboard_evaluation_studio.v1";
@@ -43,6 +44,7 @@ const EVALUATION_GOALS = new Set([
   "callback_opportunity",
   "follow_up_quality",
   "follow_up_leakage",
+  "spiel_quality",
   "lead_validity_utilisation",
   "lead_record_disposition_evidence_audit",
   "lead_still_valid",
@@ -309,6 +311,59 @@ const OBJECTION_HANDLING_OUTPUT_SCHEMA = {
   findings: []
 };
 
+const SPIEL_QUALITY_GOAL = "spiel_quality";
+const SPIEL_QUALITY_SCHEMA_VERSION = "spiel_quality.v1";
+const SPIEL_QUALITY_KNOWLEDGEBASE_IDS = Object.freeze([
+  "kb_calibrated_sales_spiel_standard_v1",
+  "kb_calibrated_objection_boundaries_v1",
+  "kb_calibrated_acceptance_confirmation_payment_v1",
+  "kb_calibrated_operational_accuracy_v1",
+  "kb_calibrated_spiel_quality_grading_v1"
+]);
+const SPIEL_QUALITY_OUTPUT_SCHEMA = {
+  schema_version: SPIEL_QUALITY_SCHEMA_VERSION,
+  evaluation_goal: SPIEL_QUALITY_GOAL,
+  call_id: "string",
+  status: "usable|insufficient_evidence|failed",
+  confidence: "number 0-1",
+  evidence_availability: "available|partial|unavailable",
+  transcript_quality: "high|medium|low|unusable|unknown",
+  call_purpose: "new_offer|renewal_offer|payment_follow_up|callback_follow_up|administration|complaint_or_opt_out|terminal_no_contact|other|unknown",
+  assessment_scope: "spiel_and_handling|handling_only|not_assessable",
+  call_handling_quality: "strong|acceptable|needs_improvement|poor|not_assessable",
+  spiel_quality: "strong|acceptable|needs_improvement|poor|not_assessable",
+  primary_reason_code: "strong_execution|sound_judgement_to_withdraw|minor_execution_gap|purpose_or_transparency_gap|offer_clarity_gap|objection_handling_gap|commitment_ask_gap|confirmation_gap|payment_timing_policy_breach|operational_accuracy_failure|customer_boundary_breach|insufficient_evidence|none",
+  quality_reason: "short explanation of the quality band, independent of whether a sale occurred",
+  dimensions: {
+    opening_and_rapport: "met|partial|missed|not_applicable|insufficient_evidence",
+    purpose_and_transparency: "met|partial|missed|not_applicable|insufficient_evidence",
+    offer_clarity: "met|partial|missed|not_applicable|insufficient_evidence",
+    delivery_and_listening: "met|partial|missed|not_applicable|insufficient_evidence",
+    objection_judgement: "met|partial|missed|not_applicable|insufficient_evidence",
+    commitment_and_confirmation: "met|partial|missed|not_applicable|insufficient_evidence",
+    payment_timing: "met|partial|missed|not_applicable|insufficient_evidence",
+    operational_accuracy: "met|partial|missed|not_applicable|insufficient_evidence",
+    customer_boundary: "met|partial|missed|not_applicable|insufficient_evidence"
+  },
+  policy_findings: [
+    {
+      type: "payment_term_mismatch|wrong_product_or_document|customer_detail_error|opt_out_not_completed|requested_information_not_addressed",
+      severity: "material|critical|advisory",
+      summary: "short transcript-grounded finding",
+      evidence_quote: "one exact contiguous transcript excerpt, 400 characters or fewer"
+    }
+  ],
+  strengths: [{ summary: "demonstrated strength", evidence_quote: "one exact contiguous transcript excerpt, 400 characters or fewer" }],
+  improvements: [{ summary: "material improvement only", evidence_quote: "one exact contiguous transcript excerpt, 400 characters or fewer" }],
+  coaching_action: "one highest-priority practical action, or No material coaching action",
+  suggested_phrase: "optional example phrase or empty string",
+  evidence: [{ claim_type: "purpose|offer|customer_response|objection|handling|commitment|confirmation|payment_timing|accuracy|boundary|withdrawal_judgement", speaker: "customer|salesperson|system|unknown", quote: "one exact contiguous transcript excerpt, 400 characters or fewer" }],
+  manager_review_recommended: "boolean",
+  manager_summary: "short manager-friendly summary that does not equate outcome with quality",
+  limitations: ["string"],
+  findings: []
+};
+
 const LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL = "lead_record_disposition_evidence_audit";
 const LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_SCHEMA_VERSION = "lead_record_disposition_evidence_audit.v1";
 const LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_OUTPUT_SCHEMA = {
@@ -407,6 +462,91 @@ const DEFAULT_KNOWLEDGEBASE_ENTRIES = [
       "Every model output must be structured, evidence-backed, confidence-labelled, and reviewable. Missing evidence should be labelled rather than hidden.",
       "Local model results are assistant evidence only. Manager review is the governance layer that confirms, corrects, rejects, or escalates findings."
     ].join("\n\n")
+  },
+  {
+    id: "kb_calibrated_sales_spiel_standard_v1",
+    title: "Draft - Calibrated Sales Spiel Standard",
+    category: "sales_script",
+    tags: ["spiel_quality", "calibrated", "draft", "purpose", "offer"],
+    sourceProject: "Sales Dashboard",
+    sourceReference: "Manager calibration of ten real calls, 19 July 2026",
+    historicalSource: false,
+    approvalStatus: "pending_manager_approval",
+    approvalNote: "Draft produced from manager calibration. Review before including it in live evaluations.",
+    content: [
+      "Assess the quality of the salesperson's conduct separately from whether the customer accepted, declined, or requested follow-up. A rejected call can be strong and an accepted sale can need improvement.",
+      "For a full sales spiel, the salesperson should clearly frame the community purpose, make clear that the customer is being offered paid sponsorship or advertising before commitment, explain what the customer receives, present the offer accurately, listen and respond to the customer's situation, and make an unmistakable commitment ask when the call reaches that stage.",
+      "Using the customer's first name, business-specific rapport, natural trade language, pressure removal, and presenting every available price option are preferred techniques, not automatic pass/fail requirements. Deferred-payment flexibility is context-dependent and should not be forced into every call.",
+      "The phrase 'required by law' is neutral for Spiel Quality: it is acceptable to say and acceptable to omit. It carries no positive or negative weight by itself."
+    ].join("\n\n")
+  },
+  {
+    id: "kb_calibrated_objection_boundaries_v1",
+    title: "Draft - Objection Handling And Customer Boundaries",
+    category: "objection_handling",
+    tags: ["spiel_quality", "calibrated", "draft", "objections", "boundaries"],
+    sourceProject: "Sales Dashboard",
+    sourceReference: "Manager calibration of ten real calls, 19 July 2026",
+    historicalSource: false,
+    approvalStatus: "pending_manager_approval",
+    approvalNote: "Draft produced from manager calibration. Review before including it in live evaluations.",
+    content: [
+      "Objection handling is required when a genuine opportunity to handle the objection exists, but quality is not measured by persistence alone. A salesperson may respectfully withdraw when the customer's distress, tone, explicit scam accusation, or situation makes further pressure unreasonable.",
+      "A first 'not interested' response may justify one respectful permission-based recovery attempt. An explicit stop, do-not-call, or removal request must end the pitch and be acknowledged as a record action. Continuing to sell after that boundary is a material failure.",
+      "For budget concerns, acknowledge the concern and offer genuine flexibility only when appropriate and available. For information, approval, busy, or call-later objections, establish the real next step and capture timing when a callback is agreed. An information request or third-party approval is not acceptance.",
+      "For legitimacy concerns, acknowledge the concern and provide verifiable details when useful. A tactful exit can still be acceptable when the accusation or tone makes recovery unrealistic."
+    ].join("\n\n")
+  },
+  {
+    id: "kb_calibrated_acceptance_confirmation_payment_v1",
+    title: "Draft - Acceptance, Confirmation And Payment Timing",
+    category: "payment_ask",
+    tags: ["spiel_quality", "calibrated", "draft", "confirmation", "payment_timing"],
+    sourceProject: "Sales Dashboard",
+    sourceReference: "Manager calibration of ten real calls, 19 July 2026",
+    historicalSource: false,
+    approvalStatus: "pending_manager_approval",
+    approvalNote: "Draft produced from manager calibration. Review before including it in live evaluations.",
+    content: [
+      "After acceptance, confirm the exact product or package, customer details when required, written-confirmation path, and the customer's payment timing. A written confirmation attempt is preferred and should be made when practicable; if the customer cannot access it during the call, a precise follow-up can still be acceptable.",
+      "Never unnecessarily extend, worsen, or inaccurately restate payment terms the customer has already offered. Preserve the customer's latest clear timing. If the customer says tomorrow or next Wednesday and the salesperson changes it to weeks or a later month without the customer requesting that change, record a material payment_term_mismatch and rate the call no higher than Needs Improvement.",
+      "A customer saying payment will be a week or two before an end-of-October publication date followed by the salesperson recording November is also a payment-term mismatch: November is later than the customer's stated timing. Do not treat that as an accurate confirmation.",
+      "Acceptance is not proof of payment, fulfilment, revenue, or CRM closure. Spiel Quality does not decide whether a sale occurred; only a separately promoted Offer Acceptance capability may establish that classification."
+    ].join("\n\n")
+  },
+  {
+    id: "kb_calibrated_operational_accuracy_v1",
+    title: "Draft - Call Handling And Operational Accuracy",
+    category: "procedure",
+    tags: ["spiel_quality", "calibrated", "draft", "accuracy", "call_purpose"],
+    sourceProject: "Sales Dashboard",
+    sourceReference: "Manager calibration of ten real calls, 19 July 2026",
+    historicalSource: false,
+    approvalStatus: "pending_manager_approval",
+    approvalNote: "Draft produced from manager calibration. Review before including it in live evaluations.",
+    content: [
+      "First classify the call purpose. A new or renewal offer can receive both a Spiel Quality and Call Handling Quality band. A returning-support call that asks the customer to support, book, advertise, or help again is a renewal offer, not merely a callback. A payment follow-up, administration call, or justified early withdrawal receives Call Handling Quality while Spiel Quality is Not Assessable. Terminal no-contact and unusable evidence are Not Assessable.",
+      "Wrong product or publication, wrong confirmation or order, avoidable customer-detail errors, inaccurate address or postcode handling, and inaccurate payment timing are material operational failures. An accepted sale does not erase them.",
+      "For an explicit stop, do-not-call, or removal request, generic acknowledgement or simply ending the call is not completion. The salesperson must clearly accept the record action, for example by saying they will remove the customer or update the list. An unfinished assurance does not complete the opt-out.",
+      "Do not penalise a salesperson merely for not asking for an email address when it may already be available in trusted records. Penalise only a demonstrated failure, such as promising information with no workable path, using a known-wrong detail, or failing to resolve a clear contradiction in the call."
+    ].join("\n\n")
+  },
+  {
+    id: "kb_calibrated_spiel_quality_grading_v1",
+    title: "Draft - Spiel Quality Grading And Evidence Rules",
+    category: "coaching",
+    tags: ["spiel_quality", "calibrated", "draft", "grading", "evidence"],
+    sourceProject: "Sales Dashboard",
+    sourceReference: "Manager calibration of ten real calls, 19 July 2026",
+    historicalSource: false,
+    approvalStatus: "pending_manager_approval",
+    approvalNote: "Draft produced from manager calibration. Review before including it in live evaluations.",
+    content: [
+      "Use bands, never a 0-100 score. Strong means the applicable work was handled particularly well with no material gap. Acceptable means sound, competent judgement with only minor or context-justified gaps. Needs Improvement means a material avoidable gap, policy breach, or operational accuracy failure. Poor means a severe boundary breach or multiple major failures. Not Assessable means the relevant work did not occur or the evidence cannot support a fair judgment.",
+      "Do not grade by counting optional techniques. Judge the materiality of what happened in context. A payment-term mismatch, wrong product or confirmation, avoidable customer-detail error, or incomplete opt-out is material and caps Call Handling Quality at Needs Improvement unless a more severe Poor rating is supported.",
+      "Return no more than two demonstrated strengths and two material improvements, each with one exact contiguous transcript excerpt. If no material weakness exists, return an empty improvements array and say 'No material coaching action'. Provide one highest-priority coaching action and an optional suggested phrase. Never invent a weakness to fill the format.",
+      "Do not rank a salesperson until at least 20 assessable calls are available for that person. Individual call evaluations are coaching evidence, not disciplinary proof."
+    ].join("\n\n")
   }
 ];
 
@@ -431,7 +571,7 @@ const DEFAULT_EVALUATION_TEMPLATES = [
       "Measurement eligible means the transcript supports a live sales conversation suitable for denominator-based salesperson or source analysis. Exclude terminal no-contact states. Use insufficient evidence when speaker, contact, or transcript quality cannot support a fair measurement decision.",
       "Efficiency is efficient_progression when the call made a sensible evidence-backed progression or properly completed a terminal outcome; actionable_gap when a meaningful live call left a material next-step or process gap; terminal_complete for a properly identified terminal state; and unable_to_assess when evidence is insufficient.",
       "Commercial context may contain only a product/package and amount explicitly stated in the transcript. Set quoted_amount_available false and quoted_amount 0 when no reliable amount is present. It is quoted context, never payment, revenue, order value, fulfilment, CRM closure, source ROI, or realised value.",
-      "Set specialist_routes as recommendations only. Local deterministic routing will reconcile them before storage. Offer Acceptance remains authoritative for acceptance, Lead Record Audit remains authoritative for record validity, Callback Opportunity remains authoritative for handover details, and coaching evaluators never determine whether a sale occurred.",
+      "Set specialist_routes as recommendations only. Local deterministic routing will reconcile them before storage. Every specialist must independently pass promotion before operational use, and coaching evaluators never determine whether a sale occurred.",
       "Use at most five evidence items. Every quote must be one exact contiguous transcript excerpt no longer than 300 characters. Never combine separate excerpts with ellipses. Use unknown or insufficient evidence instead of guessing.",
       "A usable result with evidence_availability available must include at least one exact evidence item, including no-contact and terminal calls. Quote the transcript fragment that supports the contact result. If no exact excerpt can support the result, use partial or unavailable evidence and lower the status/confidence accordingly.",
       "Return only JSON matching the supplied output schema and set findings to an empty array; normalized findings and final specialist routes are generated locally."
@@ -492,10 +632,10 @@ const DEFAULT_EVALUATION_TEMPLATES = [
     ].join("\n")
   },
   {
-    id: "template_callback_opportunity_v2",
+    id: "template_callback_opportunity_v3",
     name: "Callback Opportunity And Lead Harvest",
     evaluationGoal: CALLBACK_OPPORTUNITY_GOAL,
-    version: 2,
+    version: 3,
     description: "Finds positive-response callback opportunities and handover notes for the next salesperson.",
     outputSchema: CALLBACK_OPPORTUNITY_OUTPUT_SCHEMA,
     instructions: [
@@ -504,7 +644,37 @@ const DEFAULT_EVALUATION_TEMPLATES = [
       "Use the final agreed next step rather than an earlier provisional request. Contact in about a year, 12 months, next year, or next financial year is long-term nurture and must not be reported as an active callback opportunity.",
       "Do not call the follow-up completed unless manager-confirmed completion exists.",
       "A customer-stated payment date is timing_only unless the customer or salesperson explicitly requested or promised another call. Acceptance and payment timing are separate from callback state.",
-      "Every evidence quote must be one exact contiguous transcript excerpt no longer than 400 characters. Timing evidence must contain timing_raw. Return only JSON matching the supplied schema and set findings to an empty array."
+      "Every evidence quote must be one exact contiguous transcript excerpt no longer than 400 characters. Copy the correct transcript speaker; use unknown if the speaker cannot be established. Timing evidence must contain timing_raw.",
+      "Always provide a non-empty handover_summary and manager_summary, including when evidence is insufficient. A usable result with available evidence must contain at least one exact transcript quote. If no exact quote supports the result, use insufficient_evidence, evidence_availability unavailable, confidence no higher than 0.35, and explain the limitation.",
+      "Return only JSON matching the supplied schema and set findings to an empty array."
+    ].join("\n")
+  },
+  {
+    id: "template_spiel_quality_v3",
+    name: "Spiel & Call Handling Quality",
+    evaluationGoal: SPIEL_QUALITY_GOAL,
+    version: 3,
+    description: "Opt-in Qwen-safe review of spiel execution, situational judgement, customer boundaries, payment timing, and operational accuracy. Complex or ambiguous calls must abstain for human review. Not promoted for automatic routing, rankings, or operational decisions; sale outcome remains separate.",
+    outputSchema: SPIEL_QUALITY_OUTPUT_SCHEMA,
+    knowledgebaseIds: SPIEL_QUALITY_KNOWLEDGEBASE_IDS,
+    instructions: [
+      "Evaluate one call using the complete transcript and trusted call metadata. Judge salesperson quality independently from commercial outcome: a rejected call can be Strong, and an accepted sale can Need Improvement. Never determine whether a sale occurred; only a separately promoted Offer Acceptance capability may establish that classification.",
+      "Work in this strict order: (1) terminal contact state, (2) call purpose and assessment scope, (3) explicit customer boundaries and material payment or operational safeguards, (4) decision authority and confirmation state, then (5) the applicable quality bands. Later administrative work must not erase a renewal request and commitment made earlier in the same call.",
+      "First classify call_purpose and assessment_scope. Use spiel_and_handling only when a meaningful sales or renewal offer was delivered. Use handling_only for payment follow-up, administration, callback handling, or a justified early withdrawal before a meaningful pitch. In handling_only, spiel_quality must be not_assessable. Use not_assessable for terminal no-contact or evidence that cannot support a fair judgement.",
+      "Use renewal_offer only when the transcript explicitly establishes prior support, a previous booking or advertisement, renewal, last-year participation, continuing support, or helping again. A generic first-time request such as 'can we count on your support?' is new_offer. callback_follow_up applies only when no new commitment is requested and the work is limited to arranging or completing an earlier next step. handling_only still requires a Call Handling Quality band; only not_assessable scope may use not_assessable for Call Handling Quality.",
+      "Use quality bands, not a numeric score. Strong means particularly effective applicable work with no material, unresolved, or imprecise gap. For a full spiel, Strong requires all applicable dimensions to be met, no improvement or coaching action, and two exact demonstrated strengths. Acceptable means sound, competent judgement with only minor or context-justified gaps. Needs Improvement means one material avoidable gap, policy breach, or operational accuracy failure. Poor requires a severe customer-boundary failure or multiple major failures. Do not grade by counting optional techniques.",
+      "For a full pitch, assess clear community purpose, timely disclosure that this is paid sponsorship or advertising, what the customer receives, offer accuracy, listening and delivery, objection judgement, an unmistakable commitment ask when the stage is reached, confirmation, payment timing, and customer boundaries. Customer first name, business-specific rapport, natural trade language, pressure removal, every price option, and early payment flexibility are preferred or context-dependent rather than automatic pass/fail requirements.",
+      "Objection handling does not require persistence at any cost. One respectful recovery attempt after initial disinterest can be appropriate. A tactful withdrawal can be Acceptable when financial distress, tone, or an explicit scam accusation makes further pressure unreasonable. An explicit stop, do-not-call, or removal request must end the pitch and be acknowledged.",
+      "For an opt-out, generic acknowledgements such as 'absolutely', thanks, or ending the call are not proof that removal was accepted. Require a completed commitment such as 'I will remove you', 'I will take you off the list', or 'I will update the record'. An unfinished promise such as 'we will make sure that...' is not enough and is a material opt_out_not_completed finding. Discussion of whether a law applies has no Spiel Quality weight by itself.",
+      "Calibration boundaries: a full pitch followed by an explicit scam accusation, one brief clarification attempt, and a respectful exit is Acceptable rather than Strong. Promptly withdrawing when the customer is selling or closing the business, is in genuine distress, or makes further selling unreasonable is also Acceptable and must not create an incomplete-offer coaching fault. A promised email or information send with no precise send or follow-up timing is Acceptable when an email may already be on file; do not invent an email-capture failure. A well-executed payment follow-up that provides the correct payment path and secures or verifies the immediate payment step can be Strong Call Handling while Spiel Quality remains Not Assessable.",
+      "Never unnecessarily extend, worsen, or inaccurately restate the customer's proposed payment timing. Preserve the latest clear customer timing. Record payment_term_mismatch when the salesperson changes tomorrow, next Wednesday, or another clear timing to weeks or a later month without the customer requesting it. Also record it when, after a clear financial refusal, the salesperson introduces an unrequested discount, part-payment plan, or later payment date. This is material and caps Call Handling Quality at Needs Improvement. Customer-requested flexibility remains permissible.",
+      "Treat plain-language hardship and refusal as controlling even when the customer does not use formal financial words. Examples include having no means, only one client, no work or job, an unstable new business, money being too tight, being unable to justify the spend, asking to put it on hold, or asking to be contacted next year. If an unrequested payment plan follows, record the material payment finding.",
+      "A customer does not have final decision authority when the transcript says the proposal must go through a partner, owner, manager, or finance controller, or that nothing can proceed without that person's okay. Pending third-party approval prevents Strong even if the contacted person sounds positive.",
+      "Use the Qwen-safe capability boundary. If the call combines competing purposes, contradictory commitment states, unclear speaker roles, or ambiguous permission for payment flexibility and the controlling state cannot be established from exact chronological evidence, do not guess. Return status insufficient_evidence, assessment_scope not_assessable, both quality bands not_assessable, primary_reason_code insufficient_evidence, manager_review_recommended true, and explain that human review is required.",
+      "Wrong product or publication, wrong confirmation or order, avoidable customer-detail errors, and an incomplete opt-out are material. Do not penalise the absence of an email-address question because the address may already be held; require demonstrated evidence of a failure. The phrase 'required by law' is neutral and has no weight whether said or omitted.",
+      "Return at most two demonstrated strengths and two material improvements. Each strength, improvement, policy finding, and evidence item must use one exact contiguous transcript excerpt of 400 characters or fewer. Never join excerpts or invent a weakness. If there is no material weakness, return an empty improvements array and coaching_action exactly 'No material coaching action'.",
+      "Keep the JSON compact enough to complete reliably: for Strong full-spiel results return two exact demonstrated strengths; otherwise prefer one strongest strength and one highest-priority improvement. Use at most four general evidence items, use no placeholder policy finding when there is no policy issue, keep quality_reason to one sentence, and keep manager_summary to two short sentences. A voicemail, recording, no-answer system, or other terminal no-contact call is not assessable for either quality band even when the transcript contains a short salesperson fragment.",
+      "Use one highest-priority coaching action, an optional suggested phrase, and a short manager summary that explains the quality decision without treating acceptance, rejection, payment, or revenue as proof of quality. Return only JSON matching the supplied schema and set findings to an empty array; normalized findings are generated locally."
     ].join("\n")
   },
   {
@@ -706,6 +876,13 @@ function normalizeEvaluationTemplate(template = {}) {
   const createdAt = template.createdAt || nowIso();
   const version = Number(template.version || 1);
   const containsUntrustedLegacyData = BLOCKED_FIELD_PATTERN.test(JSON.stringify(template));
+  const populationInput = template.supportedPopulation || template.supported_population || {};
+  const supportedPopulation = populationInput && typeof populationInput === "object" && !Array.isArray(populationInput)
+    ? {
+        populationId: clean(populationInput.populationId || populationInput.population_id),
+        definitionHash: clean(populationInput.definitionHash || populationInput.definition_hash)
+      }
+    : { populationId: "", definitionHash: "" };
   let evaluationGoal;
   try {
     evaluationGoal = normalizeGoal(template.evaluationGoal || template.goal || "procedure_adherence");
@@ -720,10 +897,12 @@ function normalizeEvaluationTemplate(template = {}) {
     instructions,
     outputSchema,
     tags: normalizeTags(template.tags),
+    knowledgebaseIds: normalizeTags(template.knowledgebaseIds || template.knowledgebase_ids || []),
     status: parseBoolean(template.isActive, template.status !== "archived") ? "active" : "archived",
     isActive: parseBoolean(template.isActive, template.status !== "archived"),
     version,
     promptHash: digest(`${instructions}\n${JSON.stringify(outputSchema)}`, 24),
+    supportedPopulation,
     sourceProject: clean(template.sourceProject),
     sourceReference: clean(template.sourceReference),
     createdBy: clean(template.createdBy) || EVALUATION_STUDIO_ACTOR,
@@ -2759,6 +2938,176 @@ function specialistString(value, field, goal, { allowEmpty = false, maxLength = 
   return text;
 }
 
+function typedSpecialistFallbackSummary(goal, output = {}) {
+  if (goal === CALLBACK_OPPORTUNITY_GOAL) {
+    if (output.status === "insufficient_evidence" || output.evidence_availability === "unavailable") {
+      return "The transcript did not provide enough exact evidence to establish a reliable callback opportunity.";
+    }
+    if (["requested", "promised", "timing_only"].includes(output.callback_state)) {
+      return `The call contains a ${String(output.callback_state).replace(/_/g, " ")} follow-up signal; use the exact evidence and timing for handover.`;
+    }
+    return "No actionable callback request was established from the exact evidence supplied for this call.";
+  }
+  if (goal === PROCEDURE_ADHERENCE_GOAL) {
+    if (output.status === "insufficient_evidence" || output.evidence_availability === "unavailable") {
+      return "The transcript did not provide enough exact evidence for a reliable procedure assessment.";
+    }
+    return output.outcome === "issue_found"
+      ? `A procedure issue was identified at the ${String(output.strongest_issue_stage || "unknown").replace(/_/g, " ")} stage.`
+      : "No supported procedure issue was identified in the exact evidence supplied for this call.";
+  }
+  if (output.status === "insufficient_evidence" || output.evidence_availability === "unavailable") {
+    return "The transcript did not provide enough exact evidence for a reliable objection-handling assessment.";
+  }
+  return output.objection_state === "present"
+    ? `The customer objection was classified as ${String(output.objection_type || "unknown").replace(/_/g, " ")} and the handling outcome was ${String(output.outcome || "unknown").replace(/_/g, " ")}.`
+    : "No supported customer objection requiring a handling assessment was identified in the supplied evidence.";
+}
+
+function reconcileTypedSpecialistOutput(record = {}, goal) {
+  const source = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  const output = source && typeof source === "object" && !Array.isArray(source)
+    ? JSON.parse(JSON.stringify(source))
+    : source;
+  const adjustments = [];
+  if (!output || typeof output !== "object" || Array.isArray(output)) return { output, adjustments };
+  const context = auditEvidenceContext(record);
+  const setValue = (key, value, reason) => {
+    if (output[key] === value) return;
+    adjustments.push({ field: key, from: output[key] ?? null, to: value, reason });
+    output[key] = value;
+  };
+
+  if (Array.isArray(output.evidence)) {
+    output.evidence = output.evidence.filter((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        adjustments.push({
+          field: `evidence[${index}]`,
+          action: "removed_invalid_evidence_item",
+          reason: "Specialist evidence must be a structured exact transcript excerpt."
+        });
+        return false;
+      }
+      const unsupportedKeys = Object.keys(item).filter((key) => !["claim_type", "speaker", "quote"].includes(key));
+      unsupportedKeys.forEach((key) => delete item[key]);
+      if (unsupportedKeys.length) {
+        adjustments.push({
+          field: `evidence[${index}]`,
+          action: "removed_unsupported_evidence_fields",
+          fields: unsupportedKeys
+        });
+      }
+      const claimType = clean(item.claim_type);
+      const original = clean(item.quote);
+      if (!claimType || !original) {
+        adjustments.push({
+          field: `evidence[${index}]`,
+          action: "removed_empty_evidence_item",
+          reason: "An evidence item without both a claim type and exact quote cannot support the result."
+        });
+        return false;
+      }
+      if (!["customer", "salesperson", "system", "unknown"].includes(item.speaker)) {
+        adjustments.push({
+          field: `evidence[${index}].speaker`,
+          from: item.speaker ?? null,
+          to: "unknown",
+          reason: "An unsupported speaker label is stored as unknown rather than guessed."
+        });
+        item.speaker = "unknown";
+      }
+      if (context.transcriptComparable && (original.length > 400 || !auditQuoteIsVerified(original, context))) {
+        const verified = foundationVerifiedExcerpt(original, context)
+          || foundationBestMatchingTranscriptExcerpt(original, context, {
+            maxLength: 400,
+            minMatches: 4,
+            minCoverage: 0.4
+          });
+        if (!verified) {
+          adjustments.push({
+            field: `evidence[${index}].quote`,
+            action: "removed_unverifiable_evidence",
+            reason: "The supplied specialist evidence could not be mapped to one exact contiguous transcript excerpt."
+          });
+          return false;
+        }
+        item.quote = verified;
+        adjustments.push({
+          field: `evidence[${index}].quote`,
+          action: "replaced_with_verified_contiguous_excerpt",
+          originalLength: original.length,
+          storedLength: verified.length
+        });
+      }
+      const actualSpeaker = transcriptSpeakerType(transcriptTurnForQuote(context, item.quote));
+      if (context.transcriptComparable && actualSpeaker !== "unknown" && item.speaker !== "unknown" && item.speaker !== actualSpeaker) {
+        adjustments.push({
+          field: `evidence[${index}].speaker`,
+          from: item.speaker,
+          to: actualSpeaker,
+          reason: "The exact quote's transcript turn determines the stored speaker."
+        });
+        item.speaker = actualSpeaker;
+      }
+      return true;
+    });
+  }
+
+  const evidenceCount = Array.isArray(output.evidence) ? output.evidence.length : 0;
+  if (output.status === "usable" && output.evidence_availability === "unavailable") {
+    setValue("status", "insufficient_evidence", "Unavailable evidence cannot support a usable specialist result.");
+  }
+  if (output.status === "usable" && output.evidence_availability === "available" && evidenceCount === 0) {
+    setValue("status", "insufficient_evidence", "No exact transcript excerpt remained to support a usable specialist result.");
+    setValue("evidence_availability", "unavailable", "No exact transcript excerpt remained after verification.");
+    if (!Array.isArray(output.limitations)) output.limitations = [];
+    if (!output.limitations.includes("No exact transcript excerpt was available to support this classification.")) {
+      output.limitations.push("No exact transcript excerpt was available to support this classification.");
+      adjustments.push({
+        field: "limitations",
+        action: "added_missing_exact_evidence_limitation",
+        reason: "The downgraded result must explain why it is not usable."
+      });
+    }
+  }
+
+  if (goal === CALLBACK_OPPORTUNITY_GOAL) {
+    const positiveCallback = ["requested", "promised", "timing_only"].includes(output.callback_state);
+    const hasCallbackEvidence = Array.isArray(output.evidence)
+      && output.evidence.some((item) => ["callback_state", "timing"].includes(item?.claim_type));
+    if (positiveCallback && !hasCallbackEvidence) {
+      setValue("status", "insufficient_evidence", "A positive callback state requires an exact callback or timing excerpt.");
+      setValue("evidence_availability", evidenceCount ? "partial" : "unavailable", "No exact callback or timing excerpt remained after verification.");
+      setValue("callback_state", "unknown", "The positive callback state could not be retained without exact callback evidence.");
+      setValue("next_action_channel", "unknown", "The callback channel could not be retained without exact callback evidence.");
+      setValue("timing_raw", "", "Unverified timing cannot be retained.");
+    } else if (output.timing_raw && Array.isArray(output.evidence)) {
+      const rawComparable = auditComparableText(output.timing_raw);
+      const timingEvidence = output.evidence.find((item) => item?.claim_type === "timing"
+        && auditComparableText(item.quote).includes(rawComparable));
+      if (!timingEvidence) setValue("timing_raw", "", "The raw timing phrase was not retained without a matching exact timing quote.");
+    }
+  }
+
+  const confidenceCap = output.evidence_availability === "unavailable"
+    ? 0.35
+    : output.evidence_availability === "partial"
+      ? 0.75
+      : null;
+  if (confidenceCap !== null && typeof output.confidence === "number" && Number.isFinite(output.confidence) && output.confidence > confidenceCap) {
+    setValue("confidence", confidenceCap, `${output.evidence_availability} evidence caps specialist confidence at ${confidenceCap.toFixed(2)}.`);
+  }
+
+  const fallbackSummary = typedSpecialistFallbackSummary(goal, output);
+  if (goal === CALLBACK_OPPORTUNITY_GOAL && !clean(output.handover_summary)) {
+    setValue("handover_summary", clean(output.manager_summary) || fallbackSummary, "Callback results require a non-empty handover summary.");
+  }
+  if (!clean(output.manager_summary)) {
+    setValue("manager_summary", goal === CALLBACK_OPPORTUNITY_GOAL ? clean(output.handover_summary) || fallbackSummary : fallbackSummary, "Typed specialist results require a non-empty manager summary.");
+  }
+  return { output, adjustments };
+}
+
 function validateTypedSpecialistResult(record = {}, goal) {
   const output = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
   const contract = TYPED_SPECIALIST_CONTRACTS[goal];
@@ -2855,7 +3204,1093 @@ function validateTypedSpecialistResult(record = {}, goal) {
   return output;
 }
 
-function typedSpecialistAssessment(output = {}) {
+const SPIEL_QUALITY_CALL_PURPOSES = new Set([
+  "new_offer", "renewal_offer", "payment_follow_up", "callback_follow_up", "administration",
+  "complaint_or_opt_out", "terminal_no_contact", "other", "unknown"
+]);
+const SPIEL_QUALITY_ASSESSMENT_SCOPES = new Set(["spiel_and_handling", "handling_only", "not_assessable"]);
+const SPIEL_QUALITY_BANDS = new Set(["strong", "acceptable", "needs_improvement", "poor", "not_assessable"]);
+const SPIEL_QUALITY_REASONS = new Set([
+  "strong_execution", "sound_judgement_to_withdraw", "minor_execution_gap", "purpose_or_transparency_gap",
+  "offer_clarity_gap", "objection_handling_gap", "commitment_ask_gap", "confirmation_gap",
+  "payment_timing_policy_breach", "operational_accuracy_failure", "customer_boundary_breach",
+  "insufficient_evidence", "none"
+]);
+const SPIEL_QUALITY_DIMENSION_NAMES = Object.freeze([
+  "opening_and_rapport", "purpose_and_transparency", "offer_clarity", "delivery_and_listening",
+  "objection_judgement", "commitment_and_confirmation", "payment_timing", "operational_accuracy",
+  "customer_boundary"
+]);
+const SPIEL_QUALITY_DIMENSION_VALUES = new Set(["met", "partial", "missed", "not_applicable", "insufficient_evidence"]);
+const SPIEL_QUALITY_POLICY_TYPES = new Set([
+  "payment_term_mismatch", "wrong_product_or_document", "customer_detail_error", "opt_out_not_completed",
+  "requested_information_not_addressed", "none"
+]);
+const SPIEL_QUALITY_POLICY_SEVERITIES = new Set(["material", "critical", "advisory"]);
+
+function spielQualityValidationError(message) {
+  const error = new Error(`Spiel Quality evaluation output is invalid: ${message}`);
+  error.statusCode = 400;
+  return error;
+}
+
+function spielQualityChronologicalFacts(context = {}) {
+  const turns = parseTranscriptTurns(context.transcript || "").map((turn, index) => ({
+    ...turn,
+    index,
+    speakerType: transcriptSpeakerType(turn),
+    text: clean(turn.text)
+  }));
+  const salespersonTurns = turns.filter((turn) => turn.speakerType === "salesperson");
+  const customerTurns = turns.filter((turn) => turn.speakerType === "customer");
+  const decisionSpeakerTurns = turns.filter((turn) => turn.speakerType === "customer"
+    || (turn.speakerType === "system" && /\b(?:i|we|my|our)\b/i.test(turn.text)
+      && !/\b(?:leave (?:your|a) message|after the (?:tone|beep)|not available|can'?t (?:get to|answer) the phone)\b/i.test(turn.text)));
+  const transcript = clean(context.transcript);
+  const nextSalespersonTurn = (index) => turns.find((turn) => turn.index > index && turn.speakerType === "salesperson") || null;
+
+  const meaningfulOfferTurn = salespersonTurns.find((turn) => /\b(?:support (?:ad|advertisement)|small support (?:ad|advertisement|out)|sponsorship|advertis(?:e|ing)|bronze|silver|gold|package|price|cost|count on (?:you|your) support|help us)\b/i.test(turn.text)) || null;
+  const explicitRenewal = /\b(?:renew(?:al|ing)?|continue (?:your|the) support|support us again|help us again|advertis(?:e|ing) again|book again|go ahead again|supported us (?:before|previously|last year)|helped us (?:before|previously|last year)|(?:your|the) (?:proud )?support (?:before|previously|earlier this year|last year)|previous (?:support|supporter|booking|advertisement)|previous supporters?|supporters? (?:first|again)|stick with us|stay on board|happy to help again|retain your support|support again)\b/i.test(transcript);
+  const renewalAskTurn = explicitRenewal
+    ? salespersonTurns.find((turn) => /\b(?:retain|renew|stick with|stay on board|support|help|advertis(?:e|ing)|book|go ahead)\b/i.test(turn.text)) || null
+    : null;
+
+  const priorConversationTurn = turns.find((turn) => /\b(?:we spoke|spoke (?:earlier|last week|the other day)|talked (?:earlier|last week|the other day)|following up|did you (?:get|receive|review|go through).{0,50}(?:confirmation|invoice))\b/i.test(turn.text)) || null;
+  const existingConfirmationTurn = salespersonTurns.find((turn) => /\b(?:sent (?:you )?(?:the |an? )?(?:official )?(?:confirmation|invoice)|official confirmation.{0,40}(?:sms|text|email)|did you (?:get|receive|review|go through).{0,60}(?:confirmation|invoice))\b/i.test(turn.text)) || null;
+  const freshCommitmentAskTurn = existingConfirmationTurn
+    ? salespersonTurns.find((turn) => turn.index > existingConfirmationTurn.index
+      && /\b(?:can we count on (?:you|your) support|would you (?:like to|be able to) (?:support|help|go ahead)|could (?:we|i) book you in|go ahead with (?:the|a) (?:support|advert|sponsorship))\b/i.test(turn.text)) || null
+    : null;
+  const priorConfirmationFollowUp = Boolean(priorConversationTurn && existingConfirmationTurn && !explicitRenewal);
+  const mixedPurposeAmbiguity = Boolean(priorConfirmationFollowUp && freshCommitmentAskTurn);
+
+  const hardshipPattern = /\b(?:no means|only (?:one|1) (?:client|customer)|one and only (?:client|customer)|just (?:registered|started|opened)|new business|business.{0,50}up and down|don'?t even have (?:a )?(?:job|work)|do not even have (?:a )?(?:job|work)|no (?:job|work|income)|money.{0,30}too tight|too tight.{0,30}money|can'?t justify|cannot justify|not achievable|doesn'?t (?:even )?sound achievable|does not (?:even )?sound achievable|big (?:payment|amount)|big for me|trying to recover|need (?:some )?time to recover|struggl|unemployed|no budget|don'?t have (?:the |any )?budget|do not have (?:the |any )?budget|can'?t afford|cannot afford|not in (?:a |the )?(?:financial )?position|business has been tough|tight (?:with|for) cash)\b/i;
+  const refusalOrDeferralPattern = /\b(?:not interested|no thanks|have to pass|going to pass|have to say no|not going ahead|can'?t do (?:it|that)|cannot do (?:it|that)|can'?t afford|cannot afford|not in (?:a |the )?(?:financial )?position|can'?t justify|cannot justify|not achievable|doesn'?t (?:even )?sound achievable|does not (?:even )?sound achievable|put it on hold|need (?:some )?time|contact (?:me|us) next year|call (?:me|us) next year|keep (?:me|us) in the loop for (?:the )?next year|no means)\b/i;
+  const hardshipTurn = customerTurns.find((turn) => hardshipPattern.test(turn.text)) || null;
+  const refusalOrDeferralTurn = customerTurns.find((turn) => refusalOrDeferralPattern.test(turn.text)) || null;
+  const financialBoundaryIndex = hardshipTurn && refusalOrDeferralTurn
+    && Math.abs(hardshipTurn.index - refusalOrDeferralTurn.index) <= 6
+    ? Math.max(hardshipTurn.index, refusalOrDeferralTurn.index)
+    : hardshipTurn && refusalOrDeferralPattern.test(hardshipTurn.text)
+      ? hardshipTurn.index
+      : refusalOrDeferralTurn && hardshipPattern.test(refusalOrDeferralTurn.text)
+        ? refusalOrDeferralTurn.index
+        : -1;
+  const financialBoundaryTurn = financialBoundaryIndex < 0
+    ? null
+    : turns.find((turn) => turn.index === financialBoundaryIndex) || hardshipTurn || refusalOrDeferralTurn;
+  const sellerConcessionTurn = financialBoundaryIndex < 0 ? null : salespersonTurns.find((turn) => turn.index > financialBoundaryIndex
+    && /\b(?:discount|lower the price|reduce the price|part payments?|payment plan|payment arrangement|split payment|break it up|weekly|monthly|fortnightly|pay it later|more time to pay|extended? (?:payment )?terms?)\b/i.test(turn.text)) || null;
+  const explicitFlexibilityRequestTurn = sellerConcessionTurn ? customerTurns.find((turn) => turn.index >= Math.max(0, financialBoundaryIndex - 1)
+    && turn.index <= sellerConcessionTurn.index
+    && /\b(?:can|could|would) (?:you|i|we).{0,70}(?:discount|lower|reduce|part payment|payment plan|split payment|pay later|more time)|\b(?:can|could) i (?:pay|do).{0,50}(?:weekly|monthly|fortnightly|in parts?|in instalments?)\b/i.test(turn.text)) || null : null;
+  const ambiguousFlexibilityRequestTurn = sellerConcessionTurn && !explicitFlexibilityRequestTurn ? customerTurns.find((turn) => turn.index >= Math.max(0, financialBoundaryIndex - 1)
+    && turn.index <= sellerConcessionTurn.index
+    && /\b(?:anything you can do|make it (?:a bit )?easier|work with me|some flexibility|another way to do it)\b/i.test(turn.text)) || null : null;
+  const unrequestedConcessionAfterFinancialBoundary = Boolean(financialBoundaryTurn && sellerConcessionTurn
+    && !explicitFlexibilityRequestTurn && !ambiguousFlexibilityRequestTurn);
+
+  const thirdPartyMentionTurn = decisionSpeakerTurns.find((turn) => /\b(?:business partners?|partners?|owner|manager|finance|accounts?|shareholders?|board|directors?)\b/i.test(turn.text)) || null;
+  const customerDecisionControlTurn = decisionSpeakerTurns.find((turn) => /\b(?:have|need|got|would have) to (?:go through|talk|speak|discuss|check|clear|ask).{0,90}(?:business partners?|partners?|owner|manager|finance|accounts?|shareholders?|board|directors?)\b|\b(?:business partners?|partners?|owner|manager|finance|accounts?|shareholders?|board|directors?).{0,100}\b(?:organis|decid|review|approv|okay|sign off)\b|\b(?:not|isn'?t) (?:a |the )?person who can decide\b|\bi (?:can'?t|cannot|am not able to) decide\b|\bi(?:'m| am) not (?:the |an? )?(?:owner|director|decision[ -]?maker)\b|\bi(?:'m| am) (?:just|only) (?:a )?(?:sales rep|employee)\b/i.test(turn.text)) || null;
+  const sellerDecisionControlTurn = thirdPartyMentionTurn ? salespersonTurns.find((turn) => turn.index > thirdPartyMentionTurn.index
+    && /\b(?:can'?t|cannot|can not|won'?t|will not).{0,80}(?:do|sort|proceed|go ahead).{0,80}\bwithout (?:his|her|their|the) (?:okay|approval)|\bif (?:he|she|they)(?:'s| is| are) the one that (?:okays|approves|does the finances)|\bthe one that (?:okays|approves|does the finances)\b/i.test(turn.text)) || null : null;
+  const thirdPartyDecisionTurn = customerDecisionControlTurn || sellerDecisionControlTurn;
+
+  const writtenAcceptanceRequestTurn = salespersonTurns.find((turn) => /\b(?:i agree|reply|respond).{0,100}(?:agree|confirmation)|\b(?:click|select|press|tap).{0,100}\bi agree\b/i.test(turn.text)) || null;
+  const writtenAcceptanceCompletedTurn = writtenAcceptanceRequestTurn ? customerTurns.find((turn) => turn.index > writtenAcceptanceRequestTurn.index
+    && /\b(?:i(?:'ve| have)? (?:replied|responded|sent it)|just (?:replied|responded|sent it)|it(?:'s| is) sent|done|agree sent|thank you for your (?:ongoing )?support|submit any feedback|feedback (?:page|below))\b/i.test(turn.text)) || null : null;
+
+  const informationRequestTurn = customerTurns.find((turn) => /\b(?:can|could|would) you.{0,70}(?:send|email|forward).{0,70}(?:details|information|email|it)|\b(?:send|email|forward) me.{0,70}(?:details|information|email|it)|\bplease (?:send|email|forward) it through\b|\bcan i (?:have|get).{0,50}(?:details|information).{0,30}(?:email|sent)\b|\bread (?:that|the) email\b.{0,80}\bgo from there\b/i.test(turn.text)) || null;
+  const emailPromiseTurn = informationRequestTurn ? salespersonTurns.find((turn) => turn.index > informationRequestTurn.index
+    && /\b(?:send|email|shoot|forward|flick).{0,70}(?:email|details|information|it|through)|\bget (?:that|it|the (?:email|information|details)).{0,30}sent\b/i.test(turn.text)) || null : null;
+  const informationDeliveryCompletedTurn = customerTurns.find((turn) => /\b(?:email|message|text).{0,50}(?:come|came|received|got|through)|\b(?:i|we) (?:got|received|have) (?:it|the email|the message)|\bhere we go\b|\bthank you for your (?:ongoing )?support\b/i.test(turn.text)) || writtenAcceptanceCompletedTurn;
+
+  const customerWrongContactTurn = customerTurns.find((turn) => /\b(?:wrong (?:number|person|business)|don'?t have anything to do with|my number'?s on it|number is on it|no longer.{0,30}(?:business|company))\b/i.test(turn.text)) || null;
+  const sellerWrongContactTurn = salespersonTurns.find((turn) => /\b(?:wrong (?:number|person|business))\b/i.test(turn.text)) || null;
+  const sellerResponseAfterWrongContact = customerWrongContactTurn ? nextSalespersonTurn(customerWrongContactTurn.index) : sellerWrongContactTurn;
+  const immediateApologeticWrongContactExit = Boolean(sellerResponseAfterWrongContact
+    && /\b(?:sorry|apologi[sz]e)\b/i.test(sellerResponseAfterWrongContact.text)
+    && /\b(?:bye|cheers|all right|okay|no worries|no problem)\b/i.test(sellerResponseAfterWrongContact.text));
+
+  const unsupportedReasons = [];
+  if (mixedPurposeAmbiguity) unsupportedReasons.push("competing existing-follow-up and fresh-offer purposes");
+  if (financialBoundaryTurn && sellerConcessionTurn && ambiguousFlexibilityRequestTurn) {
+    unsupportedReasons.push("ambiguous customer permission for payment flexibility");
+  }
+
+  return {
+    turns,
+    salespersonTurns,
+    customerTurns,
+    meaningfulOfferTurn,
+    explicitRenewal,
+    renewalAskTurn,
+    priorConfirmationFollowUp,
+    existingConfirmationTurn,
+    freshCommitmentAskTurn,
+    financialBoundaryTurn,
+    hardshipTurn,
+    refusalOrDeferralTurn,
+    sellerConcessionTurn,
+    explicitFlexibilityRequestTurn,
+    ambiguousFlexibilityRequestTurn,
+    unrequestedConcessionAfterFinancialBoundary,
+    thirdPartyMentionTurn,
+    thirdPartyDecisionTurn,
+    writtenAcceptanceRequestTurn,
+    writtenAcceptanceCompletedTurn,
+    informationRequestTurn,
+    emailPromiseTurn,
+    informationDeliveryCompletedTurn,
+    customerWrongContactTurn,
+    sellerWrongContactTurn,
+    sellerResponseAfterWrongContact,
+    immediateApologeticWrongContactExit,
+    unsupportedReasons
+  };
+}
+
+function reconcileSpielQualityOutput(record = {}) {
+  const source = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  const output = source && typeof source === "object" && !Array.isArray(source)
+    ? JSON.parse(JSON.stringify(source))
+    : source;
+  const adjustments = [];
+  if (!output || typeof output !== "object" || Array.isArray(output)) return { output, adjustments };
+  const context = auditEvidenceContext(record);
+  const setValue = (key, value, reason) => {
+    if (JSON.stringify(output[key]) === JSON.stringify(value)) return;
+    adjustments.push({ field: key, from: output[key] ?? null, to: value, reason });
+    output[key] = value;
+  };
+  const verifiedQuote = (quote) => {
+    const original = clean(quote);
+    if (!original) return "";
+    if (!context.transcriptComparable) return original.slice(0, 400);
+    if (original.length <= 400 && auditQuoteIsVerified(original, context)) return original;
+    return foundationVerifiedExcerpt(original, context)
+      || foundationBestMatchingTranscriptExcerpt(original, context, { maxLength: 400, minMatches: 4, minCoverage: 0.4 })
+      || "";
+  };
+  const reconcileQuoteArray = (field, allowedKeys, quoteKey, limit) => {
+    const values = Array.isArray(output[field]) ? output[field] : [];
+    if (!Array.isArray(output[field])) setValue(field, [], `${field} must be a structured array.`);
+    const reconciled = values.slice(0, limit).filter((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        adjustments.push({ field: `${field}[${index}]`, action: "removed_invalid_item" });
+        return false;
+      }
+      const unsupported = Object.keys(item).filter((key) => !allowedKeys.includes(key));
+      unsupported.forEach((key) => delete item[key]);
+      if (unsupported.length) adjustments.push({ field: `${field}[${index}]`, action: "removed_unsupported_fields", fields: unsupported });
+      const original = clean(item[quoteKey]);
+      const verified = verifiedQuote(original);
+      if (!verified) {
+        adjustments.push({ field: `${field}[${index}].${quoteKey}`, action: "removed_unverifiable_evidence" });
+        return false;
+      }
+      if (verified !== original) {
+        item[quoteKey] = verified;
+        adjustments.push({ field: `${field}[${index}].${quoteKey}`, action: "replaced_with_verified_contiguous_excerpt" });
+      }
+      return true;
+    });
+    if (JSON.stringify(reconciled) !== JSON.stringify(output[field])) output[field] = reconciled;
+  };
+
+  reconcileQuoteArray("evidence", ["claim_type", "speaker", "quote"], "quote", 8);
+  reconcileQuoteArray("strengths", ["summary", "evidence_quote"], "evidence_quote", 2);
+  reconcileQuoteArray("improvements", ["summary", "evidence_quote"], "evidence_quote", 2);
+  reconcileQuoteArray("policy_findings", ["type", "severity", "summary", "evidence_quote"], "evidence_quote", 6);
+  (output.evidence || []).forEach((item, index) => {
+    if (!["customer", "salesperson", "system", "unknown"].includes(item.speaker)) {
+      adjustments.push({ field: `evidence[${index}].speaker`, from: item.speaker ?? null, to: "unknown", reason: "Unsupported speaker label." });
+      item.speaker = "unknown";
+    }
+    const actualSpeaker = transcriptSpeakerType(transcriptTurnForQuote(context, item.quote));
+    if (context.transcriptComparable && actualSpeaker !== "unknown" && item.speaker !== "unknown" && actualSpeaker !== item.speaker) {
+      adjustments.push({ field: `evidence[${index}].speaker`, from: item.speaker, to: actualSpeaker, reason: "The exact transcript turn determines the speaker." });
+      item.speaker = actualSpeaker;
+    }
+  });
+  const chronologicalFacts = spielQualityChronologicalFacts(context);
+  const transcriptTurns = chronologicalFacts.turns;
+  const salespersonTurns = chronologicalFacts.salespersonTurns;
+  const customerTurns = chronologicalFacts.customerTurns;
+  const salespersonText = salespersonTurns.map((turn) => turn.text).join(" ");
+  const customerText = customerTurns.map((turn) => turn.text).join(" ");
+  const exactTurnExcerpt = (turn) => foundationVerifiedExcerpt(turn?.text || "", context);
+  const addPolicyFinding = (finding) => {
+    if ((output.policy_findings || []).some((item) => item.type === finding.type)) return;
+    output.policy_findings = [...(output.policy_findings || []), finding].slice(0, 6);
+    adjustments.push({ field: "policy_findings", action: "added_transcript_derived_finding", type: finding.type });
+  };
+  const addImprovement = (summary, evidenceQuote) => {
+    if (!evidenceQuote || (output.improvements || []).some((item) => clean(item.summary).toLowerCase() === clean(summary).toLowerCase())) return;
+    output.improvements = [...(output.improvements || []), { summary, evidence_quote: evidenceQuote }].slice(0, 2);
+    adjustments.push({ field: "improvements", action: "added_transcript_derived_improvement" });
+  };
+  const addStrength = (summary, evidenceQuote) => {
+    if (!evidenceQuote || (output.strengths || []).some((item) => clean(item.summary).toLowerCase() === clean(summary).toLowerCase())) return;
+    output.strengths = [...(output.strengths || []), { summary, evidence_quote: evidenceQuote }].slice(0, 2);
+    adjustments.push({ field: "strengths", action: "added_transcript_derived_strength" });
+  };
+  const setQualityNarrative = (narrative, reason) => {
+    setValue("quality_reason", narrative, reason);
+    setValue("manager_summary", narrative, reason);
+  };
+  const removeContradictoryStrengths = (pattern, reason) => {
+    const strengths = (output.strengths || []).filter((item) => !pattern.test(`${clean(item.summary)} ${clean(item.evidence_quote)}`));
+    if (strengths.length === (output.strengths || []).length) return;
+    output.strengths = strengths;
+    adjustments.push({ field: "strengths", action: "removed_contradictory_strength", reason });
+  };
+
+  const automatedVoicemailTurn = transcriptTurns.find((turn) => /\b(?:you(?:'ve| have) (?:called|reached)|i can'?t (?:get to|answer|come to) (?:the )?phone|not available to take (?:your|the) call|(?:please )?leave (?:your|a) message|after the (?:tone|beep)|record your name and reason|send through a text)\b/i.test(turn.text));
+  const meaningfulOfferTurn = chronologicalFacts.meaningfulOfferTurn;
+  const explicitRenewalSignal = chronologicalFacts.explicitRenewal;
+  const renewalAskTurn = chronologicalFacts.renewalAskTurn;
+  if (renewalAskTurn) {
+    setValue("call_purpose", "renewal_offer", "Renewal requires explicit transcript evidence of prior support, participation, or helping again.");
+    setValue("assessment_scope", "spiel_and_handling", "A direct renewal request makes the spiel assessable.");
+    if (output.spiel_quality === "not_assessable") setValue("spiel_quality", output.call_handling_quality === "not_assessable" ? "acceptable" : output.call_handling_quality, "A meaningful renewal offer requires a Spiel Quality band.");
+    if (/\b(?:callback follow-up|no meaningful (?:sales )?offer|spiel quality (?:is|was) not assessable)\b/i.test(`${clean(output.quality_reason)} ${clean(output.manager_summary)}`)) {
+      setQualityNarrative(`The call included a renewal offer and the salesperson's applicable handling was ${String(output.call_handling_quality || "acceptable").replace(/_/g, " ")}.`, "A direct renewal request makes the prior callback-only explanation inaccurate.");
+    }
+  } else if (output.call_purpose === "renewal_offer" && meaningfulOfferTurn) {
+    setValue("call_purpose", "new_offer", "A generic request for support is a new offer unless the transcript explicitly establishes prior support or renewal.");
+    if (/\brenewal\b/i.test(clean(output.quality_reason))) {
+      setValue("quality_reason", clean(output.quality_reason).replace(/\brenewal\s+offer\b/gi, "new offer").replace(/\brenewal\b/gi, "new-offer"), "The purpose correction must also update the quality explanation.");
+    }
+    if (/\brenewal\b/i.test(clean(output.manager_summary))) {
+      setValue("manager_summary", clean(output.manager_summary).replace(/\brenewal\s+offer\b/gi, "new offer").replace(/\brenewal\b/gi, "new-offer"), "The purpose correction must also update the manager summary.");
+    }
+  }
+  if (meaningfulOfferTurn) {
+    const correctedPurpose = explicitRenewalSignal ? "renewal_offer" : "new_offer";
+    setValue("call_purpose", correctedPurpose, "A meaningful sponsorship or advertising offer cannot remain classified as payment, callback, administration, terminal, or other handling.");
+    setValue("assessment_scope", "spiel_and_handling", "A meaningful offer requires both Spiel and Call Handling assessment.");
+    if (output.call_handling_quality === "not_assessable") setValue("call_handling_quality", "acceptable", "A usable full offer requires a conservative Call Handling band.");
+    if (output.spiel_quality === "not_assessable") setValue("spiel_quality", output.call_handling_quality === "not_assessable" ? "acceptable" : output.call_handling_quality, "A usable full offer requires a Spiel Quality band.");
+    if (/\b(?:payment follow-up|callback follow-up|no (?:new )?spiel|no meaningful (?:sales )?offer)\b/i.test(`${clean(output.quality_reason)} ${clean(output.manager_summary)}`)) {
+      setQualityNarrative(`The call contained a ${correctedPurpose.replace(/_/g, " ")} and usable handling evidence.`, "The corrected full-offer purpose makes the prior handling-only explanation inaccurate.");
+    }
+  }
+
+  const earlySalesPurposeDisclosure = salespersonTurns.slice(0, 2).some((turn) => /\b(?:calling|call|contact|reach out).{0,60}\bon behalf of\b|\b(?:SES|paramedic|police|street smart).{0,80}\b(?:journal|magazine|yearbook|program|sponsorship|volunteers?)\b/i.test(turn.text));
+  const priorCallbackContext = /\b(?:thanks? for (?:giving me a call|calling|getting) back|returning (?:my|the) call|calling (?:you )?back|called (?:you )?(?:earlier|the other day|yesterday)|asked (?:me|you) to call (?:you|me)|following up (?:on|from) (?:our|the) (?:earlier|previous|last) call)\b/i.test(context.transcript);
+  const timedCustomerCallbackTurn = customerTurns.find((turn) => /\b(?:call|ring|phone|continue (?:this|the) conversation|talk).{0,100}\b(?:in (?:about )?(?:half an hour|an? hour|\d+ (?:minutes?|hours?))|later|today|this (?:morning|afternoon)|tomorrow|next (?:week|monday|tuesday|wednesday|thursday|friday)|at \d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?)\b|\b(?:in (?:about )?(?:half an hour|an? hour|\d+ (?:minutes?|hours?))|at \d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?).{0,60}\b(?:call|ring|phone|talk|continue)\b/i.test(turn.text));
+  const sellerAcceptedCallbackTurn = salespersonTurns.find((turn) => /\b(?:i(?:'ll| will)? (?:call|ring|phone|give you a call) (?:you )?back|sure|perfect|no (?:problem|worries))\b/i.test(turn.text));
+  const preciseCallbackTiming = /\b(?:at \d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?|\d{1,2}(?::\d{2})\s*(?:am|pm)?|in (?:about )?(?:half an hour|an? hour|\d+ (?:minutes?|hours?))|later (?:today|this (?:morning|afternoon))|this (?:morning|afternoon))\b/i.test(context.transcript);
+  const customerWrongContactTurn = chronologicalFacts.customerWrongContactTurn;
+  const sellerWrongContactTurn = chronologicalFacts.sellerWrongContactTurn;
+  const wrongContactTurn = customerWrongContactTurn || sellerWrongContactTurn;
+  const completedListRemovalTurn = salespersonTurns.find((turn) => /\b(?:take|remove) you off (?:our|the) (?:list|database|system)|\b(?:i(?:'ll| will)|we(?:'ll| will)).{0,40}(?:remove|take).{0,30}(?:list|database|system)\b/i.test(turn.text));
+  const earlyDisinterestTurn = customerTurns.find((turn) => /\b(?:not interested|no thanks|don'?t want|do not want)\b/i.test(turn.text));
+  const salesCommitmentAskTurn = salespersonTurns.find((turn) => /\b(?:count (?:you|your business) (?:on board|in|on your support)|can we count on (?:you|your) support|would you (?:like to|be able to) (?:support|help|go ahead)|go ahead with|book (?:you|it) in)\b/i.test(turn.text));
+  const genuineLiveExchange = salespersonTurns.length > 0 && customerTurns.length > 0 && !automatedVoicemailTurn;
+  if (!meaningfulOfferTurn && timedCustomerCallbackTurn && sellerAcceptedCallbackTurn) {
+    const callbackPurpose = priorCallbackContext ? "callback_follow_up" : earlySalesPurposeDisclosure ? (explicitRenewalSignal ? "renewal_offer" : "new_offer") : "other";
+    setValue("call_purpose", callbackPurpose, priorCallbackContext
+      ? "The call was completing an earlier callback step before arranging the next contact."
+      : "A callback newly arranged during an early-purpose contact is not completion of an earlier callback task.");
+    setValue("assessment_scope", "handling_only", "A pre-offer callback arrangement assesses handling, not Spiel Quality.");
+    setValue("spiel_quality", "not_assessable", "No meaningful sales spiel was delivered before the callback was arranged.");
+    if (output.call_handling_quality === "not_assessable") setValue("call_handling_quality", "acceptable", "The genuine callback exchange requires a Call Handling Quality band.");
+    if (!preciseCallbackTiming && output.call_handling_quality === "strong") {
+      const evidenceQuote = exactTurnExcerpt(timedCustomerCallbackTurn);
+      addImprovement("Agree a precise callback time or useful window instead of leaving the next contact open-ended.", evidenceQuote);
+      if (output.dimensions && typeof output.dimensions === "object") output.dimensions.commitment_and_confirmation = "partial";
+      setValue("call_handling_quality", "acceptable", "A newly arranged callback without a precise time or useful window does not meet the Strong handling standard.");
+      setValue("primary_reason_code", "minor_execution_gap", "The callback was accepted, but its timing remained imprecise.");
+      setQualityNarrative("The customer-requested callback was respected, but the timing remained too loose for a Strong handling rating; Spiel Quality is not assessable.", "The imprecise-callback boundary controls the displayed explanation.");
+    } else {
+      setQualityNarrative("The customer requested a callback before the offer was delivered, and the salesperson accepted that next step; only Call Handling Quality is assessable.", "A transcript-supported callback must not be shown as a complaint, terminal call, or completed offer.");
+    }
+  } else if (!meaningfulOfferTurn && wrongContactTurn && genuineLiveExchange) {
+    setValue("call_purpose", "other", "The live exchange established a wrong contact before a meaningful offer was delivered.");
+    setValue("assessment_scope", "handling_only", "Wrong-contact handling before a pitch does not make Spiel Quality assessable.");
+    setValue("spiel_quality", "not_assessable", "No meaningful sales spiel was delivered to the wrong contact.");
+    const immediateApologeticExit = chronologicalFacts.immediateApologeticWrongContactExit
+      || Boolean(sellerWrongContactTurn && /\b(?:sorry|apologi[sz]e)\b/i.test(sellerWrongContactTurn.text));
+    const wrongContactMaterialFinding = (output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity));
+    const strongWrongContactHandling = Boolean((completedListRemovalTurn || immediateApologeticExit) && !wrongContactMaterialFinding
+      && !["needs_improvement", "poor"].includes(output.call_handling_quality));
+    const handlingBand = strongWrongContactHandling
+      ? "strong"
+      : output.call_handling_quality === "not_assessable" ? "acceptable" : output.call_handling_quality;
+    setValue("status", "usable", "The live wrong-contact exchange contains exact assessable handling evidence.");
+    setValue("evidence_availability", "available", "The salesperson's wrong-contact response is directly supported by the transcript.");
+    setValue("call_handling_quality", handlingBand, "The genuine wrong-contact exchange requires a Call Handling Quality band.");
+    if (handlingBand === "strong") {
+      setValue("primary_reason_code", "strong_execution", "The wrong-contact handling band is controlled by the salesperson's exact response.");
+      setValue("improvements", [], "Immediate accurate wrong-contact withdrawal does not require a coaching fault.");
+    } else if (output.primary_reason_code === "insufficient_evidence") {
+      setValue("primary_reason_code", "none", "The live exchange has enough exact evidence for a handling decision.");
+    }
+    if (output.dimensions && typeof output.dimensions === "object") {
+      output.dimensions.delivery_and_listening = "met";
+      output.dimensions.operational_accuracy = "met";
+      output.dimensions.customer_boundary = "met";
+    }
+    const wrongContactEvidenceTurn = chronologicalFacts.sellerResponseAfterWrongContact || sellerWrongContactTurn || customerWrongContactTurn;
+    const wrongContactEvidence = exactTurnExcerpt(wrongContactEvidenceTurn);
+    if (wrongContactEvidence) {
+      const speaker = transcriptSpeakerType(wrongContactEvidenceTurn);
+      setValue("evidence", [{ claim_type: "handling", speaker, quote: wrongContactEvidence }], "Keep the exact live wrong-contact handling evidence.");
+      if (handlingBand === "strong") {
+        addStrength(immediateApologeticExit
+          ? "The salesperson immediately recognised the wrong number, apologised, and stopped."
+          : "The salesperson recognised the wrong contact and ended without continuing the pitch.", wrongContactEvidence);
+      }
+    }
+    if (["strong", "acceptable"].includes(handlingBand)) {
+      setQualityNarrative(completedListRemovalTurn
+        ? "The salesperson confirmed the wrong contact, committed to removing the number from the list, and ended respectfully; only Call Handling Quality is assessable."
+        : immediateApologeticExit
+          ? "The salesperson immediately recognised the wrong number, apologised, and stopped; only Call Handling Quality is assessable."
+          : "The salesperson recognised the wrong contact and ended the live exchange; only Call Handling Quality is assessable.", "A live wrong-contact exchange must not be shown as terminal no contact or a completed offer.");
+    }
+  } else if (!meaningfulOfferTurn && !salesCommitmentAskTurn && earlyDisinterestTurn && genuineLiveExchange) {
+    setValue("call_purpose", "other", "The customer ended the call before a meaningful sales offer was delivered.");
+    setValue("assessment_scope", "handling_only", "An immediate pre-offer refusal assesses handling, not Spiel Quality.");
+    setValue("spiel_quality", "not_assessable", "No meaningful sales spiel was delivered before the refusal.");
+    if (output.call_handling_quality === "strong") setValue("call_handling_quality", "acceptable", "Respecting an immediate refusal is correct handling but does not by itself demonstrate exceptional execution.");
+    if (output.call_handling_quality === "not_assessable") setValue("call_handling_quality", "acceptable", "The genuine refusal exchange requires a Call Handling Quality band.");
+    setValue("primary_reason_code", "sound_judgement_to_withdraw", "The salesperson did not continue after the customer's immediate refusal.");
+    setQualityNarrative("The customer declined before a meaningful offer was delivered, and the call ended without further pressure; only Call Handling Quality is assessable.", "A respected pre-offer refusal must not be reported as a fully delivered Spiel.");
+  } else if (!meaningfulOfferTurn && genuineLiveExchange && output.call_purpose === "terminal_no_contact") {
+    setValue("call_purpose", "other", "The transcript contains a genuine two-way exchange rather than a voicemail or no-contact outcome.");
+    setValue("assessment_scope", "handling_only", "The live pre-offer exchange supports handling assessment only.");
+    setValue("spiel_quality", "not_assessable", "No meaningful sales spiel was delivered in the live exchange.");
+    if (output.call_handling_quality === "not_assessable") setValue("call_handling_quality", "acceptable", "A genuine live exchange requires a Call Handling Quality band.");
+  }
+
+  let calibratedPaymentMismatch = null;
+  transcriptTurns.forEach((customerTurn, customerIndex) => {
+    if (calibratedPaymentMismatch || transcriptSpeakerType(customerTurn) !== "customer") return;
+    const customerTiming = clean(customerTurn.text);
+    const salespersonTurn = transcriptTurns.slice(customerIndex + 1).find((turn) => {
+      if (transcriptSpeakerType(turn) !== "salesperson") return false;
+      const salespersonTiming = clean(turn.text);
+      return (/\btomorrow\b/i.test(customerTiming) && /\b(?:next month|weeks?)\b/i.test(salespersonTiming))
+        || (/\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(customerTiming) && /\b(?:next month|few weeks|couple of weeks|two or three weeks|three weeks)\b/i.test(salespersonTiming))
+        || (/\bbefore.{0,80}\boctober\b|\bweek.{0,50}\bbefore\b/i.test(customerTiming) && /\bnovember\b/i.test(salespersonTiming));
+    });
+    if (salespersonTurn) calibratedPaymentMismatch = { customerTurn, salespersonTurn };
+  });
+  if (calibratedPaymentMismatch) {
+    const salespersonTimingTurn = calibratedPaymentMismatch.salespersonTurn;
+    const evidenceQuote = exactTurnExcerpt(salespersonTimingTurn);
+    addPolicyFinding({
+      type: "payment_term_mismatch",
+      severity: "material",
+      summary: "The salesperson restated the customer's clear payment timing as a later timeframe.",
+      evidence_quote: evidenceQuote
+    });
+    addImprovement("Preserve the customer's latest clear payment timing instead of extending it.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.payment_timing = "missed";
+    setValue("call_handling_quality", "needs_improvement", "An unnecessary payment-term extension is a material calibrated policy breach.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "needs_improvement", "The material payment-timing breach controls the overall Spiel Quality band.");
+    setValue("primary_reason_code", "payment_timing_policy_breach", "The transcript contains the calibrated payment-timing mismatch pattern.");
+    removeContradictoryStrengths(/\b(?:payment|timing|timeframe|schedule)\b/i, "A payment-timing strength cannot remain when exact evidence establishes a material timing mismatch.");
+    setQualityNarrative("The salesperson unnecessarily extended the customer's clear payment timing, which is a material policy breach.", "The deterministic payment-timing safeguard controls the displayed explanation.");
+  }
+
+  let unrequestedConcessionAfterRefusal = chronologicalFacts.unrequestedConcessionAfterFinancialBoundary
+    ? {
+        customerTurn: chronologicalFacts.financialBoundaryTurn,
+        salespersonTurn: chronologicalFacts.sellerConcessionTurn
+      }
+    : null;
+  transcriptTurns.forEach((customerTurn, refusalIndex) => {
+    if (unrequestedConcessionAfterRefusal || transcriptSpeakerType(customerTurn) !== "customer") return;
+    const refusal = clean(customerTurn.text);
+    const financialConstraint = /\b(?:business has been tough|hard (?:on|for) (?:us|me)|tight (?:with|for) cash|cash|financ(?:e|es|ial|ially)|budget|investment|cannot afford|can'?t afford|not in (?:a |the )?(?:financial )?position)\b/i.test(refusal);
+    const explicitRefusal = /\b(?:i (?:still )?(?:won'?t|will not|can'?t|cannot|couldn'?t|could not) (?:go for it|do it|proceed)|i (?:(?:don'?t|do not) think i(?:'ll| will| can)|won'?t|will not|can'?t|cannot) (?:be able to )?(?:meet|honou?r|keep up with|continue with) (?:my|the|this)?\s*(?:commitment|subscription|payment|sponsorship)|i(?:'m| am) not looking for it|not looking for it at the moment|no thanks|not interested|not going ahead|not in (?:a |the )?(?:financial )?position|can'?t financially|cannot financially|going to pass|have to pass|have to say no|(?:i )?(?:(?:do not|don'?t) have (?:any |the )?|have no |haven'?t got any )(?:extra )?budget|no budget(?: at all)?)\b/i.test(refusal);
+    if (!financialConstraint || !explicitRefusal) return;
+    const laterTurns = transcriptTurns.slice(refusalIndex + 1);
+    const concessionOffset = laterTurns.findIndex((turn) => transcriptSpeakerType(turn) === "salesperson"
+      && /\b(?:chop (?:a bit|some) off|knock.{0,40}off|slight discount|takes? off \d+%|brings? it down|instead of.{0,40}(?:make it|\$)|make it \$?\d|part payments?|payment plan|payment arrangement|pay it (?:later|closer)|closer to (?:the )?(?:time|publication)|extend(?:ed)? (?:payment )?terms?)\b/i.test(turn.text));
+    if (concessionOffset < 0) return;
+    const concessionIndex = refusalIndex + 1 + concessionOffset;
+    const customerRequestedFlexibility = transcriptTurns.slice(Math.max(0, refusalIndex - 1), concessionIndex)
+      .some((turn) => transcriptSpeakerType(turn) === "customer"
+        && /\b(?:can|could|would) (?:you|i|we).{0,60}(?:discount|lower|reduce|part payment|payment plan|pay later|more time)|\b(?:part payments?|payment plan|pay later|more time)|\b(?:ask|call) me (?:again )?in (?:a )?(?:few|couple of|two|three) months\b/i.test(turn.text));
+    if (!customerRequestedFlexibility) {
+      unrequestedConcessionAfterRefusal = {
+        customerTurn,
+        salespersonTurn: transcriptTurns[concessionIndex]
+      };
+    }
+  });
+  if (unrequestedConcessionAfterRefusal) {
+    const evidenceQuote = exactTurnExcerpt(unrequestedConcessionAfterRefusal.salespersonTurn);
+    addPolicyFinding({
+      type: "payment_term_mismatch",
+      severity: "material",
+      summary: "After a clear financial refusal, the salesperson introduced an unrequested discount or extended payment option.",
+      evidence_quote: evidenceQuote
+    });
+    addImprovement("Respect a clear financial refusal instead of introducing unrequested price or payment concessions.", evidenceQuote);
+    output.improvements = (output.improvements || []).filter((item) =>
+      /\brespect a clear financial refusal\b/i.test(clean(item.summary))
+      || !/\b(?:open-ended questions?|deeper objections?|uncover.{0,30}objections?|assum(?:e|ing).{0,30}(?:financial|barrier))\b/i.test(clean(item.summary)));
+    if (output.dimensions && typeof output.dimensions === "object") {
+      output.dimensions.payment_timing = "missed";
+      output.dimensions.objection_judgement = "missed";
+    }
+    setValue("call_handling_quality", "needs_improvement", "An unrequested concession after a clear financial refusal is a material calibrated payment-policy breach.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "needs_improvement", "The material post-refusal concession controls the overall Spiel Quality band.");
+    setValue("primary_reason_code", "payment_timing_policy_breach", "The salesperson introduced price or payment flexibility after the customer's clear financial refusal without being asked.");
+    removeContradictoryStrengths(/\b(?:payment|timing|timeframe|schedule|flexib|discount|price|responsive)\b/i, "A concession strength cannot remain when exact evidence establishes that it followed a clear refusal and was not requested.");
+    setQualityNarrative("After the customer's clear financial refusal, the salesperson introduced an unrequested discount and extended payment option, which is a material policy breach.", "The post-refusal payment safeguard controls the displayed explanation.");
+  }
+
+  if (explicitDoNotContactContext(context)) {
+    const completedOptOutTurn = salespersonTurns.find((turn) => /\b(?:i|we)(?:'ll|\s+will|\s+can|\s+shall).{0,60}(?:remove|take).{0,45}(?:off|list|database|system)|\b(?:i|we)(?:'ll|\s+will).{0,60}(?:update|mark).{0,45}(?:record|list|do not call)\b/i.test(turn.text));
+    if (!completedOptOutTurn) {
+      const optOutTurn = customerTurns.find((turn) => /\b(?:do not|don'?t) (?:call|contact)|\b(?:take|remove) (?:me|us) off|\bstop calling|\bno more calls\b/i.test(turn.text));
+      const evidenceQuote = exactTurnExcerpt(optOutTurn);
+      addPolicyFinding({
+        type: "opt_out_not_completed",
+        severity: "material",
+        summary: "The customer explicitly requested removal, but the salesperson did not clearly commit to the record action.",
+        evidence_quote: evidenceQuote
+      });
+      addImprovement("Clearly confirm that the customer will be removed or the record will be updated, then end the pitch.", evidenceQuote);
+      if (output.dimensions && typeof output.dimensions === "object") output.dimensions.customer_boundary = "missed";
+      setValue("call_handling_quality", "needs_improvement", "An incomplete explicit opt-out is a material customer-boundary failure.");
+      setValue("spiel_quality", output.assessment_scope === "spiel_and_handling" ? "needs_improvement" : "not_assessable", "The opt-out failure controls the applicable quality band.");
+      setValue("primary_reason_code", "customer_boundary_breach", "The explicit removal request was not clearly completed in the transcript.");
+      removeContradictoryStrengths(/\b(?:opt.?out|remove|removal|boundary|do not call|acknowledg)\b/i, "An opt-out handling strength cannot remain when the record action was not clearly completed.");
+      setQualityNarrative("The customer explicitly requested removal, but the salesperson did not clearly commit to completing the record action.", "The deterministic opt-out safeguard controls the displayed explanation.");
+    }
+  }
+
+  const calibratedScamExit = /\bscam\b/i.test(customerText)
+    && /\bholding you back\b/i.test(salespersonText)
+    && /\bleave you (?:there|to it)|\bleave it there\b/i.test(salespersonText);
+  if (calibratedScamExit && output.call_handling_quality === "strong") {
+    setValue("call_handling_quality", "acceptable", "One clarification followed by a respectful exit after a scam accusation is calibrated as Acceptable.");
+    if (output.assessment_scope === "spiel_and_handling" && output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "The calibrated scam-exit call is Acceptable rather than Strong.");
+    setValue("primary_reason_code", "sound_judgement_to_withdraw", "The salesperson reasonably withdrew after the explicit scam accusation.");
+    setQualityNarrative("The salesperson made one reasonable clarification attempt and then ended the call respectfully after the customer treated it as a scam.", "The calibrated scam-exit boundary controls the displayed explanation.");
+  }
+
+  const situationalWithdrawalTurn = customerTurns.find((turn) => /\b(?:business|company).{0,60}(?:on the market|selling|being sold|sold|closing down|winding (?:it )?down|getting out|(?:about to |going to )?stop)|\b(?:about to |going to )?stop.{0,35}(?:business|company)|\b(?:business|company|organisation|organization|[a-z]+(?:'s|s)) (?:is|are) no (?:more|longer)|\b(?:retired|retiring|nearly retired|getting out of the business)\b|\bnot (?:currently )?(?:active|operating|trading) in business\b|\b(?:going|travelling) overseas\b|\b(?:personal|family|medical) emergency\b|\b(?:bereavement|passed away|in hospital)\b/i.test(turn.text));
+  const respectfulExitTurn = salespersonTurns.find((turn) => /\b(?:no problems?|no stress|no worries|that'?s (?:all )?good|sorry to hear|leave (?:it|you) there|leave you to it|won'?t keep you|thanks for your time|thank you for your time|have a good (?:one|day|rest of your day))\b/i.test(turn.text));
+  const hasMaterialFindingBeforeWithdrawal = (output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity));
+  if (situationalWithdrawalTurn && respectfulExitTurn && !hasMaterialFindingBeforeWithdrawal) {
+    output.improvements = (output.improvements || []).filter((item) => !/\b(?:incomplete|finish|complete|offer clarity|offer explanation|offer (?:was )?not clear(?:ly stated)?|clearly state the offer|benefit|commitment ask|continue the pitch|acknowledge.{0,40}(?:status|situation|closure|closing|business)|confirm.{0,30}(?:withdrawal|closure|closing|business end))\b/i.test(clean(item.summary)));
+    if (!meaningfulOfferTurn) {
+      if (["new_offer", "renewal_offer", "terminal_no_contact"].includes(output.call_purpose)) setValue("call_purpose", "other", "The business or personal situation ended the call before a meaningful offer was delivered.");
+      setValue("assessment_scope", "handling_only", "A justified pre-offer withdrawal assesses handling, not Spiel Quality.");
+      setValue("spiel_quality", "not_assessable", "No meaningful sales spiel was delivered before the justified withdrawal.");
+    }
+    if (output.dimensions && typeof output.dimensions === "object") {
+      output.dimensions.objection_judgement = "met";
+      output.dimensions.commitment_and_confirmation = "not_applicable";
+      output.dimensions.customer_boundary = "met";
+    }
+    if (output.call_handling_quality === "strong") setValue("call_handling_quality", "acceptable", "A sensible context-driven withdrawal is calibrated as Acceptable rather than Strong.");
+    if (output.assessment_scope === "spiel_and_handling" && output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "A sensible context-driven withdrawal is calibrated as Acceptable rather than Strong.");
+    setValue("primary_reason_code", "sound_judgement_to_withdraw", "The salesperson promptly respected a situation that made further selling unreasonable.");
+    setValue("suggested_phrase", "", "No corrective phrase is required for a sound situational withdrawal.");
+    setQualityNarrative("The salesperson reasonably stopped the pitch and ended respectfully when the customer's situation made further selling inappropriate.", "A justified situational withdrawal must not be reported as an incomplete-offer fault.");
+  }
+
+  const wrongContactAfterOffer = Boolean(meaningfulOfferTurn && wrongContactTurn && respectfulExitTurn && !hasMaterialFindingBeforeWithdrawal);
+  if (wrongContactAfterOffer && [output.call_handling_quality, output.spiel_quality].includes("strong")) {
+    setValue("call_handling_quality", "acceptable", "Recognising a wrong contact and exiting respectfully is correct handling but does not by itself demonstrate exceptional execution.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "acceptable", "The completed offer followed by a wrong-contact outcome is calibrated as Acceptable rather than Strong.");
+    setValue("primary_reason_code", "sound_judgement_to_withdraw", "The salesperson promptly withdrew after the customer established that the contact was wrong.");
+    setQualityNarrative("The salesperson delivered the offer, then recognised the wrong-contact disclosure and ended respectfully without further pressure.", "The calibrated wrong-contact boundary controls the displayed explanation.");
+  }
+
+  const informationRequestTurn = chronologicalFacts.informationRequestTurn;
+  const emailPromiseTurn = chronologicalFacts.emailPromiseTurn;
+  const preciseInformationTiming = salespersonTurns.some((turn) => {
+    const match = turn.text.match(/\b(?:(?:send|sent|email|shoot|forward|flick)|get (?:that|it|the (?:email|information|details)).{0,20}sent).{0,80}\b(?:now|today|straight away|right away|this afternoon|this morning|within (?:an? )?hour|tomorrow|on (?:monday|tuesday|wednesday|thursday|friday))\b/i);
+    return Boolean(match && !/\bbetween now\b/i.test(match[0]));
+  });
+  const informationDeliveryCompleted = Boolean(chronologicalFacts.informationDeliveryCompletedTurn);
+  const vagueEmailPromise = Boolean(informationRequestTurn && emailPromiseTurn && !preciseInformationTiming && !informationDeliveryCompleted);
+  if (vagueEmailPromise && ["strong", "acceptable"].includes(output.call_handling_quality)) {
+    const evidenceQuote = exactTurnExcerpt(emailPromiseTurn);
+    addImprovement("Give the customer a precise send or follow-up time when promising requested information.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.commitment_and_confirmation = "partial";
+    setValue("call_handling_quality", "acceptable", "A workable but imprecisely timed email follow-up is calibrated as Acceptable.");
+    if (output.assessment_scope === "spiel_and_handling" && output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "The vague follow-up timing prevents a Strong overall band.");
+    setValue("primary_reason_code", "minor_execution_gap", "The information follow-up was workable but not precisely timed.");
+    removeContradictoryStrengths(/\b(?:clear|precise|timed|follow.?up|next step|email)\b/i, "A precise-follow-up strength cannot remain when the promised information had no send or follow-up time.");
+    setQualityNarrative("The promised email follow-up was workable, but its timing was not made precise enough for a Strong rating.", "The calibrated email-follow-up boundary controls the displayed explanation.");
+  }
+
+  const busyDeferralTurn = customerTurns.find((turn) => /\b(?:not (?:a |the )?right time|in the middle of (?:doing|something)|can'?t talk|cannot talk|too busy)\b/i.test(turn.text));
+  const uncertaintyDeferralTurn = customerTurns.find((turn) => /\b(?:not (?:doing|deciding) because|not knowing|don'?t know (?:enough|anything)|cannot say (?:anything )?much|look it up later|have a look later|maybe later)\b/i.test(turn.text));
+  const pressureAfterDeferralTurn = salespersonTurns.find((turn) => /\b(?:would this be something you (?:would be )?keen on|look it up while we(?:'re| are) on the phone|can (?:we|the volunteers) count on (?:you|your) support)\b/i.test(turn.text));
+  if (busyDeferralTurn && uncertaintyDeferralTurn && pressureAfterDeferralTurn) {
+    const evidenceQuote = exactTurnExcerpt(pressureAfterDeferralTurn);
+    addImprovement("Respect the repeated time-and-information deferral instead of making another commitment ask.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") {
+      output.dimensions.objection_judgement = "missed";
+      output.dimensions.customer_boundary = "partial";
+      output.dimensions.commitment_and_confirmation = "missed";
+    }
+    setValue("call_handling_quality", "needs_improvement", "Continuing to press after repeated time and information deferrals is a material avoidable handling gap.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "needs_improvement", "The repeated-deferral handling gap controls the overall Spiel Quality band.");
+    setValue("primary_reason_code", "objection_handling_gap", "The salesperson made another commitment ask after the customer twice deferred for time and information.");
+    removeContradictoryStrengths(/\b(?:respect|boundary|objection|listen|no pressure|timing)\b/i, "A respectful-boundary strength cannot remain when exact evidence shows another commitment ask after repeated deferral.");
+    setQualityNarrative("The customer repeatedly deferred because they were busy and needed information, but the salesperson made another commitment ask instead of ending or arranging a suitable next step.", "The repeated-deferral safeguard controls the displayed explanation.");
+  }
+
+  if (earlySalesPurposeDisclosure) {
+    const retainedImprovements = (output.improvements || []).filter((item) => !/\b(?:delay(?:ed|ing)?|late|earlier).{0,50}\bpurpose\b|\bpurpose disclosure.{0,40}(?:late|delay(?:ed|ing)?)\b/i.test(clean(item.summary)));
+    if (retainedImprovements.length !== (output.improvements || []).length) {
+      output.improvements = retainedImprovements;
+      adjustments.push({ field: "improvements", action: "removed_contradicted_delayed_purpose_finding", reason: "The opening transcript turns explicitly disclose the represented purpose." });
+    }
+  }
+
+  const thirdPartyDecisionTurn = chronologicalFacts.thirdPartyDecisionTurn;
+  const customerOwnedNextStepTurn = thirdPartyDecisionTurn || transcriptTurns.find((turn) => transcriptSpeakerType(turn) !== "salesperson"
+    && /\b(?:pass (?:this|the) information to (?:my|the) manager|discuss (?:(?:it|this) )?with (?:my|the) (?:team|manager|partner)|talk to (?:my|the) (?:manager|partner|wife|husband|daughter|finance team)|(?:they|he|she|we|i) (?:will|'ll) (?:contact|call|get back to|come back to) you|i(?:'ll| will) give you a call back|(?:partner|colleague|manager).{0,100}i(?:'ll| will).{0,30}call (?:you )?back)\b/i.test(turn.text));
+  const sellerOwnedTimedNextStep = salespersonTurns.some((turn) => /\b(?:i(?:'ll| will)|we(?:'ll| will)) (?:call|phone|contact|follow up|give you a call|send|email).{0,80}\b(?:today|tomorrow|next (?:week|monday|tuesday|wednesday|thursday|friday)|in (?:a |one |two )?(?:day|week|fortnight)|at \d|on \w+day)\b/i.test(turn.text));
+  const financialWithdrawalTurnIndex = chronologicalFacts.financialBoundaryTurn?.index ?? transcriptTurns.findIndex((turn) => {
+    if (transcriptSpeakerType(turn) !== "customer") return false;
+    const text = clean(turn.text);
+    const currentConstraint = /\b(?:(?:i|we|my|our|the business|business).{0,90}(?:struggl|financial|finances?|budget|cash|afford|money|unemployed)|tight (?:with|for) cash|can'?t afford|cannot afford|don'?t have (?:any )?money|do not have (?:any )?money|no money|unemployed)\b/i.test(text);
+    const refusal = /\b(?:have to pass|going to pass|have to say no|not going ahead|not donating|not supporting|can'?t do (?:it|that)|cannot do (?:it|that)|don'?t think i(?:'ll| will) be able|won'?t be able|will not be able|don'?t have (?:any )?money for|do not have (?:any )?money for|no (?:room|money|budget) for)\b/i.test(text);
+    return currentConstraint && refusal;
+  });
+  const respectfulFinancialExitTurn = financialWithdrawalTurnIndex < 0 ? null : transcriptTurns.slice(financialWithdrawalTurnIndex + 1)
+    .find((turn) => transcriptSpeakerType(turn) === "salesperson"
+      && /\b(?:no problems?|no stress|no worries|that'?s (?:all )?good|sorry to hear|leave (?:it|you) there|leave you to it|won'?t keep you|thanks for your time|thank you for your time|appreciate your time|have a (?:good|great|wonderful) (?:one|day|rest of your day)|all right)\b/i.test(turn.text));
+  const respectfulFinancialWithdrawal = Boolean(respectfulFinancialExitTurn);
+  if (respectfulFinancialWithdrawal && !hasMaterialFindingBeforeWithdrawal
+    && [output.call_handling_quality, output.spiel_quality].includes("strong")) {
+    setValue("call_handling_quality", "acceptable", "A respectful withdrawal after a genuine financial constraint is calibrated as Acceptable rather than Strong.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "acceptable", "A respectful financial withdrawal is calibrated as Acceptable rather than Strong.");
+    setValue("primary_reason_code", "sound_judgement_to_withdraw", "The salesperson respected the customer's financial constraint and ended without further pressure.");
+    setQualityNarrative("The salesperson recognised the customer's genuine financial constraint and ended the call respectfully without unnecessary pressure.", "The calibrated financial-withdrawal boundary controls the displayed explanation.");
+  }
+  if (thirdPartyDecisionTurn && output.assessment_scope === "spiel_and_handling" && !hasMaterialFindingBeforeWithdrawal
+    && [output.call_handling_quality, output.spiel_quality].includes("strong")) {
+    const evidenceQuote = exactTurnExcerpt(thirdPartyDecisionTurn);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.commitment_and_confirmation = "partial";
+    if (output.call_handling_quality === "strong") setValue("call_handling_quality", "acceptable", "Missing customer decision authority or a pending third-party decision prevents a Strong Call Handling band.");
+    if (output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "Missing customer decision authority or a pending third-party decision prevents a Strong Spiel Quality band.");
+    if (["strong_execution", "none"].includes(output.primary_reason_code)) setValue("primary_reason_code", "confirmation_gap", "Provisional interest was not a confirmed commitment because customer decision authority was absent or still pending.");
+    removeContradictoryStrengths(/\b(?:explicit|confirm(?:ed|ation)?|commit(?:ment|ted)?|secured|willingness|intent)\b/i, "Provisional interest cannot remain a confirmation strength when another decision-maker still controls approval.");
+    if (evidenceQuote && !(output.evidence || []).some((item) => clean(item.quote) === clean(evidenceQuote))) {
+      output.evidence = [
+        { claim_type: "customer_response", speaker: transcriptSpeakerType(thirdPartyDecisionTurn), quote: evidenceQuote },
+        ...(output.evidence || []).filter((item) => clean(item.quote) !== clean(evidenceQuote))
+      ].slice(0, 4);
+      adjustments.push({ field: "evidence", action: "added_transcript_derived_third_party_decision" });
+    }
+    setQualityNarrative("The offer and handling were competent, but the customer either lacked decision authority or still required another decision-maker's approval, so the call did not establish the confirmed commitment required for a Strong rating.", "The final decision-owner evidence controls the quality explanation.");
+  }
+  if (customerOwnedNextStepTurn && !thirdPartyDecisionTurn && !sellerOwnedTimedNextStep && !respectfulFinancialWithdrawal && !hasMaterialFindingBeforeWithdrawal) {
+    const evidenceQuote = exactTurnExcerpt(customerOwnedNextStepTurn);
+    addImprovement("Agree who will follow up and when instead of leaving the next step entirely customer-owned.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.commitment_and_confirmation = "partial";
+    if (output.call_handling_quality === "strong") setValue("call_handling_quality", "acceptable", "An unowned next step prevents a Strong Call Handling band.");
+    if (output.assessment_scope === "spiel_and_handling" && output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "An unowned next step prevents a Strong Spiel Quality band.");
+    if (["strong_execution", "sound_judgement_to_withdraw", "none"].includes(output.primary_reason_code)) setValue("primary_reason_code", "minor_execution_gap", "The next step was left entirely with the customer or third party.");
+    removeContradictoryStrengths(/\b(?:clear|confirmed|owned|actionable)\b.{0,40}\bnext step\b|\bcommitment\b/i, "A clear-next-step strength cannot remain when no seller-owned follow-up was agreed.");
+    setQualityNarrative("The offer and handling were competent, but the next step was left entirely with the customer or a third party instead of agreeing who would follow up and when.", "The unowned-next-step safeguard controls the displayed explanation.");
+  }
+
+  const confirmedExistingEmailTurn = salespersonTurns.find((turn) => /\b(?:email|address).{0,60}\b(?:on|from) (?:your|the) (?:website|record|file).{0,30}(?:all good|correct|right|okay|ok)\b/i.test(turn.text));
+  const existingEmailConfirmed = Boolean(confirmedExistingEmailTurn
+    && /\b(?:yeah|yes|yep|correct|that'?s (?:right|fine)|all right|okay|ok)\b/i.test(customerText));
+  if (existingEmailConfirmed) {
+    const retainedImprovements = (output.improvements || []).filter((item) => !/\bconfirm (?:the )?email(?: address)?\b|\bemail address.{0,40}(?:confirm|verify)\b/i.test(clean(item.summary)));
+    if (retainedImprovements.length !== (output.improvements || []).length) {
+      output.improvements = retainedImprovements;
+      adjustments.push({ field: "improvements", action: "removed_contradicted_email_confirmation_gap", reason: "The salesperson checked the existing website or record email and the customer confirmed it." });
+      if (output.primary_reason_code === "minor_execution_gap" && !output.improvements.length) setValue("primary_reason_code", "none", "The alleged email-confirmation gap is contradicted by the transcript.");
+      setQualityNarrative("The salesperson used the existing email path, confirmed it with the customer, and promised the requested information immediately.", "The exact email confirmation controls the displayed explanation.");
+    }
+  }
+
+  const unresolvedBusinessDataRequest = /\b(?:don'?t|do not|can'?t|cannot) make (?:a |any )?(?:business )?decisions? without (?:seeing|the) (?:data|numbers)|\bwhat(?:'s| is) the (?:circulation|print numbers?)\b/i.test(customerText)
+    && /\b(?:count you on board|confirm your support|rely on some support)\b/i.test(salespersonText)
+    && /\bnot (?:something )?i(?:'d| would) be interested in without seeing the numbers\b|\bnot interested\b/i.test(customerText);
+  if (unresolvedBusinessDataRequest && output.call_handling_quality === "strong") {
+    const evidenceTurn = customerTurns.find((turn) => /\b(?:make (?:a |any )?(?:business )?decisions? without|circulation|print numbers?)\b/i.test(turn.text));
+    const evidenceQuote = exactTurnExcerpt(evidenceTurn);
+    addImprovement("Resolve the customer's material information request before asking for commitment again.", evidenceQuote);
+    setValue("call_handling_quality", "acceptable", "The call remained respectful, but commitment was pressed before the requested business data was resolved.");
+    if (output.assessment_scope === "spiel_and_handling" && output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "The unresolved information request prevents a Strong Spiel Quality band.");
+    setValue("primary_reason_code", "objection_handling_gap", "The information objection was not resolved before another commitment ask.");
+    setQualityNarrative("The call remained respectful, but the salesperson asked for commitment again before resolving the customer's material information request.", "The unresolved-information safeguard controls the displayed explanation.");
+  }
+
+  const wrongProductTurn = salespersonTurns.find((turn) => /\b(?:accidentally|by mistake).{0,80}(?:sent|send|used).{0,100}(?:police|ambulance|ses|journal|yearbook|publication|product)|\b(?:sent|send).{0,80}(?:wrong|incorrect).{0,50}(?:journal|yearbook|publication|product|confirmation|order)\b/i.test(turn.text));
+  if (wrongProductTurn) {
+    const evidenceQuote = exactTurnExcerpt(wrongProductTurn);
+    addPolicyFinding({
+      type: "wrong_product_or_document",
+      severity: "material",
+      summary: "The salesperson disclosed that the customer had been sent the wrong product or publication document.",
+      evidence_quote: evidenceQuote
+    });
+    addImprovement("Verify the product and confirmation before sending it to the customer.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.operational_accuracy = "missed";
+    setValue("call_handling_quality", "needs_improvement", "Sending the wrong product or confirmation is a material operational accuracy failure.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "needs_improvement", "The material product-confirmation error controls the overall Spiel Quality band.");
+    setValue("primary_reason_code", "operational_accuracy_failure", "The transcript explicitly identifies a wrong product or publication document.");
+    removeContradictoryStrengths(/\b(?:accurate|accuracy|correct|product|publication|confirmation|order)\b/i, "An operational-accuracy strength cannot remain when exact evidence establishes the wrong product or document.");
+    setQualityNarrative("The customer was sent the wrong product or publication document, which is a material operational accuracy failure.", "The deterministic wrong-product safeguard controls the displayed explanation.");
+  }
+
+  const calibratedBudgetHandling = /\b(?:don'?t|do not) have (?:that (?:type|kind) of )?(?:the )?budget\b/i.test(context.transcript)
+    && /\bdon'?t want to put you in a bad situation\b|\bif it'?s something you can'?t do, (?:that'?s|that is) fine\b/i.test(salespersonText)
+    && /\bpayment plan\b/i.test(salespersonText)
+    && /\bask me in a few months\b/i.test(context.transcript)
+    && /\bno stress\b.{0,100}\bleave it with you\b/i.test(salespersonText);
+  if (calibratedBudgetHandling && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    output.improvements = (output.improvements || []).filter((item) => !/\b(?:payment timing|follow-up timing|payment plan)\b/i.test(item.summary));
+    if (output.dimensions && typeof output.dimensions === "object") {
+      output.dimensions.objection_judgement = "met";
+      output.dimensions.commitment_and_confirmation = "not_applicable";
+      output.dimensions.payment_timing = "not_applicable";
+    }
+    setValue("call_handling_quality", "strong", "The budget objection was acknowledged, genuine flexibility was explained, and the customer's requested future timing was respected.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "strong", "The calibrated budget-objection handling supports a Strong Spiel Quality band.");
+    setValue("primary_reason_code", "strong_execution", "The salesperson handled the budget objection and exit particularly well.");
+    setQualityNarrative("The salesperson acknowledged the budget objection, explained genuine flexibility, respected the customer's requested timing, and withdrew without pressure.", "The calibrated budget-objection boundary controls the displayed explanation.");
+  }
+
+  const existingSupportAdministration = chronologicalFacts.priorConfirmationFollowUp
+    || (/\b(?:still want to help out|remain an anonymous (?:supporter|sponsor)|anonymous sponsor|no mention of .{1,40}|still (?:for|at) \$?\d|official tax invoice)\b/i.test(context.transcript)
+      && /\b(?:anonymous|no mention|admin|graphics team|confirmation)\b/i.test(context.transcript)
+      && /\b(?:still|already|remain|change|without your okay)\b/i.test(context.transcript));
+  if (existingSupportAdministration && !explicitRenewalSignal
+    && !["complaint_or_opt_out", "terminal_no_contact"].includes(output.call_purpose)) {
+    setValue("call_purpose", "administration", "The call administers an already-agreed support arrangement rather than presenting a new or renewal offer.");
+    setValue("assessment_scope", "handling_only", "Existing-sale confirmation and administration are handling-only.");
+    setValue("spiel_quality", "not_assessable", "No new sales spiel was delivered during the existing-support administration.");
+    if (output.call_handling_quality === "not_assessable") setValue("call_handling_quality", "acceptable", "The usable administrative interaction requires a Call Handling Quality band.");
+    if (/\b(?:new|renewal) offer\b/i.test(`${clean(output.quality_reason)} ${clean(output.manager_summary)}`)) {
+      setQualityNarrative("The call handled an existing support arrangement; Call Handling Quality is assessable, while Spiel Quality is Not Assessable because no new offer was made.", "The existing-support purpose correction controls the displayed explanation.");
+    }
+  }
+
+  const unresolvedPriorServiceComplaint = output.call_purpose === "complaint_or_opt_out"
+    && output.assessment_scope === "handling_only"
+    && /\b(?:abusive|wouldn'?t take no for an answer|never,? ever (?:going to )?(?:donate|support)|negative experience|give me grief)\b/i.test(customerText)
+    && !/\b(?:manager|supervisor|complaint|report|record|note|escalat|follow up|investigat)\b/i.test(salespersonText);
+  if (unresolvedPriorServiceComplaint && output.call_handling_quality === "strong") {
+    setValue("call_handling_quality", "acceptable", "A respectful exit without a complaint-resolution or escalation step is Acceptable rather than Strong.");
+    setValue("primary_reason_code", "sound_judgement_to_withdraw", "The salesperson reasonably withdrew but did not establish a resolution step for the prior-service complaint.");
+    setQualityNarrative("The salesperson listened and withdrew respectfully after the prior-service complaint, but no complaint-resolution or escalation step was established, so the handling is Acceptable rather than Strong.", "The unresolved-complaint boundary controls the displayed explanation.");
+  }
+
+  const strongPaymentFollowUp = output.call_purpose === "payment_follow_up"
+    && /\b(?:do it now|pay it now|right now)\b/i.test(customerText)
+    && /\b(?:sent|send).{0,40}\binvoice\b/i.test(salespersonText)
+    && /\b(?:it did|came through|received it|got it)\b/i.test(customerText);
+  if (strongPaymentFollowUp && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    setValue("assessment_scope", "handling_only", "A payment-only follow-up does not enter the Spiel Quality denominator.");
+    setValue("spiel_quality", "not_assessable", "No new spiel was delivered in the payment follow-up.");
+    setValue("call_handling_quality", "strong", "The correct payment path and immediate next step were completed cleanly.");
+    setValue("primary_reason_code", "strong_execution", "The payment follow-up completed the supported immediate payment step.");
+    setQualityNarrative("The payment follow-up provided the correct payment path and completed the supported immediate next step cleanly.", "The calibrated payment-follow-up boundary controls the displayed explanation.");
+  }
+  const completedExistingPaymentFollowUp = output.call_purpose === "payment_follow_up"
+    && /\b(?:already paid|have paid|i paid|paid it|got an invoice|have got an invoice|payment plan)\b/i.test(customerText)
+    && /\b(?:mistake|miscommunication|apologi[sz]e|let them know|not to bother you)\b/i.test(salespersonText);
+  if (completedExistingPaymentFollowUp && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    setValue("assessment_scope", "handling_only", "Confirming an existing payment and correcting the administrative follow-up is handling-only.");
+    setValue("spiel_quality", "not_assessable", "No new spiel was delivered in the completed payment follow-up.");
+    setValue("call_handling_quality", "strong", "The salesperson acknowledged the completed payment, apologised, corrected the contact issue, and explained the supported next step.");
+    setValue("primary_reason_code", "strong_execution", "The existing-payment follow-up was resolved accurately and respectfully.");
+    setQualityNarrative("The salesperson handled the existing-payment follow-up strongly by acknowledging the payment, apologising for the internal error, and correcting the next contact step.", "The completed-payment safeguard controls the displayed explanation.");
+  }
+
+  const writtenAcceptanceRequestTurn = chronologicalFacts.writtenAcceptanceRequestTurn
+    || salespersonTurns.find((turn) => /\b(?:repl(?:y|ying|ied)|respond(?:ing|ed)?).{0,80}\b(?:agree|yes|confirm)\b/i.test(turn.text));
+  const writtenAcceptanceRequestIndex = writtenAcceptanceRequestTurn ? transcriptTurns.indexOf(writtenAcceptanceRequestTurn) : -1;
+  const writtenAcceptanceCompleted = Boolean(chronologicalFacts.writtenAcceptanceCompletedTurn)
+    || (writtenAcceptanceRequestIndex >= 0 && transcriptTurns.slice(writtenAcceptanceRequestIndex + 1)
+      .some((turn) => transcriptSpeakerType(turn) === "customer"
+        && /\b(?:i(?:'ve| have)? (?:replied|responded|sent it)|just (?:replied|responded|sent it)|it(?:'s| is) sent|done|agree sent)\b/i.test(turn.text)));
+  if (writtenAcceptanceRequestTurn && !writtenAcceptanceCompleted
+    && [output.call_handling_quality, output.spiel_quality].includes("strong")
+    && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    const evidenceQuote = exactTurnExcerpt(writtenAcceptanceRequestTurn);
+    addImprovement("Confirm that the requested written acceptance was completed before closing the call.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.commitment_and_confirmation = "partial";
+    setValue("call_handling_quality", "acceptable", "A requested written acceptance was not explicitly confirmed as completed in the transcript.");
+    if (output.assessment_scope === "spiel_and_handling") setValue("spiel_quality", "acceptable", "Incomplete written confirmation prevents a Strong Spiel Quality band.");
+    setValue("primary_reason_code", "confirmation_gap", "The salesperson requested written acceptance, but the customer did not explicitly confirm completing it.");
+    removeContradictoryStrengths(/\b(?:confirm|confirmation|agree|completed|secured)\b/i, "A completed-confirmation strength cannot remain without customer proof that the requested response was sent.");
+    setQualityNarrative("The offer and handling were competent, but the requested written acceptance was not explicitly confirmed as completed before the call ended.", "The written-confirmation safeguard controls the displayed explanation.");
+  }
+
+  const severeMedicalDisclosureIndex = transcriptTurns.findIndex((turn) => transcriptSpeakerType(turn) === "customer"
+    && /\b(?:almost lost (?:my|the) fingers?|crushed (?:my|the) fingers?|cut.{0,30}to the bone|serious (?:accident|injury)|medical emergency|in (?:the )?hospital)\b/i.test(turn.text));
+  const postMedicalOperationalRequests = severeMedicalDisclosureIndex < 0 ? [] : transcriptTurns.slice(severeMedicalDisclosureIndex + 1)
+    .filter((turn) => transcriptSpeakerType(turn) === "salesperson"
+      && /\b(?:send|re-?send|reply|email|sms|text|confirmation|anonymous sponsor)\b/i.test(turn.text));
+  if (postMedicalOperationalRequests.length >= 2
+    && output.call_handling_quality === "strong"
+    && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    const evidenceQuote = exactTurnExcerpt(postMedicalOperationalRequests[0]);
+    addImprovement("Pause repeated administrative requests and arrange a later follow-up when the customer discloses a serious injury.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.delivery_and_listening = "partial";
+    setValue("call_handling_quality", "acceptable", "Continuing repeated administrative requests after a serious-injury disclosure prevents a Strong handling rating.");
+    setValue("primary_reason_code", "minor_execution_gap", "The existing-sale administration was completed, but the customer situation called for a cleaner pause and later follow-up.");
+    removeContradictoryStrengths(/\b(?:listen|empat|customer situation|efficient|concise)\b/i, "A listening or efficiency strength cannot remain when repeated administration continued after a serious-injury disclosure.");
+    setQualityNarrative("The existing-sale administration was completed, but repeated confirmation requests continued after the customer disclosed a serious injury; a pause and later follow-up would have been better.", "The serious-injury handling safeguard controls the displayed explanation.");
+  }
+
+  const vagueSellerCallbackTurn = salespersonTurns.find((turn) => /\b(?:call|phone|give (?:him|her|you|them) a (?:buzz|call)).{0,40}\b(?:back )?later\b|\bgive (?:him|her|you|them) a buzz back later\b/i.test(turn.text));
+  const preciseSellerCallbackTurn = salespersonTurns.find((turn) => /\b(?:call|phone|give (?:him|her|you|them) a (?:buzz|call)).{0,80}\b(?:today|tomorrow|next (?:week|monday|tuesday|wednesday|thursday|friday)|this (?:morning|afternoon)|at \d|on \w+day)\b/i.test(turn.text));
+  if (output.assessment_scope === "handling_only" && vagueSellerCallbackTurn && !preciseSellerCallbackTurn
+    && output.call_handling_quality === "strong"
+    && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    const evidenceQuote = exactTurnExcerpt(vagueSellerCallbackTurn);
+    addImprovement("Agree a specific callback window instead of leaving the follow-up at 'later'.", evidenceQuote);
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.commitment_and_confirmation = "partial";
+    setValue("call_handling_quality", "acceptable", "An imprecise seller-owned callback prevents a Strong handling rating.");
+    setValue("primary_reason_code", "minor_execution_gap", "The callback remained seller-owned but was not scheduled precisely.");
+    setQualityNarrative("The gatekeeper interaction was handled competently, but the salesperson left the promised callback at an imprecise 'later' rather than agreeing a useful window.", "The vague-callback safeguard controls the displayed explanation.");
+  }
+
+  const terminalSystemText = /\b(?:the number you (?:have )?called is (?:unavailable|not connected)|your call cannot be completed|no one is available to take your call|please leave (?:your|a) message after the (?:tone|beep))\b/i.test(context.transcript);
+  const transcriptWordCount = clean(context.transcript).replace(/[^a-z0-9' ]/gi, " ").split(/\s+/).filter(Boolean).length;
+  const courtesyOnly = (text) => /^(?:hello|hi|thank you|thanks|thanks for (?:the|your) call|goodbye|bye|cheers)[.! ]*$/i.test(clean(text));
+  const ultraShortCourtesyOnly = transcriptTurns.length === 2
+    && salespersonTurns.length === 1
+    && customerTurns.length === 1
+    && transcriptWordCount <= 14
+    && courtesyOnly(salespersonTurns[0].text)
+    && courtesyOnly(customerTurns[0].text)
+    && !meaningfulOfferTurn
+    && !/\b(?:email|call back|callback|remove|wrong number|interested|not interested|invoice|pay|payment|support|advertis|sponsor|agree|confirm)\b/i.test(context.transcript);
+  const terminalNoContact = Boolean((automatedVoicemailTurn && salespersonTurns.length <= 1)
+    || (terminalSystemText && customerTurns.length === 0)
+    || ultraShortCourtesyOnly);
+  if (terminalNoContact) {
+    const terminalEvidenceTurn = automatedVoicemailTurn || customerTurns[0] || salespersonTurns[0];
+    const evidenceQuote = exactTurnExcerpt(terminalEvidenceTurn) || clean(context.transcript).slice(0, 400);
+    setValue("status", "usable", "A terminal recording is usable contact-state evidence but not assessable salesperson-quality evidence.");
+    setValue("evidence_availability", "available", "The terminal contact state is supported by an exact transcript excerpt even though salesperson quality is not assessable.");
+    setValue("call_purpose", "terminal_no_contact", "A voicemail or no-answer recording with no genuine exchange is terminal no contact.");
+    setValue("assessment_scope", "not_assessable", "Terminal no-contact calls cannot support either quality band.");
+    setValue("call_handling_quality", "not_assessable", "No genuine customer exchange occurred.");
+    setValue("spiel_quality", "not_assessable", "No genuine customer exchange or spiel occurred.");
+    setValue("primary_reason_code", "none", "Terminal no contact is a scope outcome, not a salesperson fault.");
+    setValue("dimensions", Object.fromEntries(SPIEL_QUALITY_DIMENSION_NAMES.map((key) => [key, "not_applicable"])), "No quality dimension is assessable on a terminal recording.");
+    setValue("policy_findings", [], "Do not retain salesperson policy findings when no genuine exchange occurred.");
+    setValue("strengths", [], "Do not award quality strengths when no genuine exchange occurred.");
+    setValue("improvements", [], "Do not invent coaching faults from a terminal recording.");
+    const terminalSpeaker = automatedVoicemailTurn
+      ? (transcriptSpeakerType(automatedVoicemailTurn) === "customer" ? "unknown" : "system")
+      : transcriptSpeakerType(terminalEvidenceTurn);
+    setValue("evidence", evidenceQuote ? [{ claim_type: "boundary", speaker: terminalSpeaker, quote: evidenceQuote }] : [], "Keep only the exact terminal-contact proof without trusting a misleading transcript speaker label.");
+    setValue("coaching_action", "No material coaching action", "Terminal no contact does not support coaching.");
+    setValue("suggested_phrase", "", "Terminal no contact does not support a corrective phrase.");
+    setValue("manager_review_recommended", false, "Terminal no contact is not a quality-policy exception.");
+    setQualityNarrative("The call reached a terminal voicemail or recording with no genuine customer exchange, so both quality bands are Not Assessable.", "Terminal-contact evidence controls the quality explanation.");
+  }
+
+  const qwenCapabilityReasons = terminalNoContact ? [] : chronologicalFacts.unsupportedReasons;
+  if (qwenCapabilityReasons.length
+    && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    const capabilityTurns = [
+      chronologicalFacts.existingConfirmationTurn,
+      chronologicalFacts.freshCommitmentAskTurn,
+      chronologicalFacts.ambiguousFlexibilityRequestTurn,
+      chronologicalFacts.sellerConcessionTurn
+    ].filter(Boolean);
+    const capabilityEvidence = capabilityTurns.map((turn) => ({
+      claim_type: "boundary",
+      speaker: transcriptSpeakerType(turn),
+      quote: exactTurnExcerpt(turn)
+    })).filter((item, index, items) => item.quote
+      && items.findIndex((candidate) => candidate.quote === item.quote) === index).slice(0, 4);
+    if (capabilityEvidence.length) setValue("evidence", capabilityEvidence, "Keep the exact evidence that explains why the call requires human judgement.");
+    const reasonText = qwenCapabilityReasons.join("; ");
+    setValue("status", "insufficient_evidence", "The call is outside the validated Qwen automation boundary even though transcript evidence is available.");
+    setValue("confidence", Math.min(Number(output.confidence) || 0.35, 0.35), "Capability-boundary abstentions cap automated confidence at 0.35.");
+    setValue("assessment_scope", "not_assessable", "The automated evaluator must not place a capability-boundary call in a quality denominator.");
+    setValue("call_handling_quality", "not_assessable", "Human judgement is required for the controlling mixed or ambiguous state.");
+    setValue("spiel_quality", "not_assessable", "Human judgement is required for the controlling mixed or ambiguous state.");
+    setValue("primary_reason_code", "insufficient_evidence", "The Qwen-safe capability boundary requires an abstention rather than a guessed quality reason.");
+    setValue("dimensions", Object.fromEntries(SPIEL_QUALITY_DIMENSION_NAMES.map((key) => [key, "insufficient_evidence"])), "Automated dimensions are withheld outside the validated capability boundary.");
+    setValue("policy_findings", [], "Do not manufacture a policy conclusion when the controlling permission or purpose is ambiguous.");
+    setValue("strengths", [], "Do not award strengths when the automated evaluator has abstained.");
+    setValue("improvements", [], "Do not invent coaching faults when the automated evaluator has abstained.");
+    setValue("coaching_action", "No material coaching action", "A capability abstention cannot support automated coaching.");
+    setValue("suggested_phrase", "", "A capability abstention cannot support a corrective phrase.");
+    setValue("manager_review_recommended", true, "Capability-boundary calls require direct human review.");
+    const limitation = `Qwen-safe automation boundary: ${reasonText}.`;
+    setValue("limitations", Array.from(new Set([...(output.limitations || []), limitation])).slice(0, 12), "Record the reason automated scoring was withheld.");
+    setQualityNarrative(`Automated quality scoring was withheld because the call contains ${reasonText}; human review is required.`, "The Qwen-safe capability boundary controls the displayed explanation.");
+    adjustments.push({
+      field: "automation_capability",
+      from: "supported",
+      to: "human_review_required",
+      reason: reasonText
+    });
+  }
+
+  const applicableDimensionValues = Object.values(output.dimensions || {}).filter((value) => !["not_applicable", "insufficient_evidence"].includes(value));
+  const fullSpielStrong = output.assessment_scope === "spiel_and_handling"
+    && [output.call_handling_quality, output.spiel_quality].includes("strong");
+  const strongGateFailure = fullSpielStrong && (
+    applicableDimensionValues.some((value) => value !== "met")
+    || (output.improvements || []).length > 0
+    || (output.strengths || []).length < 2
+  );
+  if (strongGateFailure && !(output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity))) {
+    const dimensionGap = applicableDimensionValues.some((value) => value !== "met");
+    const improvementGap = (output.improvements || []).length > 0;
+    const strengthGap = (output.strengths || []).length < 2;
+    const reason = improvementGap
+      ? clean(output.improvements[0]?.summary || "an applicable improvement remains")
+      : dimensionGap
+        ? "one or more applicable dimensions were not fully met"
+        : "the result did not contain two exact demonstrated strengths";
+    const sentenceReason = reason ? `${reason.charAt(0).toLowerCase()}${reason.slice(1)}` : "an applicable gap remained";
+    if (output.call_handling_quality === "strong") setValue("call_handling_quality", "acceptable", "Strong requires all applicable dimensions met, no improvements, and two exact demonstrated strengths.");
+    if (output.spiel_quality === "strong") setValue("spiel_quality", "acceptable", "Strong requires all applicable dimensions met, no improvements, and two exact demonstrated strengths.");
+    if (output.primary_reason_code === "strong_execution") setValue("primary_reason_code", "minor_execution_gap", "The result did not satisfy the calibrated Strong gate.");
+    setQualityNarrative(`The call was competent but did not meet the Strong standard because ${sentenceReason.replace(/[.!?]+$/, "")}.`, "The deterministic Strong gate controls the displayed explanation.");
+  }
+  output.policy_findings = (output.policy_findings || []).filter((item, index) => {
+    if (item.type !== "none") return true;
+    adjustments.push({ field: `policy_findings[${index}]`, action: "removed_none_placeholder" });
+    return false;
+  });
+
+  if (output.assessment_scope === "handling_only") {
+    setValue("spiel_quality", "not_assessable", "Handling-only calls do not enter the Spiel Quality denominator.");
+    if (output.call_handling_quality === "not_assessable" && output.status === "usable") {
+      const handlingBand = output.primary_reason_code === "strong_execution" ? "strong" : "acceptable";
+      setValue("call_handling_quality", handlingBand, "A usable handling-only call still requires a Call Handling Quality band.");
+      setQualityNarrative(`This handling-only ${String(output.call_purpose || "call").replace(/_/g, " ")} contained usable evidence and was rated ${handlingBand.replace(/_/g, " ")}; Spiel Quality is not assessable because no new spiel was delivered.`, "A usable handling-only call requires an explanation of its Call Handling Quality band.");
+    }
+  }
+  if (output.assessment_scope === "spiel_and_handling" && output.status === "usable") {
+    if (output.call_handling_quality === "not_assessable" && output.spiel_quality !== "not_assessable") {
+      const inferredBand = output.spiel_quality;
+      setValue("call_handling_quality", inferredBand, "A usable spiel-and-handling call requires both quality bands.");
+      if (/\bnot assessable\b/i.test(`${clean(output.quality_reason)} ${clean(output.manager_summary)}`)) {
+        setQualityNarrative(`The call contained a meaningful offer and usable handling evidence; both applicable quality bands were rated ${String(inferredBand).replace(/_/g, " ")}.`, "A usable spiel-and-handling call cannot retain a not-assessable explanation.");
+      }
+    } else if (output.spiel_quality === "not_assessable" && output.call_handling_quality !== "not_assessable") {
+      setValue("spiel_quality", output.call_handling_quality, "A usable spiel-and-handling call requires both quality bands.");
+      if (/\bnot assessable\b/i.test(`${clean(output.quality_reason)} ${clean(output.manager_summary)}`)) {
+        setQualityNarrative(`The call contained a meaningful offer and usable handling evidence; both applicable quality bands were rated ${String(output.call_handling_quality).replace(/_/g, " ")}.`, "A usable spiel-and-handling call cannot retain a not-assessable explanation.");
+      }
+    } else if (output.spiel_quality === "not_assessable" && output.call_handling_quality === "not_assessable") {
+      setValue("call_handling_quality", "acceptable", "A usable evidence-backed spiel-and-handling call requires a conservative quality band.");
+      setValue("spiel_quality", "acceptable", "A usable evidence-backed spiel-and-handling call requires a conservative quality band.");
+      setQualityNarrative("The call contained a meaningful offer and usable handling evidence; both applicable quality bands were conservatively rated acceptable.", "A usable spiel-and-handling call cannot retain a not-assessable explanation.");
+    }
+  }
+  if (output.assessment_scope === "not_assessable") {
+    setValue("spiel_quality", "not_assessable", "A not-assessable call cannot receive a Spiel Quality band.");
+    setValue("call_handling_quality", "not_assessable", "A not-assessable call cannot receive a Call Handling Quality band.");
+  }
+  const materialPolicyFinding = (output.policy_findings || []).some((item) => ["material", "critical"].includes(item.severity));
+  if (materialPolicyFinding && ["strong", "acceptable"].includes(output.call_handling_quality)) {
+    setValue("call_handling_quality", "needs_improvement", "A material policy or operational finding caps Call Handling Quality at Needs Improvement.");
+  }
+  if (materialPolicyFinding && output.assessment_scope === "spiel_and_handling" && ["strong", "acceptable"].includes(output.spiel_quality)) {
+    setValue("spiel_quality", "needs_improvement", "A material policy or operational finding caps Spiel Quality at Needs Improvement.");
+  }
+  if (materialPolicyFinding) {
+    const controllingFinding = (output.policy_findings || []).find((item) => ["critical", "material"].includes(item.severity));
+    const findingSummary = clean(controllingFinding?.summary || "a material issue requires improvement").replace(/[.!?]+$/, "");
+    const narrative = `The call has a ${clean(controllingFinding?.severity || "material")} ${String(controllingFinding?.type || "policy finding").replace(/_/g, " ")}: ${findingSummary}.`;
+    setQualityNarrative(narrative, "A material policy or operational finding must control the displayed explanation.");
+    setValue("manager_review_recommended", true, "Material or critical findings require a manager check.");
+  }
+  if ((output.policy_findings || []).some((item) => item.type === "payment_term_mismatch")) {
+    if (output.dimensions && typeof output.dimensions === "object") output.dimensions.payment_timing = "missed";
+    setValue("primary_reason_code", "payment_timing_policy_breach", "Payment-term mismatch is the controlling calibrated quality reason.");
+  }
+
+  const proofCount = (output.evidence || []).length + (output.strengths || []).length
+    + (output.improvements || []).length + (output.policy_findings || []).length;
+  if (output.status === "usable" && (output.evidence_availability === "unavailable" || proofCount === 0)) {
+    setValue("status", "insufficient_evidence", "No exact transcript evidence remained to support a usable Spiel Quality result.");
+    setValue("evidence_availability", "unavailable", "No exact transcript evidence remained after verification.");
+    setValue("assessment_scope", "not_assessable", "Insufficient exact evidence cannot support a fair quality judgement.");
+    setValue("spiel_quality", "not_assessable", "Insufficient exact evidence cannot support a fair Spiel Quality band.");
+    setValue("call_handling_quality", "not_assessable", "Insufficient exact evidence cannot support a fair Call Handling Quality band.");
+    setValue("primary_reason_code", "insufficient_evidence", "The result was downgraded after exact-evidence verification.");
+    setQualityNarrative("The transcript did not provide enough exact evidence for a fair quality judgement.", "Insufficient exact evidence must control the displayed explanation.");
+  }
+  const confidenceCap = output.evidence_availability === "unavailable" ? 0.35 : output.evidence_availability === "partial" ? 0.75 : null;
+  if (confidenceCap !== null && typeof output.confidence === "number" && output.confidence > confidenceCap) {
+    setValue("confidence", confidenceCap, `${output.evidence_availability} evidence caps confidence at ${confidenceCap.toFixed(2)}.`);
+  }
+  if (!(output.improvements || []).length && output.coaching_action !== "No material coaching action") {
+    setValue("coaching_action", "No material coaching action", "Do not invent a coaching action when no material improvement was found.");
+  }
+  if ((output.improvements || []).length && (!clean(output.coaching_action) || output.coaching_action === "No material coaching action")) {
+    setValue("coaching_action", output.improvements[0].summary, "A material improvement requires one matching highest-priority coaching action.");
+  }
+  if (!clean(output.manager_summary)) {
+    setValue("manager_summary", output.status === "usable"
+      ? `Call Handling Quality was ${String(output.call_handling_quality || "not assessable").replace(/_/g, " ")}.`
+      : "The transcript did not provide enough exact evidence for a fair quality judgement.", "Spiel Quality results require a manager-friendly summary.");
+  }
+  return { output, adjustments };
+}
+
+function validateSpielQualityResult(record = {}) {
+  const output = record.result || record.output || record.response || record.payload || record.structuredOutput || record;
+  const goal = SPIEL_QUALITY_GOAL;
+  if (!output || typeof output !== "object" || Array.isArray(output)) throw spielQualityValidationError("result must be an object.");
+  const required = [
+    "schema_version", "evaluation_goal", "call_id", "status", "confidence", "evidence_availability",
+    "transcript_quality", "call_purpose", "assessment_scope", "call_handling_quality", "spiel_quality",
+    "primary_reason_code", "quality_reason", "dimensions", "policy_findings", "strengths", "improvements",
+    "coaching_action", "suggested_phrase", "evidence", "manager_review_recommended", "manager_summary",
+    "limitations", "findings"
+  ];
+  const allowed = new Set([...required, "model_metadata"]);
+  const unexpected = Object.keys(output).filter((key) => !allowed.has(key));
+  if (unexpected.length) throw spielQualityValidationError(`result contains unsupported fields: ${unexpected.join(", ")}.`);
+  required.forEach((key) => {
+    if (!Object.prototype.hasOwnProperty.call(output, key)) throw spielQualityValidationError(`${key} is required.`);
+  });
+  if (output.schema_version !== SPIEL_QUALITY_SCHEMA_VERSION) throw spielQualityValidationError(`schema_version must be ${SPIEL_QUALITY_SCHEMA_VERSION}.`);
+  if (output.evaluation_goal !== goal) throw spielQualityValidationError(`evaluation_goal must be ${goal}.`);
+  specialistString(output.call_id, "call_id", goal, { maxLength: 200 });
+  if (!EVALUATION_RESULT_STATUSES.has(output.status)) throw spielQualityValidationError("status is invalid.");
+  if (typeof output.confidence !== "number" || !Number.isFinite(output.confidence) || output.confidence < 0 || output.confidence > 1) throw spielQualityValidationError("confidence must be a number between 0 and 1.");
+  if (!EVIDENCE_AVAILABILITY.has(output.evidence_availability)) throw spielQualityValidationError("evidence_availability is invalid.");
+  if (!TRANSCRIPT_QUALITIES.has(output.transcript_quality)) throw spielQualityValidationError("transcript_quality is invalid.");
+  if (!SPIEL_QUALITY_CALL_PURPOSES.has(output.call_purpose)) throw spielQualityValidationError("call_purpose is invalid.");
+  if (!SPIEL_QUALITY_ASSESSMENT_SCOPES.has(output.assessment_scope)) throw spielQualityValidationError("assessment_scope is invalid.");
+  if (!SPIEL_QUALITY_BANDS.has(output.call_handling_quality) || !SPIEL_QUALITY_BANDS.has(output.spiel_quality)) throw spielQualityValidationError("quality band is invalid.");
+  if (!SPIEL_QUALITY_REASONS.has(output.primary_reason_code)) throw spielQualityValidationError("primary_reason_code is invalid.");
+  specialistString(output.quality_reason, "quality_reason", goal, { maxLength: 1000 });
+  if (output.assessment_scope === "handling_only" && output.spiel_quality !== "not_assessable") throw spielQualityValidationError("handling_only requires spiel_quality not_assessable.");
+  if (output.assessment_scope === "handling_only" && output.call_handling_quality === "not_assessable") throw spielQualityValidationError("handling_only requires a Call Handling Quality band.");
+  if (output.assessment_scope === "not_assessable" && (output.spiel_quality !== "not_assessable" || output.call_handling_quality !== "not_assessable")) throw spielQualityValidationError("not_assessable scope requires both quality bands to be not_assessable.");
+  if (output.assessment_scope === "spiel_and_handling" && [output.spiel_quality, output.call_handling_quality].includes("not_assessable")) throw spielQualityValidationError("spiel_and_handling requires both quality bands.");
+  if (!output.dimensions || typeof output.dimensions !== "object" || Array.isArray(output.dimensions)) throw spielQualityValidationError("dimensions must be an object.");
+  const dimensionKeys = Object.keys(output.dimensions);
+  const missingDimensions = SPIEL_QUALITY_DIMENSION_NAMES.filter((key) => !dimensionKeys.includes(key));
+  const extraDimensions = dimensionKeys.filter((key) => !SPIEL_QUALITY_DIMENSION_NAMES.includes(key));
+  if (missingDimensions.length || extraDimensions.length) throw spielQualityValidationError("dimensions must contain exactly the calibrated dimension set.");
+  SPIEL_QUALITY_DIMENSION_NAMES.forEach((key) => {
+    if (!SPIEL_QUALITY_DIMENSION_VALUES.has(output.dimensions[key])) throw spielQualityValidationError(`dimensions.${key} is invalid.`);
+  });
+  const context = auditEvidenceContext(record);
+  const verifyQuote = (quote, field) => {
+    const text = specialistString(quote, field, goal, { maxLength: 400 });
+    if (context.transcriptComparable && !auditQuoteIsVerified(text, context)) throw spielQualityValidationError(`${field} was not found in the supplied transcript.`);
+  };
+  const validateSummaryEvidence = (items, field, limit) => {
+    if (!Array.isArray(items) || items.length > limit) throw spielQualityValidationError(`${field} must contain at most ${limit} items.`);
+    items.forEach((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) throw spielQualityValidationError(`${field}[${index}] must be an object.`);
+      const extra = Object.keys(item).filter((key) => !["summary", "evidence_quote"].includes(key));
+      if (extra.length) throw spielQualityValidationError(`${field}[${index}] contains unsupported fields.`);
+      specialistString(item.summary, `${field}[${index}].summary`, goal, { maxLength: 600 });
+      verifyQuote(item.evidence_quote, `${field}[${index}].evidence_quote`);
+    });
+  };
+  validateSummaryEvidence(output.strengths, "strengths", 2);
+  validateSummaryEvidence(output.improvements, "improvements", 2);
+  if (!Array.isArray(output.policy_findings) || output.policy_findings.length > 6) throw spielQualityValidationError("policy_findings must contain at most 6 items.");
+  output.policy_findings.forEach((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw spielQualityValidationError(`policy_findings[${index}] must be an object.`);
+    const extra = Object.keys(item).filter((key) => !["type", "severity", "summary", "evidence_quote"].includes(key));
+    if (extra.length) throw spielQualityValidationError(`policy_findings[${index}] contains unsupported fields.`);
+    if (!SPIEL_QUALITY_POLICY_TYPES.has(item.type) || item.type === "none") throw spielQualityValidationError(`policy_findings[${index}].type is invalid.`);
+    if (!SPIEL_QUALITY_POLICY_SEVERITIES.has(item.severity)) throw spielQualityValidationError(`policy_findings[${index}].severity is invalid.`);
+    specialistString(item.summary, `policy_findings[${index}].summary`, goal, { maxLength: 600 });
+    verifyQuote(item.evidence_quote, `policy_findings[${index}].evidence_quote`);
+  });
+  if (output.policy_findings.some((item) => ["material", "critical"].includes(item.severity)) && ["strong", "acceptable"].includes(output.call_handling_quality)) throw spielQualityValidationError("a material policy finding caps Call Handling Quality at Needs Improvement.");
+  if (output.assessment_scope === "spiel_and_handling" && output.policy_findings.some((item) => ["material", "critical"].includes(item.severity)) && ["strong", "acceptable"].includes(output.spiel_quality)) throw spielQualityValidationError("a material policy finding caps Spiel Quality at Needs Improvement.");
+  if (!Array.isArray(output.evidence) || output.evidence.length > 8) throw spielQualityValidationError("evidence must contain at most 8 items.");
+  output.evidence.forEach((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw spielQualityValidationError(`evidence[${index}] must be an object.`);
+    const extra = Object.keys(item).filter((key) => !["claim_type", "speaker", "quote"].includes(key));
+    if (extra.length) throw spielQualityValidationError(`evidence[${index}] contains unsupported fields.`);
+    specialistString(item.claim_type, `evidence[${index}].claim_type`, goal, { maxLength: 100 });
+    if (!["customer", "salesperson", "system", "unknown"].includes(item.speaker)) throw spielQualityValidationError(`evidence[${index}].speaker is invalid.`);
+    verifyQuote(item.quote, `evidence[${index}].quote`);
+    const actualSpeaker = transcriptSpeakerType(transcriptTurnForQuote(context, item.quote));
+    if (context.transcriptComparable && item.speaker !== "unknown" && actualSpeaker !== "unknown" && actualSpeaker !== item.speaker) {
+      throw spielQualityValidationError(`evidence[${index}].speaker does not match the transcript speaker.`);
+    }
+  });
+  const proofCount = output.evidence.length + output.strengths.length + output.improvements.length + output.policy_findings.length;
+  if (output.status === "usable" && (!proofCount || output.evidence_availability === "unavailable")) throw spielQualityValidationError("usable results require exact transcript evidence.");
+  if (output.evidence_availability === "unavailable" && output.confidence > 0.35) throw spielQualityValidationError("unavailable evidence caps confidence at 0.35.");
+  if (output.evidence_availability === "partial" && output.confidence > 0.75) throw spielQualityValidationError("partial evidence caps confidence at 0.75.");
+  specialistString(output.coaching_action, "coaching_action", goal, { maxLength: 800 });
+  specialistString(output.suggested_phrase, "suggested_phrase", goal, { allowEmpty: true, maxLength: 800 });
+  if (!output.improvements.length && output.coaching_action !== "No material coaching action") throw spielQualityValidationError("no improvements requires coaching_action 'No material coaching action'.");
+  if (output.improvements.length && output.coaching_action === "No material coaching action") throw spielQualityValidationError("material improvements require a coaching action.");
+  if (typeof output.manager_review_recommended !== "boolean") throw spielQualityValidationError("manager_review_recommended must be boolean.");
+  specialistString(output.manager_summary, "manager_summary", goal, { maxLength: 1200 });
+  if (!Array.isArray(output.limitations) || output.limitations.length > 12) throw spielQualityValidationError("limitations must contain at most 12 items.");
+  output.limitations.forEach((item, index) => specialistString(item, `limitations[${index}]`, goal, { maxLength: 500 }));
+  if (!Array.isArray(output.findings) || output.findings.length) throw spielQualityValidationError("findings must be an empty array; normalized findings are generated locally.");
+  return output;
+}
+
+function spielQualityAssessment(output = {}, semanticAdjustments = []) {
+  const adjustments = toArray(semanticAdjustments);
+  const capabilityAdjustment = [...adjustments].reverse()
+    .find((item) => item?.field === "automation_capability");
+  return {
+    schemaVersion: output.schema_version,
+    callPurpose: output.call_purpose,
+    assessmentScope: output.assessment_scope,
+    callHandlingQuality: output.call_handling_quality,
+    spielQuality: output.spiel_quality,
+    primaryReasonCode: output.primary_reason_code,
+    qualityReason: output.quality_reason,
+    dimensions: output.dimensions || {},
+    policyFindings: output.policy_findings || [],
+    strengths: output.strengths || [],
+    improvements: output.improvements || [],
+    coachingAction: output.coaching_action,
+    suggestedPhrase: output.suggested_phrase,
+    evidence: output.evidence || [],
+    automationCapability: capabilityAdjustment?.to || "supported",
+    automationCapabilityReason: capabilityAdjustment?.reason || "",
+    semanticAdjustments: adjustments
+  };
+}
+
+function spielQualityFindings(output = {}) {
+  const evidence = (output.evidence || []).map((item) => item.quote).filter(Boolean).join(" | ");
+  return [
+    ["call_purpose", output.call_purpose, evidence],
+    ["call_handling_quality", output.call_handling_quality, evidence],
+    ["spiel_quality", output.spiel_quality, evidence],
+    ["spiel_quality_primary_reason", output.primary_reason_code, evidence],
+    ...output.policy_findings.map((item) => [`spiel_policy_${item.type}`, item.severity, item.evidence_quote])
+  ].map(([field, value, findingEvidence]) => ({
+    field,
+    value,
+    evidence: findingEvidence,
+    confidence: output.confidence,
+    manager_review_recommended: output.manager_review_recommended,
+    note: output.quality_reason || output.manager_summary
+  }));
+}
+
+function typedSpecialistAssessment(output = {}, semanticAdjustments = []) {
   if (output.evaluation_goal === CALLBACK_OPPORTUNITY_GOAL) return {
     schemaVersion: output.schema_version,
     callbackState: output.callback_state,
@@ -2864,14 +4299,16 @@ function typedSpecialistAssessment(output = {}) {
     customerIntent: output.customer_intent,
     objection: output.objection,
     handoverSummary: output.handover_summary,
-    evidence: output.evidence || []
+    evidence: output.evidence || [],
+    semanticAdjustments: toArray(semanticAdjustments)
   };
   if (output.evaluation_goal === PROCEDURE_ADHERENCE_GOAL) return {
     schemaVersion: output.schema_version,
     outcome: output.outcome,
     strongestIssueStage: output.strongest_issue_stage,
     issueSummary: output.issue_summary,
-    evidence: output.evidence || []
+    evidence: output.evidence || [],
+    semanticAdjustments: toArray(semanticAdjustments)
   };
   if (output.evaluation_goal === OBJECTION_HANDLING_GOAL) return {
     schemaVersion: output.schema_version,
@@ -2879,7 +4316,8 @@ function typedSpecialistAssessment(output = {}) {
     objectionType: output.objection_type,
     outcome: output.outcome,
     handlingActions: output.handling_actions || [],
-    evidence: output.evidence || []
+    evidence: output.evidence || [],
+    semanticAdjustments: toArray(semanticAdjustments)
   };
   return null;
 }
@@ -2935,6 +4373,25 @@ function offerAcceptanceFindingsForNormalization(output) {
       note: output.customer_response_evidence?.summary || ""
     }
   ];
+}
+
+function evaluationEvidenceQuotes({ findings = [], auditAssessment = null, acceptanceAssessment = null, foundationAssessment = null, specialistAssessment = null, spielQuality = null } = {}) {
+  const quotes = [];
+  const push = (value) => {
+    const quote = clean(value);
+    if (quote) quotes.push(quote);
+  };
+  findings.forEach((finding) => push(finding.evidence));
+  (auditAssessment?.evidence || []).forEach((item) => push(item.quote));
+  push(acceptanceAssessment?.offerEvidence?.quote);
+  push(acceptanceAssessment?.customerResponseEvidence?.quote);
+  (foundationAssessment?.evidence || []).forEach((item) => push(item.quote));
+  (specialistAssessment?.evidence || []).forEach((item) => push(item.quote));
+  (spielQuality?.evidence || []).forEach((item) => push(item.quote));
+  (spielQuality?.policyFindings || []).forEach((item) => push(item.evidence_quote || item.evidenceQuote));
+  (spielQuality?.strengths || []).forEach((item) => push(item.evidence_quote || item.evidenceQuote));
+  (spielQuality?.improvements || []).forEach((item) => push(item.evidence_quote || item.evidenceQuote));
+  return Array.from(new Map(quotes.map((quote) => [auditComparableText(quote), quote])).values());
 }
 
 function normalizeEvaluationResult(record = {}, context = {}) {
@@ -3017,7 +4474,13 @@ function normalizeEvaluationResult(record = {}, context = {}) {
   const storedSpecialistAssessment = record.specialistAssessment || output.specialistAssessment;
   const specialistAssessment = [CALLBACK_OPPORTUNITY_GOAL, PROCEDURE_ADHERENCE_GOAL, OBJECTION_HANDLING_GOAL].includes(evaluationGoal)
     ? storedSpecialistAssessment || (TYPED_SPECIALIST_CONTRACTS[evaluationGoal]?.schemaVersion === output.schema_version
-        ? typedSpecialistAssessment(output)
+        ? typedSpecialistAssessment(output, record.specialistSemanticAdjustments || record.specialist_semantic_adjustments)
+        : null)
+    : null;
+  const storedSpielQualityAssessment = record.spielQualityAssessment || output.spielQualityAssessment;
+  const spielQuality = evaluationGoal === SPIEL_QUALITY_GOAL
+    ? storedSpielQualityAssessment || (output.schema_version === SPIEL_QUALITY_SCHEMA_VERSION
+        ? spielQualityAssessment(output, record.spielQualitySemanticAdjustments || record.spiel_quality_semantic_adjustments)
         : null)
     : null;
   const storedFollowUpTiming = clean(foundationAssessment?.followUpTiming);
@@ -3062,18 +4525,35 @@ function normalizeEvaluationResult(record = {}, context = {}) {
   const containsUntrustedLegacyData = Boolean(record.containsUntrustedLegacyData)
     || BLOCKED_RESULT_PATTERN.test(JSON.stringify(record))
     || findings.some((finding) => finding.containsUntrustedLegacyData);
-  const rawModelMetadata = record.modelMetadata || output.model_metadata || output.modelMetadata || {};
+  const storedEvaluationAudit = record.evaluationAudit && typeof record.evaluationAudit === "object" && !Array.isArray(record.evaluationAudit)
+    ? record.evaluationAudit
+    : {};
+  // Authority/provenance is transport metadata, never model output. The
+  // model-controlled output.model_metadata field remains inside the archived
+  // raw payload but cannot populate operational audit fields.
+  const rawModelMetadata = record.modelMetadata || storedEvaluationAudit || {};
   const modelMetadata = rawModelMetadata && typeof rawModelMetadata === "object" && !Array.isArray(rawModelMetadata)
     ? {
         model: clean(rawModelMetadata.model || rawModelMetadata.provider_model || rawModelMetadata.providerModel),
         providerModel: clean(rawModelMetadata.provider_model || rawModelMetadata.providerModel || rawModelMetadata.model),
-        route: clean(rawModelMetadata.route || rawModelMetadata.model_used || record.modelUsed)
+        route: clean(rawModelMetadata.route || rawModelMetadata.model_used || record.modelUsed),
+        modelDigest: clean(rawModelMetadata.model_digest || rawModelMetadata.modelDigest || record.modelDigest),
+        capabilityId: clean(rawModelMetadata.capability_id || rawModelMetadata.capabilityId || record.capabilityId),
+        capabilityRegisterHash: clean(rawModelMetadata.capability_register_hash || rawModelMetadata.capabilityRegisterHash || record.capabilityRegisterHash),
+        schemaHash: clean(rawModelMetadata.schema_hash || rawModelMetadata.schemaHash || record.schemaHash),
+        inferenceSettingsHash: clean(rawModelMetadata.inference_settings_hash || rawModelMetadata.inferenceSettingsHash || record.inferenceSettingsHash),
+        inferenceSettings: rawModelMetadata.inference_settings || rawModelMetadata.inferenceSettings || record.inferenceSettings || null,
+        executionContractRevision: clean(rawModelMetadata.execution_contract_revision || rawModelMetadata.executionContractRevision || record.executionContractRevision),
+        populationId: clean(rawModelMetadata.population_id || rawModelMetadata.populationId || record.populationId),
+        populationDefinitionHash: clean(rawModelMetadata.population_definition_hash || rawModelMetadata.populationDefinitionHash || record.populationDefinitionHash),
+        promotionContractHash: clean(rawModelMetadata.promotion_contract_hash || rawModelMetadata.promotionContractHash || record.promotionContractHash),
+        provenanceAuthority: clean(rawModelMetadata.provenance_authority || rawModelMetadata.provenanceAuthority || record.provenanceAuthority)
       }
-    : { model: "", providerModel: "", route: "" };
+    : { model: "", providerModel: "", route: "", modelDigest: "", capabilityId: "", capabilityRegisterHash: "", schemaHash: "", inferenceSettingsHash: "", inferenceSettings: null, executionContractRevision: "", populationId: "", populationDefinitionHash: "", promotionContractHash: "", provenanceAuthority: "" };
   const validationCall = record.validationContext?.call || record.validation_context?.call || null;
-  const transcriptHash = clean(record.transcriptHash || record.transcript_hash)
+  const transcriptHash = clean(record.transcriptHash || record.transcript_hash || storedEvaluationAudit.transcriptHash)
     || (validationCall?.transcript ? digest(clean(validationCall.transcript), 64) : "");
-  const executionMetadata = record.executionMetadata || record.execution_metadata || {};
+  const executionMetadata = record.executionMetadata || record.execution_metadata || storedEvaluationAudit || {};
   const auditNumber = (value) => value === null || value === undefined || value === ""
     ? null
     : Number.isFinite(Number(value)) ? Number(value) : null;
@@ -3082,8 +4562,21 @@ function normalizeEvaluationResult(record = {}, context = {}) {
     || foundationAssessment?.schemaVersion
     || auditAssessment?.schemaVersion
     || specialistAssessment?.schemaVersion
+    || spielQuality?.schemaVersion
     || output.schema_version
+    || storedEvaluationAudit.schemaVersion
   );
+  const evidenceQuotes = evaluationEvidenceQuotes({ findings, auditAssessment, acceptanceAssessment, foundationAssessment, specialistAssessment, spielQuality });
+  const evidenceContext = validationCall ? auditEvidenceContext({ validationContext: { call: validationCall } }) : null;
+  const verifiedEvidenceQuotes = evidenceContext
+    ? evidenceQuotes.filter((quote) => auditQuoteIsVerified(quote, evidenceContext))
+    : [];
+  const evidenceValidationStatus = evidenceContext
+    ? evidenceQuotes.length > 0 && verifiedEvidenceQuotes.length === evidenceQuotes.length ? "passed" : evidenceQuotes.length ? "failed" : "unavailable"
+    : clean(storedEvaluationAudit.evidenceValidationStatus) || "unavailable";
+  const exactQuoteCount = evidenceContext
+    ? verifiedEvidenceQuotes.length
+    : Number.isInteger(Number(storedEvaluationAudit.exactQuoteCount)) ? Number(storedEvaluationAudit.exactQuoteCount) : 0;
   const normalized = {
     id: clean(record.id),
     runId: clean(record.runId || record.evaluationRunId || record.evaluation_run_id || output.run_id || run.id),
@@ -3092,7 +4585,7 @@ function normalizeEvaluationResult(record = {}, context = {}) {
     jobId: clean(record.jobId || record.job_id || output.job_id || output.jobId),
     templateId: clean(record.templateId || record.evaluationTemplateId || output.template_id || output.templateId || template.id),
     templateVersion: Number(record.templateVersion || output.template_version || template.version || 1),
-    promptHash: clean(record.promptHash || output.prompt_hash || template.promptHash),
+    promptHash: clean(record.promptHash || template.promptHash || storedEvaluationAudit.promptHash),
     knowledgebaseIds,
     knowledgebaseVersions,
     evaluationGoal,
@@ -3106,6 +4599,7 @@ function normalizeEvaluationResult(record = {}, context = {}) {
     ...(acceptanceAssessment ? { acceptanceAssessment } : {}),
     ...(foundationAssessment ? { foundationAssessment } : {}),
     ...(specialistAssessment ? { specialistAssessment } : {}),
+    ...(spielQuality ? { spielQualityAssessment: spielQuality } : {}),
     managerSummary,
     limitations,
     managerReviewRecommended: reviewRecommended,
@@ -3113,13 +4607,27 @@ function normalizeEvaluationResult(record = {}, context = {}) {
     source: "evaluation_studio",
     evaluationAudit: {
       schemaVersion,
-      promptHash: clean(record.promptHash || output.prompt_hash || template.promptHash),
+      promptHash: clean(record.promptHash || template.promptHash || storedEvaluationAudit.promptHash),
       transcriptHash,
       model: modelMetadata.model,
       providerModel: modelMetadata.providerModel,
       route: modelMetadata.route,
+      modelDigest: modelMetadata.modelDigest,
+      capabilityId: modelMetadata.capabilityId,
+      capabilityRegisterHash: modelMetadata.capabilityRegisterHash,
+      schemaHash: modelMetadata.schemaHash,
+      inferenceSettingsHash: modelMetadata.inferenceSettingsHash,
+      inferenceSettings: modelMetadata.inferenceSettings,
+      executionContractRevision: modelMetadata.executionContractRevision,
+      populationId: modelMetadata.populationId,
+      populationDefinitionHash: modelMetadata.populationDefinitionHash,
+      promotionContractHash: modelMetadata.promotionContractHash,
+      provenanceAuthority: modelMetadata.provenanceAuthority,
+      evidenceValidationStatus,
+      exactQuoteCount,
+      taskType: clean(record.taskType || record.task_type || storedEvaluationAudit.taskType) || "sales_dashboard_evaluation_studio",
       transcriptCharacterCount: validationCall?.transcript === undefined || validationCall?.transcript === null
-        ? null
+        ? auditNumber(storedEvaluationAudit.transcriptCharacterCount)
         : String(validationCall.transcript).length,
       promptTokens: auditNumber(executionMetadata.promptTokens ?? executionMetadata.prompt_tokens),
       completionTokens: auditNumber(executionMetadata.completionTokens ?? executionMetadata.completion_tokens),
@@ -3139,6 +4647,7 @@ function normalizeEvaluationResult(record = {}, context = {}) {
       acceptanceAssessment,
       foundationAssessment,
       specialistAssessment,
+      spielQuality,
       modelMetadata,
       managerSummary,
       limitations
@@ -3152,6 +4661,7 @@ function normalizeEvaluationResult(record = {}, context = {}) {
     containsUntrustedLegacyData
   };
   normalized.id = normalized.id || `eval_result_${digest(`${normalized.importId}\n${normalized.callId}\n${normalized.runId}\n${normalized.templateId}\n${normalized.jobId}\n${normalized.outputHash}`, 24)}`;
+  normalized.localModelCapability = evaluationResultCapability(normalized);
   return normalized;
 }
 
@@ -3174,9 +4684,9 @@ function createDefaultEvaluationStudio() {
     seededAt: nowIso(),
     knowledgebaseEntries: DEFAULT_KNOWLEDGEBASE_ENTRIES.map((entry) => normalizeKnowledgebaseEntry({
       ...entry,
-      approvalStatus: "pending_manager_approval",
-      historicalSource: true,
-      approvalNote: "Seeded historical reference. Enable it when it is suitable for the current local evaluation context."
+      approvalStatus: entry.approvalStatus || "pending_manager_approval",
+      historicalSource: entry.historicalSource ?? true,
+      approvalNote: entry.approvalNote || "Seeded historical reference. Enable it when it is suitable for the current local evaluation context."
     })),
     evaluationTemplates: DEFAULT_EVALUATION_TEMPLATES.map((template) => normalizeEvaluationTemplate({
       ...template,
@@ -3184,7 +4694,7 @@ function createDefaultEvaluationStudio() {
       tags: [template.evaluationGoal, "seeded"],
       sourceProject: template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
         ? "LatentPulse"
-        : [OFFER_ACCEPTANCE_GOAL, CALL_INTELLIGENCE_FOUNDATION_GOAL].includes(template.evaluationGoal)
+        : [OFFER_ACCEPTANCE_GOAL, CALL_INTELLIGENCE_FOUNDATION_GOAL, SPIEL_QUALITY_GOAL].includes(template.evaluationGoal)
           ? "Sales Dashboard"
           : "Neuron-Compute-Training",
       sourceReference: template.evaluationGoal === LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL
@@ -3193,11 +4703,22 @@ function createDefaultEvaluationStudio() {
           ? "Manager-calibrated transcript examples, 16 July 2026"
           : template.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
             ? "Balanced opportunity, measurement, and efficiency foundation, 16 July 2026"
-          : "Neuron sales training prompt and knowledgebase patterns"
+          : template.evaluationGoal === SPIEL_QUALITY_GOAL
+            ? "Manager-calibrated real-call review, 19 July 2026"
+            : "Neuron sales training prompt and knowledgebase patterns"
     })),
     evaluationRuns: [],
     evaluationResults: []
   };
+}
+
+function reconcileKnowledgebaseEntries(entries = []) {
+  const normalized = entries.map(normalizeKnowledgebaseEntry);
+  const defaults = createDefaultEvaluationStudio().knowledgebaseEntries;
+  defaults.forEach((entry) => {
+    if (!normalized.some((item) => item.id === entry.id)) normalized.push(entry);
+  });
+  return normalized;
 }
 
 function reconcileEvaluationTemplates(templates = []) {
@@ -3208,6 +4729,8 @@ function reconcileEvaluationTemplates(templates = []) {
     .find((template) => template.evaluationGoal === OFFER_ACCEPTANCE_GOAL);
   const foundationTemplate = defaults
     .find((template) => template.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL);
+  const spielQualityTemplate = defaults
+    .find((template) => template.evaluationGoal === SPIEL_QUALITY_GOAL);
   const typedSpecialistTemplates = defaults.filter((template) => [
     CALLBACK_OPPORTUNITY_GOAL,
     PROCEDURE_ADHERENCE_GOAL,
@@ -3216,6 +4739,7 @@ function reconcileEvaluationTemplates(templates = []) {
   const typedSpecialistByGoal = new Map(typedSpecialistTemplates.map((template) => [template.evaluationGoal, template]));
   const replacedSeededSpecialistIds = new Set([
     "template_callback_opportunity_v1",
+    "template_callback_opportunity_v2",
     "template_procedure_adherence_v1",
     "template_objection_handling_v1"
   ]);
@@ -3258,6 +4782,15 @@ function reconcileEvaluationTemplates(templates = []) {
       isActive: false
     };
   }).map((template) => {
+    if (!spielQualityTemplate
+      || template.evaluationGoal !== SPIEL_QUALITY_GOAL
+      || template.id === spielQualityTemplate.id) return template;
+    return {
+      ...template,
+      status: "archived",
+      isActive: false
+    };
+  }).map((template) => {
     if (
       !offerAcceptanceTemplate
       || template.id !== offerAcceptanceTemplate.id
@@ -3278,6 +4811,9 @@ function reconcileEvaluationTemplates(templates = []) {
   if (foundationTemplate && !normalized.some((template) => template.id === foundationTemplate.id)) {
     normalized.push(foundationTemplate);
   }
+  if (spielQualityTemplate && !normalized.some((template) => template.id === spielQualityTemplate.id)) {
+    normalized.push(spielQualityTemplate);
+  }
   typedSpecialistTemplates.forEach((template) => {
     if (!normalized.some((item) => item.id === template.id)) normalized.push(template);
   });
@@ -3291,8 +4827,8 @@ function normalizeEvaluationStudio(value = null) {
     ...value,
     schemaVersion: EVALUATION_STUDIO_SCHEMA_VERSION,
     knowledgebaseEntries: Array.isArray(value.knowledgebaseEntries)
-      ? value.knowledgebaseEntries.map(normalizeKnowledgebaseEntry)
-      : [],
+      ? reconcileKnowledgebaseEntries(value.knowledgebaseEntries)
+      : reconcileKnowledgebaseEntries([]),
     evaluationTemplates: Array.isArray(value.evaluationTemplates)
       ? reconcileEvaluationTemplates(value.evaluationTemplates)
       : reconcileEvaluationTemplates([]),
@@ -3326,13 +4862,14 @@ function evaluationStudioSummary(studio = {}, currentImportId = null, options = 
     importId: currentImportId || "",
     callIds
   });
+  const operationalResults = results.filter((result) => isOperationalEvaluationResult(result));
   const resultsByStatus = {};
   const resultsByGoal = {};
   results.forEach((result) => {
     resultsByStatus[result.status] = (resultsByStatus[result.status] || 0) + 1;
     resultsByGoal[result.evaluationGoal] = (resultsByGoal[result.evaluationGoal] || 0) + 1;
   });
-  const confidenceValues = results.map((result) => result.confidence).filter((value) => Number.isFinite(Number(value)));
+  const confidenceValues = operationalResults.map((result) => result.confidence).filter((value) => Number.isFinite(Number(value)));
   const lastRun = runs.slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] || null;
   const lastResult = results.slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] || null;
   return {
@@ -3346,10 +4883,13 @@ function evaluationStudioSummary(studio = {}, currentImportId = null, options = 
     runs: runs.length,
     byStatus,
     results: results.length,
+    researchOnlyResults: results.length - operationalResults.length,
+    operationalResults: operationalResults.length,
+    operationalModelUsePermitted: operationalResults.length > 0,
     resultsByStatus,
     resultsByGoal,
-    reviewRecommendedResults: results.filter((result) => result.managerReviewRecommended).length,
-    evidenceUnavailableResults: results.filter((result) => result.evidenceAvailability === "unavailable").length,
+    reviewRecommendedResults: operationalResults.filter((result) => result.managerReviewRecommended).length,
+    evidenceUnavailableResults: operationalResults.filter((result) => result.evidenceAvailability === "unavailable").length,
     averageConfidence: confidenceValues.length
       ? confidenceValues.reduce((sum, value) => sum + Number(value), 0) / confidenceValues.length
       : null,
@@ -3409,11 +4949,12 @@ function buildEvaluationStudioReportRollups(studio = {}, options = {}) {
   const callIds = options.callIds
     ? new Set(Array.from(options.callIds).map(clean).filter(Boolean))
     : null;
-  const results = listEvaluationResults(normalized, {
+  const allResults = listEvaluationResults(normalized, {
     importId,
     callIds,
     includeSuperseded: false
   }).filter((result) => result.evaluationGoal !== LEAD_RECORD_DISPOSITION_EVIDENCE_AUDIT_GOAL);
+  const results = allResults.filter((result) => isOperationalEvaluationResult(result));
   const totals = {
     evaluatedResults: results.length,
     evaluatedCalls: new Set(results.map((result) => result.callId).filter(Boolean)).size,
@@ -3432,7 +4973,8 @@ function buildEvaluationStudioReportRollups(studio = {}, options = {}) {
     objectionHandlingSignals: 0,
     coachingOpportunities: 0,
     possibleWasteIndicators: 0,
-    riskReviewSignals: 0
+    riskReviewSignals: 0,
+    researchOnlyResultsExcluded: allResults.length - results.length
   };
   const goalMap = new Map();
   const fieldMap = new Map();
@@ -3498,19 +5040,19 @@ function buildEvaluationStudioReportRollups(studio = {}, options = {}) {
     scope: {
       importId: importId || "all_imports",
       filteredCallIds: callIds ? callIds.size : null,
-      source: "Evaluation Studio local-model results",
-      use: "Report-ready lead utilisation and coaching signals for manager review, not disciplinary proof."
+      source: "Promoted Evaluation Studio capabilities only",
+      use: "Operational rollups remain empty until an exact capability and provenance contract is independently promoted."
     },
     definitions: {
-      possibleWasteIndicator: "A local-model evidence signal suggesting a lead utilisation issue or unresolved lead state. It is not a confirmed lost sale.",
-      coachingOpportunity: "A local-model evidence signal that a call stage or behaviour may need coaching review.",
-      callbackOpportunity: "A local-model evidence signal that a customer asked for a callback, timing, information, or another next step.",
-      objectionSignal: "A local-model evidence signal describing the customer's stated objection or blocker.",
-      proofStandard: "Counts are based on stored Evaluation Studio findings with evidence, confidence, transcript quality, and manager-review labels."
+      possibleWasteIndicator: "Available only from a promoted capability; no current local-model capability qualifies.",
+      coachingOpportunity: "Available only from a promoted capability; no current local-model capability qualifies.",
+      callbackOpportunity: "Available only from a promoted capability; no current local-model capability qualifies.",
+      objectionSignal: "Available only from a promoted capability; no current local-model capability qualifies.",
+      proofStandard: "Schema validity and exact quote presence are insufficient. The exact semantic capability and provenance must be independently promoted."
     },
     warnings: [
       "Do not claim confirmed sales, revenue, order value, close rate, true conversion, or lost revenue from these rollups.",
-      "Use proof snippets and manager review before process-change decisions.",
+      "Unpromoted historical results are excluded from all operational counts and decisions.",
       "No campaign/allocation data is used."
     ],
     totals,
@@ -3559,6 +5101,7 @@ function listEvaluationTemplates(studio = {}, options = {}) {
 function listEvaluationResults(studio = {}, options = {}) {
   const normalized = normalizeEvaluationStudio(studio);
   const includeSuperseded = parseBoolean(options.includeSuperseded, false);
+  const operationalOnly = parseBoolean(options.operationalOnly, false);
   const importId = clean(options.importId);
   const runId = clean(options.runId || options.evaluationRunId);
   const templateId = clean(options.templateId || options.evaluationTemplateId);
@@ -3582,6 +5125,10 @@ function listEvaluationResults(studio = {}, options = {}) {
   const foundationSpecialistRoute = clean(options.foundationSpecialistRoute || options.foundation_specialist_route);
   const foundationOfferPresented = clean(options.foundationOfferPresented || options.foundation_offer_presented);
   const foundationQuotedAmountAvailable = clean(options.foundationQuotedAmountAvailable || options.foundation_quoted_amount_available);
+  const spielCallHandlingQuality = clean(options.spielCallHandlingQuality || options.spiel_call_handling_quality);
+  const spielSpielQuality = clean(options.spielSpielQuality || options.spiel_spiel_quality);
+  const spielCallPurpose = clean(options.spielCallPurpose || options.spiel_call_purpose);
+  const spielPrimaryReasonCode = clean(options.spielPrimaryReasonCode || options.spiel_primary_reason_code);
   const reportSignal = clean(options.reportSignal || options.report_signal);
   const confidenceBandFilter = clean(options.confidenceBand || options.confidence_band);
   const evidenceAvailabilityFilter = clean(options.evidenceAvailability || options.evidence_availability);
@@ -3605,6 +5152,7 @@ function listEvaluationResults(studio = {}, options = {}) {
   }
   return normalized.evaluationResults.filter((result) => {
     if (result.containsUntrustedLegacyData || BLOCKED_RESULT_PATTERN.test(JSON.stringify(result))) return false;
+    if (operationalOnly && !isOperationalEvaluationResult(result)) return false;
     if (!includeSuperseded && result.isLatest === false) return false;
     if (importId && result.importId !== importId) return false;
     if (runId && result.runId !== runId) return false;
@@ -3634,6 +5182,11 @@ function listEvaluationResults(studio = {}, options = {}) {
     if (foundationSpecialistRoute && foundation?.specialistRoutes?.[foundationSpecialistRoute] !== true) return false;
     if (foundationOfferPresented && Boolean(foundation?.offerPresented) !== parseBoolean(foundationOfferPresented, false)) return false;
     if (foundationQuotedAmountAvailable && Boolean(foundation?.commercialContext?.quoted_amount_available) !== parseBoolean(foundationQuotedAmountAvailable, false)) return false;
+    const spiel = result.spielQualityAssessment || null;
+    if (spielCallHandlingQuality && clean(spiel?.callHandlingQuality) !== spielCallHandlingQuality) return false;
+    if (spielSpielQuality && clean(spiel?.spielQuality) !== spielSpielQuality) return false;
+    if (spielCallPurpose && clean(spiel?.callPurpose) !== spielCallPurpose) return false;
+    if (spielPrimaryReasonCode && clean(spiel?.primaryReasonCode) !== spielPrimaryReasonCode) return false;
     if (reportSignal && !(result.findings || []).some((finding) => classifyReportFinding(result, finding)?.key === reportSignal)) return false;
     if (confidenceBandFilter && result.confidenceBand !== confidenceBandFilter) return false;
     if (evidenceAvailabilityFilter && result.evidenceAvailability !== evidenceAvailabilityFilter) return false;
@@ -3647,12 +5200,16 @@ function attachFoundationContextToResults(studio = {}, results = [], calls = [])
   const normalized = normalizeEvaluationStudio(studio);
   const foundationByCall = new Map();
   const offerAcceptanceByCall = new Map();
-  listEvaluationResults(normalized, { evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL })
+  listEvaluationResults(normalized, { evaluationGoal: CALL_INTELLIGENCE_FOUNDATION_GOAL, operationalOnly: true })
     .forEach((result) => {
       if (!result.foundationAssessment || foundationByCall.has(result.callId)) return;
-      foundationByCall.set(result.callId, { ...result.foundationAssessment, sourceResultId: result.id });
+      foundationByCall.set(result.callId, {
+        ...result.foundationAssessment,
+        sourceResultId: result.id,
+        localModelCapability: result.localModelCapability
+      });
     });
-  listEvaluationResults(normalized, { evaluationGoal: OFFER_ACCEPTANCE_GOAL })
+  listEvaluationResults(normalized, { evaluationGoal: OFFER_ACCEPTANCE_GOAL, operationalOnly: true })
     .forEach((result) => {
       if (!result.acceptanceAssessment || offerAcceptanceByCall.has(result.callId)) return;
       offerAcceptanceByCall.set(result.callId, {
@@ -3663,7 +5220,8 @@ function attachFoundationContextToResults(studio = {}, results = [], calls = [])
         confidenceBand: result.confidenceBand,
         evidenceAvailability: result.evidenceAvailability,
         status: result.status,
-        updatedAt: result.updatedAt || result.createdAt
+        updatedAt: result.updatedAt || result.createdAt,
+        localModelCapability: result.localModelCapability
       });
     });
   (calls || []).forEach((call) => {
@@ -3676,7 +5234,7 @@ function attachFoundationContextToResults(studio = {}, results = [], calls = [])
     foundationByCall.set(callId, {
       calledOnBehalfOf: representedParty?.label || "",
       followUpTiming: longTermTiming,
-      customerOutcome: longTermTiming ? "long_term_nurture" : clean(call.localOutcome || call.local_outcome),
+      customerOutcome: longTermTiming ? "long_term_nurture" : "unknown",
       evidence: [
         ...(representedParty ? [{ supports: "called_on_behalf_of", speaker: "salesperson", quote: representedParty.quote }] : []),
         ...(longTermTiming ? [{ supports: "follow_up_timing", speaker: "salesperson", quote: longTermTiming }] : [])
@@ -3686,12 +5244,13 @@ function attachFoundationContextToResults(studio = {}, results = [], calls = [])
     });
   });
   const callById = new Map((calls || []).map((call) => [clean(call.callId || call.call_id), call]));
-  const latestResults = listEvaluationResults(normalized);
+  const latestResults = listEvaluationResults(normalized, { operationalOnly: true });
   return (results || []).map((result) => {
-    const foundationContext = result.foundationAssessment
-      ? { ...result.foundationAssessment, sourceResultId: result.id }
+    const resultOperational = isOperationalEvaluationResult(result);
+    const foundationContext = resultOperational && result.foundationAssessment
+      ? { ...result.foundationAssessment, sourceResultId: result.id, localModelCapability: result.localModelCapability }
       : foundationByCall.get(result.callId) || null;
-    const offerAcceptanceContext = result.acceptanceAssessment
+    const offerAcceptanceContext = resultOperational && result.acceptanceAssessment
       ? {
           sourceResultId: result.id,
           acceptanceAssessment: result.acceptanceAssessment,
@@ -3700,7 +5259,8 @@ function attachFoundationContextToResults(studio = {}, results = [], calls = [])
           confidenceBand: result.confidenceBand,
           evidenceAvailability: result.evidenceAvailability,
           status: result.status,
-          updatedAt: result.updatedAt || result.createdAt
+          updatedAt: result.updatedAt || result.createdAt,
+          localModelCapability: result.localModelCapability
         }
       : offerAcceptanceByCall.get(result.callId) || null;
     const call = callById.get(result.callId) || {};
@@ -3759,8 +5319,10 @@ function buildOfferAcceptanceReport(studio = {}, options = {}) {
     callIds,
     evaluationGoal: OFFER_ACCEPTANCE_GOAL
   });
-  const reportableResults = allResults.filter((result) => result.status === "usable"
+  const reportableResults = allResults.filter((result) => isOperationalEvaluationResult(result)
+    && result.status === "usable"
     && OFFER_ACCEPTANCE_CLASSIFICATIONS.has(Number(result.acceptanceAssessment?.category)));
+  const operationalResults = allResults.filter((result) => isOperationalEvaluationResult(result));
   const results = authoritativeResultsPerCall(reportableResults);
   const totals = {
     classified: 0,
@@ -3820,12 +5382,13 @@ function buildOfferAcceptanceReport(studio = {}, options = {}) {
   }
   return {
     schemaVersion: "sales_dashboard_offer_acceptance_report.v1",
-    definition: "Offer acceptance rate = unique calls classified as customer accepted offer divided by all unique, successfully classified Offer Acceptance calls. The highest template version and latest result wins per call; failed, unclassified, and superseded reruns are excluded.",
+    definition: "Operational offer acceptance is available only from independently promoted capabilities with exact provenance. Unpromoted historical results remain research-only and are excluded from every operational denominator.",
     resultBasis: {
       uniqueCalls: results.length,
       storedLatestResults: allResults.length,
       duplicateRerunsExcluded: Math.max(0, reportableResults.length - results.length),
-      nonUsableOrUnclassifiedExcluded: Math.max(0, allResults.length - reportableResults.length)
+      nonUsableOrUnclassifiedExcluded: Math.max(0, operationalResults.length - reportableResults.length),
+      researchOnlyResultsExcluded: allResults.filter((result) => !isOperationalEvaluationResult(result)).length
     },
     totals,
     bySalesperson: sortBreakdown(groupMaps.salesperson),
@@ -3868,9 +5431,10 @@ function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
   const currentFoundationResults = activeFoundationTemplate
     ? allFoundationResults.filter((result) => result.templateId === activeFoundationTemplate.id)
     : [];
-  const reportFoundationResults = currentFoundationResults.length ? currentFoundationResults : allFoundationResults;
+  const reportFoundationResults = (currentFoundationResults.length ? currentFoundationResults : allFoundationResults)
+    .filter((result) => isOperationalEvaluationResult(result));
   const foundationResults = authoritativeResultsPerCall(reportFoundationResults);
-  const specialistResults = listEvaluationResults(normalized, { importId, callIds })
+  const specialistResults = listEvaluationResults(normalized, { importId, callIds, operationalOnly: true })
     .filter((result) => FOUNDATION_SPECIALIST_GOALS.includes(result.evaluationGoal));
   const reportableSpecialistResults = specialistResults.filter((result) => {
     if (result.evaluationGoal === OFFER_ACCEPTANCE_GOAL) return Boolean(result.acceptanceAssessment);
@@ -3968,13 +5532,14 @@ function buildCallIntelligenceFoundationReport(studio = {}, options = {}) {
     .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0] || null;
   return {
     schemaVersion: "sales_dashboard_call_intelligence_foundation_report.v1",
-    definition: "Foundation results are neutral evidence records used for routing and three independent lenses. This report counts one result per unique call from the active Foundation template when available; reruns and older template baselines do not inflate totals. Specialist evaluators remain authoritative for acceptance, callback details, record validity, objections, and procedure coaching.",
+    definition: "Foundation operational reporting is available only from an independently promoted capability with exact provenance. Current historical Foundation and specialist results are research-only and excluded from routing, metrics, denominators, and actions.",
     resultBasis: {
       templateId: activeFoundationTemplate?.id || "highest available per call",
       templateVersion: activeFoundationTemplate?.version || null,
       uniqueCalls: foundationResults.length,
       storedLatestResults: allFoundationResults.length,
-      duplicateOrHistoricalResultsExcluded: Math.max(0, allFoundationResults.length - foundationResults.length)
+      duplicateOrHistoricalResultsExcluded: Math.max(0, allFoundationResults.length - foundationResults.length),
+      researchOnlyResultsExcluded: allFoundationResults.filter((result) => !isOperationalEvaluationResult(result)).length
     },
     totals,
     rates: {
@@ -4033,6 +5598,7 @@ function managerReviewScopeForEvaluationGoal(goal = "") {
     "salesperson_procedure_adherence",
     "stage_failure_detection",
     "intro_quality",
+    "spiel_quality",
     "close_payment_ask_quality",
     "tough_lead_vs_poor_attempt"
   ].includes(normalized)) return "coaching";
@@ -4141,10 +5707,14 @@ function createEvaluationRun(studio = {}, input = {}, context = {}) {
     error.statusCode = 404;
     throw error;
   }
-  const requestedKbIds = new Set(toArray(input.knowledgebaseIds || input.knowledgebase_ids).map(clean).filter(Boolean));
+  const hasExplicitKnowledgebaseSelection = Object.prototype.hasOwnProperty.call(input, "knowledgebaseIds")
+    || Object.prototype.hasOwnProperty.call(input, "knowledgebase_ids");
+  const requestedKbIds = new Set(toArray(hasExplicitKnowledgebaseSelection
+    ? input.knowledgebaseIds || input.knowledgebase_ids
+    : template.knowledgebaseIds || []).map(clean).filter(Boolean));
   const selectedKnowledgebase = normalized.knowledgebaseEntries.filter((entry) => {
     if (!entry.isActive || entry.containsUntrustedLegacyData) return false;
-    return !requestedKbIds.size || requestedKbIds.has(entry.id);
+    return requestedKbIds.has(entry.id);
   });
   const knowledgebase = selectedKnowledgebase.filter(isKnowledgebaseEntryApprovedForEvaluation);
   const pendingApprovalKnowledgebase = selectedKnowledgebase.filter((entry) => !isKnowledgebaseEntryApprovedForEvaluation(entry));
@@ -4167,7 +5737,7 @@ function createEvaluationRun(studio = {}, input = {}, context = {}) {
     })),
     excludedKnowledgebaseIds: pendingApprovalKnowledgebase.map((entry) => entry.id),
     excludedKnowledgebaseReason: pendingApprovalKnowledgebase.length
-      ? "Draft knowledgebase entries were excluded from this evaluation run."
+      ? "Template-scoped draft knowledgebase entries were excluded from this evaluation run."
       : "",
     status: input.status || "queued",
     requestedBy: EVALUATION_STUDIO_ACTOR,
@@ -4182,7 +5752,7 @@ function createEvaluationRun(studio = {}, input = {}, context = {}) {
     errors: context.errors || [],
     guardrails: [
       ...defaultEvaluationGuardrails(),
-      "Only knowledgebase entries explicitly included for evaluation may enter model context."
+      "Only knowledgebase entries explicitly scoped to this template and included for evaluation may enter model context."
     ]
   });
   return {
@@ -4353,11 +5923,14 @@ function upsertEvaluationResult(studio = {}, input = {}) {
   const expectsFoundationOutput = template?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
     || run?.templateSnapshot?.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL
     || rawOutput.evaluation_goal === CALL_INTELLIGENCE_FOUNDATION_GOAL;
+  const expectsSpielQualityOutput = template?.evaluationGoal === SPIEL_QUALITY_GOAL
+    || run?.templateSnapshot?.evaluationGoal === SPIEL_QUALITY_GOAL
+    || rawOutput.evaluation_goal === SPIEL_QUALITY_GOAL;
   const typedSpecialistGoal = [CALLBACK_OPPORTUNITY_GOAL, PROCEDURE_ADHERENCE_GOAL, OBJECTION_HANDLING_GOAL]
     .find((goal) => rawOutput.evaluation_goal === goal || template?.evaluationGoal === goal || run?.templateSnapshot?.evaluationGoal === goal);
   const typedSpecialistContract = typedSpecialistGoal ? TYPED_SPECIALIST_CONTRACTS[typedSpecialistGoal] : null;
   const typedTemplateId = {
-    [CALLBACK_OPPORTUNITY_GOAL]: "template_callback_opportunity_v2",
+    [CALLBACK_OPPORTUNITY_GOAL]: "template_callback_opportunity_v3",
     [PROCEDURE_ADHERENCE_GOAL]: "template_procedure_adherence_v2",
     [OBJECTION_HANDLING_GOAL]: "template_objection_handling_v2"
   }[typedSpecialistGoal];
@@ -4391,8 +5964,23 @@ function upsertEvaluationResult(studio = {}, input = {}) {
         result: reconciledFoundation.output
       })
     : null;
+  const reconciledTypedSpecialist = expectsTypedSpecialistOutput
+    ? reconcileTypedSpecialistOutput(input, typedSpecialistGoal)
+    : null;
   const validatedTypedSpecialist = expectsTypedSpecialistOutput
-    ? validateTypedSpecialistResult(input, typedSpecialistGoal)
+    ? validateTypedSpecialistResult({
+        ...input,
+        result: reconciledTypedSpecialist.output
+      }, typedSpecialistGoal)
+    : null;
+  const reconciledSpielQuality = expectsSpielQualityOutput
+    ? reconcileSpielQualityOutput(input)
+    : null;
+  const validatedSpielQuality = expectsSpielQualityOutput
+    ? validateSpielQualityResult({
+        ...input,
+        result: reconciledSpielQuality.output
+      })
     : null;
   const normalizedInput = expectsAuditOutput
     ? {
@@ -4424,12 +6012,22 @@ function upsertEvaluationResult(studio = {}, input = {}) {
         : validatedTypedSpecialist
           ? {
               ...input,
+              specialistSemanticAdjustments: reconciledTypedSpecialist.adjustments,
               result: {
                 ...validatedTypedSpecialist,
                 findings: typedSpecialistFindings(validatedTypedSpecialist)
               }
             }
-      : input;
+          : validatedSpielQuality
+            ? {
+                ...input,
+                spielQualitySemanticAdjustments: reconciledSpielQuality.adjustments,
+                result: {
+                  ...validatedSpielQuality,
+                  findings: spielQualityFindings(validatedSpielQuality)
+                }
+              }
+            : input;
   const result = normalizeEvaluationResult(normalizedInput, {
     run,
     template,
@@ -4594,6 +6192,10 @@ module.exports = {
   PROCEDURE_ADHERENCE_GOAL,
   PROCEDURE_ADHERENCE_OUTPUT_SCHEMA,
   PROCEDURE_ADHERENCE_SCHEMA_VERSION,
+  SPIEL_QUALITY_GOAL,
+  SPIEL_QUALITY_KNOWLEDGEBASE_IDS,
+  SPIEL_QUALITY_OUTPUT_SCHEMA,
+  SPIEL_QUALITY_SCHEMA_VERSION,
   archiveEvaluationTemplate,
   archiveKnowledgebaseEntry,
   buildOfferAcceptanceReport,
@@ -4619,13 +6221,17 @@ module.exports = {
   normalizeEvaluationTemplate,
   normalizeKnowledgebaseEntry,
   quarantineEvaluationRun,
+  reconcileSpielQualityOutput,
+  reconcileTypedSpecialistOutput,
   resumeEvaluationRun,
   updateEvaluationRun,
   upsertEvaluationResult,
   upsertEvaluationTemplate,
   upsertKnowledgebaseEntry,
+  spielQualityChronologicalFacts,
   validateOfferAcceptanceResult,
   validateCallIntelligenceFoundationResult,
   validateLeadRecordDispositionAuditResult,
+  validateSpielQualityResult,
   validateTypedSpecialistResult
 };

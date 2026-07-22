@@ -2,7 +2,11 @@
 .DS_Store
 node_modules/
 data/
+outputs/
+tmp/
 runtime/*.tmp
 runtime/*.log
 runtime/evaluation-overnight-state.json
 runtime/evaluation-overnight.lock
+runtime/evaluation-adhoc-state.json
+runtime/customer-answered-no-spiel-*.csv

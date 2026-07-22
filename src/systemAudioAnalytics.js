@@ -78,32 +78,17 @@ function systemAudioFor(item) {
     subtype: details.subtype || (item?.evaluation?.contact?.classification === "system_audio" ? "ambiguous_system_audio" : "none"),
     label: details.label || SUBTYPE_LABELS[details.subtype] || "Ambiguous System Audio",
     category: details.category || "ambiguous",
-    shouldTrackRecovery: details.shouldTrackRecovery !== false
+    shouldTrackRecovery: false
   };
 }
 
 function screeningResponseFor(item) {
-  const aiAssistant = item?.evaluation?.aiVoiceAssistant || {};
-  if (aiAssistant.detected) {
-    return {
-      handledSuccessfully: Boolean(aiAssistant.handledSuccessfully),
-      bailed: Boolean(aiAssistant.bailed),
-      partial: !aiAssistant.handledSuccessfully && !aiAssistant.bailed,
-      tacticLabels: aiAssistant.tacticLabels || [],
-      responseClassification: aiAssistant.responseClassification || "partial"
-    };
-  }
-
-  const transcript = clean(item?.row?.transcription_text).replace(/\s+/g, " ");
-  const handled = /\b(?:countrywide|countrywide austral|cwa|official journal|reason (?:for|of) (?:my|the) call|call me back|give me a call|return my call|my number|community|support)\b/i.test(transcript);
-  const words = (transcript.match(/\b[\w']+\b/g) || []).length;
-  const bailed = !handled && words < 35;
   return {
-    handledSuccessfully: handled,
-    bailed,
-    partial: !handled && !bailed,
-    tacticLabels: handled ? ["Reason or contact detail"] : [],
-    responseClassification: handled ? "handled_well" : bailed ? "bailed" : "partial"
+    handledSuccessfully: null,
+    bailed: null,
+    partial: null,
+    tacticLabels: [],
+    responseClassification: "detected_unscored"
   };
 }
 
@@ -122,12 +107,12 @@ function seedGroup(name, extras = {}) {
     carrierPhoneSystem: 0,
     machineVoicemail: 0,
     ambiguousSystemAudio: 0,
-    handledSuccessfully: 0,
-    bailed: 0,
-    partial: 0,
-    futureHumanContact: 0,
-    futureMeaningfulConversation: 0,
-    insufficientFutureData: 0,
+    handledSuccessfully: null,
+    bailed: null,
+    partial: null,
+    futureHumanContact: null,
+    futureMeaningfulConversation: null,
+    insufficientFutureData: null,
     ...extras
   };
 }
@@ -154,10 +139,10 @@ function finalizeGroup(group) {
     carrierPhoneSystemRate: percent(group.carrierPhoneSystem, group.encounters),
     machineVoicemailRate: percent(group.machineVoicemail, group.encounters),
     ambiguousSystemAudioRate: percent(group.ambiguousSystemAudio, group.encounters),
-    handledRate: percent(group.handledSuccessfully, group.callScreening),
-    bailRate: percent(group.bailed, group.callScreening),
-    futureHumanContactRate: percent(group.futureHumanContact, group.encounters),
-    futureMeaningfulConversationRate: percent(group.futureMeaningfulConversation, group.encounters)
+    handledRate: null,
+    bailRate: null,
+    futureHumanContactRate: null,
+    futureMeaningfulConversationRate: null
   };
 }
 
@@ -179,15 +164,13 @@ function buildSystemAudioRecords(items, maxDateTime) {
   [...items].reverse().forEach((item) => {
     const systemAudio = systemAudioFor(item);
     if (systemAudio.detected) {
-      const laterMatches = laterMatchesFor(item, laterByKey);
-      const laterMeaningful = laterMatches.find((match) => match.evaluation?.contact?.meaningfulConversation);
-      const laterHuman = laterMeaningful || laterMatches.find((match) => match.evaluation?.contact?.probableLiveHuman);
-      const futureCall = laterMeaningful || laterHuman || null;
-      const insufficientFutureData = !futureCall && (!item.dateTime || !maxDateTime || maxDateTime.getTime() - item.dateTime.getTime() < FUTURE_WINDOW_MS);
+      const laterMeaningful = null;
+      const laterHuman = null;
+      const futureCall = null;
       const screeningResponse = systemAudio.subtype === "call_screening" ? screeningResponseFor(item) : {
-        handledSuccessfully: false,
-        bailed: false,
-        partial: false,
+        handledSuccessfully: null,
+        bailed: null,
+        partial: null,
         tacticLabels: [],
         responseClassification: "not_applicable"
       };
@@ -214,19 +197,15 @@ function buildSystemAudioRecords(items, maxDateTime) {
         partial: screeningResponse.partial,
         responseClassification: screeningResponse.responseClassification,
         tacticLabels: screeningResponse.tacticLabels,
-        futureHumanContact: Boolean(laterHuman),
-        futureMeaningfulConversation: Boolean(laterMeaningful),
-        futureStatus: futureCall
-          ? laterMeaningful ? "future_meaningful_conversation" : "future_human_contact"
-          : insufficientFutureData ? "insufficient_future_data" : "not_seen_in_future_data",
+        futureHumanContact: null,
+        futureMeaningfulConversation: null,
+        futureStatus: "not_evaluated",
         futureCallId: futureCall ? callIdFor(futureCall) : "",
         transcriptPreview: item.evaluation?.preview || "",
         metricKeys: [
           "calls.systemAudio",
           `calls.systemAudio.${systemAudio.subtype}`,
-          systemAudio.subtype === "call_screening" && screeningResponse.handledSuccessfully ? "calls.systemAudioHandled" : "",
-          systemAudio.subtype === "call_screening" && screeningResponse.bailed ? "calls.systemAudioBailed" : "",
-          laterHuman ? "calls.systemAudioRecovered" : ""
+          ""
         ].filter(Boolean)
       });
     }
@@ -301,10 +280,10 @@ function buildSystemAudioModel(items) {
   return {
     schemaVersion: "sales_dashboard_system_audio.v1",
     definitions: {
-      encounter: "Automated/system audio barrier detected in the transcript, including call screening, carrier messages, and machine voicemail.",
-      subtype: "Operational category assigned from transcript phrases.",
-      recovered: "A later call to the same stable customer/lead/contact reached a probable live human in the available data.",
-      handledSuccessfully: "For call-screening encounters, the salesperson left a useful reason, identity, callback, or contact detail."
+      encounter: "Exact system-audio wording detected in a permitted transcript context, including call screening, canonical carrier messages, and machine voicemail.",
+      subtype: "Restricted literal category; blank or customer-spoken carrier wording is not enough.",
+      recovered: "Not evaluated: a later matching call does not prove human contact or recovery.",
+      handledSuccessfully: "Not evaluated: call-screening handling quality is outside the validated rule boundary."
     },
     ...summarizeSystemAudioRecords(records, { totalCalls: items.length })
   };

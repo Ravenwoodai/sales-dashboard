@@ -9,11 +9,66 @@ const {
   DEFAULT_LAYER_PATH,
   buildTranscriptIntelligenceInput,
   buildTranscriptEvaluationInput,
+  getAiBatch,
   publicAiExecutionStatus,
   resolveAiExecutionConfig,
+  submitAiBatch,
   submitAiTask
 } = require("../src/aiExecutionLayer");
 const { saveAiJobReference, readStore } = require("../src/storage");
+const { canonicalHash } = require("../src/localModelCapability");
+
+function promotedOfferCapabilityRegister() {
+  const inferenceSettings = {
+    think: false,
+    temperature: 0,
+    maximum_completion_tokens: 512,
+    num_ctx: 32768,
+    seed: 7,
+    top_p: 1
+  };
+  return {
+    schema_version: "sales_dashboard_local_model_capability_register.v1",
+    program_status: "test",
+    capabilities: [{
+      id: "offer_acceptance_v3",
+      status: "promoted",
+      promotion_contract: {
+        task_type: "sales_dashboard_evaluation_studio",
+        evaluation_goal: "offer_acceptance_classification",
+        model_key: "pinned-model-key",
+        provider_model: "pinned-provider-model",
+        model_digest: "model-digest",
+        prompt_hash: "prompt-hash",
+        schema_version: "schema.v1",
+        schema_hash: "schema-hash",
+        inference_settings_hash: canonicalHash(inferenceSettings),
+        inference_settings: inferenceSettings,
+        execution_contract_revision: "verified-contract-v1",
+        execution_layer_enforces_inference_settings: true,
+        validation_manifest_hash: "manifest-hash",
+        promotion_audit_hash: "audit-hash",
+        evidence_contract_version: "evidence.v1",
+        minimum_evidence: { exact_quote_count: 1 },
+        supported_population: { population_id: "population-1", definition_hash: "population-hash" },
+        permitted_uses: ["model_submission", "operational_decision"]
+      }
+    }]
+  };
+}
+
+function promotedOfferSubmissionOptions() {
+  return {
+    capabilityRegister: promotedOfferCapabilityRegister(),
+    evaluationGoal: "offer_acceptance_classification",
+    taskType: "sales_dashboard_evaluation_studio",
+    promptHash: "prompt-hash",
+    schemaVersion: "schema.v1",
+    schemaHash: "schema-hash",
+    populationId: "population-1",
+    populationDefinitionHash: "population-hash"
+  };
+}
 
 function tempStorePath() {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sales-dashboard-ai-")), "state.json");
@@ -157,16 +212,17 @@ test("AI inputs exclude parked allocation import fields but keep call AllocatedL
   }
 });
 
-test("submitAiTask calls the execution layer through POST /run-task", async () => {
+test("submitAiTask calls the execution layer only for an exact promoted contract", async () => {
   const requests = [];
   const result = await submitAiTask({ text: "hello" }, {
+    ...promotedOfferSubmissionOptions(),
     config: {
       enabled: true,
       layerPath: DEFAULT_LAYER_PATH,
       layerPathExists: true,
       baseUrl: "http://127.0.0.1:8080",
       projectApiKey: "project-key",
-      taskType: "sales_transcript_evaluation",
+      taskType: "sales_dashboard_evaluation_studio",
       model: "auto",
       priority: "normal",
       responseMode: "async"
@@ -185,8 +241,85 @@ test("submitAiTask calls the execution layer through POST /run-task", async () =
   assert.equal(requests[0].url, "http://127.0.0.1:8080/run-task");
   assert.equal(requests[0].options.headers.Authorization, "Bearer project-key");
   const body = JSON.parse(requests[0].options.body);
-  assert.equal(body.task_type, "sales_transcript_evaluation");
+  assert.equal(body.task_type, "sales_dashboard_evaluation_studio");
+  assert.equal(body.model, "pinned-model-key");
+  assert.equal(body.input.execution_constraints.max_completion_tokens, 512);
+  assert.equal(body.metadata.provider_model, "pinned-provider-model");
+  assert.equal(body.metadata.promotion_contract_hash.length, 64);
   assert.equal(body.response_mode, "async");
+});
+
+test("controlled batches use one authenticated /run-batch request and can be polled", async () => {
+  const requests = [];
+  const config = {
+    enabled: true,
+    layerPath: DEFAULT_LAYER_PATH,
+    layerPathExists: true,
+    baseUrl: "http://127.0.0.1:8080",
+    projectApiKey: "project-key",
+    taskType: "sales_dashboard_evaluation_studio",
+    model: "qwen3:30b",
+    priority: "normal",
+    responseMode: "async"
+  };
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    return {
+      ok: true,
+      status: url.endsWith("/run-batch") ? 202 : 200,
+      text: async () => JSON.stringify(url.endsWith("/run-batch")
+        ? { batch: { id: "batch-1" }, items: [{ job_id: "job-1", submission_status: "accepted" }] }
+        : { batch: { id: "batch-1", status: "processing" }, items: [] })
+    };
+  };
+  const created = await submitAiBatch([{ itemId: "call-1", input: { transcript: "complete" } }], {
+    ...promotedOfferSubmissionOptions(),
+    config,
+    fetchImpl,
+    batchName: "Spiel v4 Gate A",
+    idempotencyKey: "spiel-v4-gate-a"
+  });
+  const detail = await getAiBatch(created.batch.id, { config, fetchImpl });
+
+  assert.equal(detail.batch.id, "batch-1");
+  assert.equal(requests[0].url, "http://127.0.0.1:8080/run-batch");
+  assert.equal(requests[1].url, "http://127.0.0.1:8080/batches/batch-1");
+  const body = JSON.parse(requests[0].options.body);
+  assert.equal(body.items.length, 1);
+  assert.equal(body.items[0].item_id, "call-1");
+  assert.equal(body.items[0].model, "pinned-model-key");
+  assert.equal(body.defaults.response_mode, "async");
+  assert.equal(requests[0].options.headers["Idempotency-Key"], "spiel-v4-gate-a");
+});
+
+test("unpromoted submissions fail before any network request", async () => {
+  let fetchCalls = 0;
+  const config = {
+    enabled: true,
+    layerPath: DEFAULT_LAYER_PATH,
+    layerPathExists: true,
+    baseUrl: "http://127.0.0.1:8080",
+    projectApiKey: "project-key",
+    taskType: "sales_dashboard_evaluation_studio",
+    model: "auto",
+    priority: "normal",
+    responseMode: "async"
+  };
+  const fetchImpl = async () => {
+    fetchCalls += 1;
+    throw new Error("network should not be reached");
+  };
+  await assert.rejects(() => submitAiTask({ text: "must not leave process" }, {
+    config,
+    evaluationGoal: "offer_acceptance_classification",
+    fetchImpl
+  }), (error) => error.code === "LOCAL_MODEL_CAPABILITY_QUARANTINED" && error.status === 423);
+  await assert.rejects(() => submitAiBatch([{ itemId: "research-runner", input: { transcript: "must not leave process" } }], {
+    config,
+    evaluationGoal: "spiel_quality",
+    fetchImpl
+  }), (error) => error.code === "LOCAL_MODEL_CAPABILITY_QUARANTINED" && error.status === 423);
+  assert.equal(fetchCalls, 0);
 });
 
 test("saveAiJobReference stores local AI job linkage without raw model output", () => {

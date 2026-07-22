@@ -1,47 +1,56 @@
 # Quality Score
-Use this file to keep quality, risk, and debt visible in Sales Dashboard.
 
-| Area | Score | Notes | Next Step |
-| --- | --- | --- | --- |
-| Product clarity | 4/5 | The manager UI is divided into seven task-focused reporting workspaces, with Evaluation Studio kept separate. Evaluation Results shows one record per call, promotes the authoritative accepted-offer outcome, and displays a separate commercial lifecycle: quoted context, intended payment, verification, invoice, fulfilment, revenue, and CRM state. Customer ID, strongest evidence, conflict rules, provenance, and specialist states remain inspectable. | Keep unknown commercial states unknown until a trusted administration/CRM integration supplies verification; keep attribution-audit outcomes as review signals. |
-| Architecture legibility | 4/5 | Main modules are separated across source parsing, parked allocation diagnostics, shared filtering, governance helpers, Evaluation Studio domain logic, SQLite Studio persistence, analysis, server, and rendering. | Add direct paginated SQL reads only if full compatibility hydration becomes a measured bottleneck. |
-| Verification | 4/5 | The 207-test suite covers data, governance, APIs, drilldowns, harvesting, grouped results, typed specialists, commercial lifecycle, strict proof, SQLite hydration/integrity failure, exact recovery derivation, and fail-closed recovery boundaries. Live call 48544948 verifies the accepted-offer/unverified-payment path. | Observe the first specialist-recovery night; investigate any halt before explicitly resuming. |
-| Runtime operability | 4/5 | Evaluation Studio history is authoritative in WAL-mode SQLite; a verified rollback copy precedes the live migration. The enabled overnight lane uses the existing idle/RAM admission gates, recovers at most 100 typed specialist checks per batch before Foundation, and halts on any recovery quality failure. A no-change full Studio persistence cycle measured about 0.86 seconds at 3,694 results. | Monitor write latency as history grows; do not claim 10,000/day throughput until worker latency and route volume are measured. |
-| Security hygiene | 4/5 | Redacted phone data is preserved only as raw input and excluded from MVP analytics/display; no external AI calls are made. | Add access controls before exposing transcript detail beyond localhost. |
+This score describes the current trusted product, not the amount of historical evaluator code or the technical health of the model service.
 
-## Current Risk Notes
-- The deterministic evaluator is a useful first-pass triage layer, not a final human-quality AI review system.
-- One-dial reattempt buckets are conservative deterministic indicators. The reportable lead-utilisation-risk signal is only one dial plus clear no-contact plus no later matching call observed; valid terminal outcomes are separated, and ambiguous rows stay out of the risk score unless later confirmed through manager-approved review.
-- Lead Harvest Queue rows are deterministic candidates for manager follow-up, not confirmed conversion outcomes. Possible names/timing/details, customer objections, and salesperson handling labels come from transcript text and should be checked against call evidence before use. Later matching call observed means a later stable-ID call exists, not that completion is proven. Long-term deferrals are excluded from active callback candidate counts.
-- Alert volume is assessed from active call/transcript signals only; legacy imported disposition values are excluded and cannot inflate it.
-- Follow-up completion is often indeterminate with a one-day upload because there is not enough future data.
-- Transcript speaker order still depends on the CSV transcript source; the UI now preserves that order, shows the readable timeline before detected-signal excerpts, and avoids clipping evidence mid-word, but it does not perform diarisation correction.
-- Evaluation Studio has the governed knowledgebase/template/run foundation, safe custom evaluation goals, all-eligible-call batch selection, one-call prompt test runs, automatic reconciliation of small queued prompt-test jobs on Studio page/API reads, explicit local Execution Layer submission path, run quarantine/resume/harvest governance with history, versioned result ingestion with prompt/knowledgebase provenance, global-filter-aware result/evidence queues, report-safe model-result rollups, manager-review handoff from stored results, and safe suggested correction prefill from allowlisted evaluator findings. Batch 7 final audit passed with the full regression suite.
-- Lead Record audit template v4 now enforces advisory correction review for verified invalidity, separates allegation absence from transcript evidence, verifies evidence quotes against the call transcript, and rejects impossible confidence/evidence combinations. Direct opt-out and serious threat evidence require advisory manager review, explicit permanent closure requires record-correction review, and hedged closure remains untestable pending independent verification.
-- Offer Acceptance category 3 is a transcript-level accepted-offer signal under the manager-calibrated definition. It requires a presented offer, direct unconditional customer commitment or a completed acceptance action, verified quotes, and no unresolved approval condition. Studio reports an Offer acceptance rate as accepted divided by successfully classified calls; failed calls are displayed separately and excluded from that denominator. This must not be reported as proof of payment, fulfilment, recognized revenue, or CRM closure.
-- Offer Acceptance and Foundation management totals count one authoritative result per unique call, not one row per rerun. The highest template version and latest result wins per call. Historical rows remain visible for audit but no longer inflate denominators.
-- Offer Acceptance recovery never bypasses transcript proof. Historical semantic failures can be retried once under a newer validation revision, but recovery is deferred when the matching source transcript is unavailable; successfully recovered jobs clear their stale run errors and remain auditable in run history.
-- Call Intelligence Foundation template v6/schema v3 is a neutral base layer, not a replacement for the five specialists. Opportunity, measurement eligibility, and efficiency are independent; there is no overall score. Final-state and specialist routing are reconciled locally, long-term nurture is excluded from the active callback route, and existing specialist results are preserved. Quoted amounts remain transcript context and cannot be summed or labelled as revenue, sales, ROI, or realized value.
-- Active Foundation template v6/schema v3 records who the salesperson called on behalf of and exact transcript-grounded callback timing. Named represented-party values require meaningful exact proof; explicit `on behalf of` wording can repair a model miss. `In a year's time` and equivalent distant timing is stored as `long_term_nurture`, and Foundation context is shared across specialist result rows for the call. Timing cannot imply completion. The canary and first three 500-call boundaries passed; current coverage is 1,880/16,108. Scale-out is safely paused with queue/running zero and must resume one gated parent at a time.
-- Historical generic Callback, Procedure, and Objection results are not current typed classifications. The audit found 1,073 such results and 3,249 placeholder finding values. They remain readable but are labelled `evaluated_legacy_untyped`; active Foundation completion reporting counts only typed specialist contracts. Current v6 has 427/1,394 typed routed checks complete, leaving 967 checks across 551 calls for bounded overnight recovery.
-- Foundation quoted prices are individual transcript context, not additive business value. The UI counts calls with a captured price, suppresses cross-call totals, and flags transcript-extracted amounts of 10,000 or more for review without silently changing the raw value.
-- Evaluation Studio transient submission failures now receive up to three retries with the same idempotency key. Semantic/schema validation failures are never retried automatically.
-- The Foundation's application-side batching filters transcript-bearing calls before applying the requested limit, submits in bounded concurrent chunks, and auto-harvests in bounded passes. This prevents underfilled or eventually stalled batches caused by empty transcripts and supports the controlled 500-call lane. It does not prove 10,000/day capacity; additional compatible worker capacity or materially lower latency is still required for that target.
-- Evaluation Studio jobs require Execution Layer contract `dynamic-schema-v1`. A 30-second durable lease renewed every 5 seconds limits the protected queue to one compatible process identity, while database claim guards block obsolete workers and claim-attempt history prevents duplicate failover processing. The current 8080 service reports one active owner; large calibration remains deferred.
-- Historical Neuron procedure/coaching material and de-identified LatentPulse calibration records are now available in Evaluation Studio, but all imported records remain pending manager approval and are deliberately excluded from model context until individually approved. The content is useful training reference, not current policy by default.
-- Local persistence is JSON-file backed under `data/`; it is suitable for MVP history but not multi-user concurrent review.
-- Campaign/allocation imports are parked. Historical local stores may still contain old allocation-derived reports/events, so active persistence views and normal report APIs filter parked/stale reports and parked-data alerts from normal counts.
-- Global filters are URL/query based and tested for core dashboard modules; very large intelligence tables still use bounded local reads until a database-backed query layer is introduced.
-- Alert lifecycle actions are persisted with the server-resolved local actor placeholder `local_manager`; real authentication should replace the placeholder before multi-user use.
-- Manager review actions also use the server-resolved local actor placeholder `local_manager`. Corrections are auditable overlays, but JSON-file storage is still not a concurrent multi-user workflow engine.
-- Workspace tables use bounded initial previews and horizontal table containers on small screens. Very large queues still need server-side pagination before this becomes a multi-user or much larger-dataset product.
-- The Self-Sourcing Attribution Audit can establish that a record was old at call time and, where present, that an old import date existed. It cannot establish online discovery, neglect, revenue/value ownership, or an attribution correction; Crystal `.rpt` attachments are intentionally not an analytics dependency.
+| Area | Score | Current evidence | Next step |
+| --- | ---: | --- | --- |
+| Product clarity | 5/5 | Six focused workspaces; unsupported automation is visibly unavailable; Studio now separates capability truth, deterministic evidence, benchmark validation, and immutable historical research. | Keep the authority legend and archive boundary explicit. |
+| Data integrity | 5/5 | Active 19,914-call SQLite import passes integrity check; all audited semantic columns are null; literal states retain exact evidence; manager corrections are overlays. | Re-run integrity and null audits after schema/import changes. |
+| Model governance | 5/5 | Register has 20 capabilities and zero promoted; submissions and operational consumption fail closed; the UI exposes scope/provenance/failure evidence; isolated frozen benchmarks cannot self-promote. | Require external approval after any future strict promotion pass. |
+| Semantic automation | 1/5 | No current Qwen evaluator is accurate enough for authority. This is correctly exposed as unavailable rather than disguised as confidence. | Use a materially different candidate or keep the product deterministic. |
+| Verification | 5/5 | Full automated suite, live API health, SQLite audits, adversarial mutation checks, controller fail-closed checks, isolated Validation Lab tests, and live browser checks cover the current boundary. | Maintain unseen-set, source-hash, and no-model-request checks when validation routes change. |
+| Runtime operability | 4/5 | Dashboard is healthy with AI disabled; zero active model work; archive remains readable. Evaluation Studio archive reads are slower than ordinary pages. | Add direct paginated archive SQL reads only if measured latency warrants it. |
+| Security/privacy | 4/5 | Local-only app, excluded phone/legacy fields, escaped transcript display, no external AI route. | Add authentication before any non-local or multi-user deployment. |
 
-## Update Rules
-- Increase or decrease scores when reality changes.
-- Record major risks here instead of leaving them implicit.
-- Link plan or decision updates when they change the score materially.
-## 2026-07-18 Overnight Evaluation Automation
-- Safety: pass. Independent controller and per-job admission boundaries protect the PC; no prompt, model, semantic validator, evidence requirement, or specialist-routing rule was weakened.
-- Reliability: pass. State is atomic, process locking rejects duplicates and recovers stale locks, task policy is `IgnoreNew`, service startup refuses an incompatible live Execution Layer, and clean-boundary quality failures halt scale-out.
-- Verification: Sales Dashboard 190/190 tests pass; AI Execution Layer admission/lease suite 21/21 passes. The broader AI layer suite has one pre-existing unrelated `/backfill-candidates` failure and no admission-related failures. Live dry run submitted zero jobs outside-window, the queue remained idle, and the scheduled task returned 0.
+## Semantic Accuracy Findings
+
+- The local service, queue, schemas, leases, and persistence function technically. That does not establish evaluation accuracy.
+- No complete active Qwen evaluator passed an independent frozen semantic promotion audit.
+- Offer Acceptance reached 18/25 exact frozen agreement; Callback state 15/25; Objection 10/25; Procedure 7/21; Foundation fields were mixed, including 9/25 for efficiency.
+- Spiel v3 produced 3/10 complete decisions on its last unseen set. V4 produced only 4/20 contract-valid extractions. Atomic v5 gates reached 8/10 for `third_party_authority`, 6/10 for `wrong_contact`, and 5/10 for `business_permanently_closed`.
+- V6 was stopped untested. Repeated failure on narrower facts is evidence that the model/product boundary is wrong, not a reason to spend more tokens.
+
+## Current Trusted Claims
+
+- Source/import facts and exact stable-ID relationships.
+- Exact recognised no-answer wording.
+- Machine/carrier voicemail and system-audio wording.
+- Direct Customer wrong-number statements.
+- Direct Customer opt-out statements.
+- Literal AI-assistant phrases, labelled only as literal detection.
+- Explicit manager-authored review overlays.
+- Closed deterministic voicemail/message/linkage observations with exact evidence; these are not callback-causation or commercial claims.
+
+All other semantic call attributes remain unknown unless a manager records them.
+
+## Current Risks
+
+- Literal rules are conservative and can miss paraphrases. That creates unknowns, not false certainty.
+- Historical evaluator names, templates, and results remain in the research archive and repository. A reader can still misunderstand them if the research-only warning is removed.
+- Manager review uses the local placeholder actor `local_manager`; it is not authenticated multi-user governance.
+- Transcript speaker order depends on source data and is not independently diarised.
+- Stable-ID later-attempt evidence is bounded by the uploaded date window and cannot prove callback completion.
+- Allocation artifacts and unsafe historical reports remain preserved for audit; active APIs and UI must continue filtering them.
+- The separate AI Execution Layer may run independently, but its health or availability must never reopen Sales Dashboard submission.
+- A benchmark may still be too small or unbalanced to support promotion; smoke/development results must never be presented as authority.
+
+## Release Rule
+
+A release is acceptable only when:
+
+- the capability register validates and contains no accidentally promoted capability;
+- model submission and operational consumption remain fail closed;
+- active semantic database columns remain null unless explicitly manager-authored;
+- scheduled/ad-hoc controllers cannot make a model network request;
+- blocked write endpoints do not mutate jobs, runs, or results;
+- the full tests, SQLite integrity checks, browser checks, and `git diff --check` pass.

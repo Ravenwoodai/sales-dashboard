@@ -127,7 +127,7 @@ test("dashboard report library renders a view link for saved reports", () => {
   assert.match(html, /Callback Leakage Review/);
 });
 
-test("dashboard labels LLM-reviewed only for usable completed LLM output", () => {
+test("dashboard quarantines stored LLM output as research regardless of historical completion status", () => {
   const html = renderDashboard(dashboardFixture(), {
     intelligenceQueue: "llm_completed",
     intelligenceCalls: [
@@ -170,10 +170,9 @@ test("dashboard labels LLM-reviewed only for usable completed LLM output", () =>
     ]
   });
 
-  assert.match(html, /llm-valid[\s\S]*LLM-reviewed/);
-  assert.match(html, /llm-valid[\s\S]*90%/);
-  assert.match(html, /llm-missing[\s\S]*Failed/);
-  assert.match(html, /llm-missing[\s\S]*Confidence unavailable/);
+  assert.match(html, /llm-valid[\s\S]*Research only/);
+  assert.doesNotMatch(html, /LLM-reviewed|90%/);
+  assert.match(html, /llm-missing[\s\S]*None/);
 });
 
 test("report page renders markdown table data as an HTML table", () => {

@@ -34,6 +34,13 @@ Use this file as the table of contents, then load deeper docs only as needed.
 - Update plans, quality notes, and runtime state when behavior changes.
 - Escalate to humans only when judgment or external intent is required.
 
+## Local Model Capability Stop Rule
+- Read `/docs/LOCAL_MODEL_CAPABILITY_POLICY.md` before designing, running, promoting, routing, or operationally consuming any local-model output.
+- Decomposition is not automatically progress. Once the local model fails an atomic or otherwise narrow unseen semantic gate, do not create another same-model decomposition, prompt version, successor evaluator, or adjacent fact lane to rescue that evaluator family.
+- Treat valid JSON, exact quotes, completed jobs, passing tests, and plausible explanations as technical evidence only. They do not prove semantic accuracy.
+- The current Qwen Spiel family has reached the hard stop. V3-v6 are failed, unpromoted, or stopped research artifacts; do not spend more Qwen tokens on that family.
+- Consult the current `runtime/LOCAL_MODEL_CAPABILITY_REGISTER_*.json` before relying on any local-model capability. Unpromoted output must not be called authoritative or drive routes, queues, denominators, rankings, coaching, compliance, discipline, finance, lead actions, or CRM decisions.
+
 ## Codex model selection and escalation
 - Default development setting: **GPT-5.6 Terra** with **Medium** reasoning.
 - Downgrade to **GPT-5.6 Luna** with **Low** reasoning only for bounded, objectively validated work: documentation, fixtures, mechanical tests, report formatting, read-only inventories, or straightforward extraction, classification, and transformation.

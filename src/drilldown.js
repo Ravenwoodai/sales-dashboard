@@ -34,19 +34,20 @@ function confidenceLabelForBand(band) {
 function rowGovernance(item) {
   const band = confidenceBandForItem(item);
   return {
-    intelligenceProvenance: "Deterministic",
+    intelligenceProvenance: "Restricted literal rule",
     llmStatus: "not_requested",
     llmProvenance: "Unprocessed",
     managerReviewProvenance: "Unprocessed",
     rawImportedProvenance: "Raw imported",
-    contactClassificationProvenance: "Deterministic",
-    localOutcomeProvenance: "Deterministic",
-    followUpProvenance: "Deterministic",
-    alertProvenance: "Deterministic",
-    deterministicConfidence: Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence ?? 0),
+    contactClassificationProvenance: "Restricted literal rule",
+    localOutcomeProvenance: "Restricted literal rule or unavailable",
+    followUpProvenance: "Unavailable — not evaluated",
+    alertProvenance: "Restricted direct-customer opt-out rule",
+    deterministicConfidence: null,
     confidenceBand: band,
     confidenceLabel: confidenceLabelForBand(band),
-    evidenceAvailable: Boolean(item?.evaluation?.evidence?.length)
+    evidenceAvailable: Boolean(item?.evaluation?.evidence?.length),
+    semanticEvaluationStatus: "not_evaluated"
   };
 }
 
@@ -68,38 +69,44 @@ const METRICS = {
   },
   "calls.transcriptAvailable": {
     title: "Transcript Available",
-    description: "Calls where the transcription field contains text. Blank transcripts are treated as no pickup/no answer in this dataset.",
+    description: "Calls where the transcription field contains text. A blank transcript remains unknown and is not treated as no-answer.",
     kind: "call"
   },
   "calls.transcriptUsableForCoaching": {
-    title: "Transcript-Derived Coverage",
-    description: "Calls whose transcript quality is sufficient for coaching-style deterministic conclusions.",
-    kind: "call"
+    title: "Automated Coaching Coverage Unavailable",
+    description: "Retired semantic metric. The deterministic evaluator is not validated for coaching conclusions, so this drill-down is fail-closed and empty.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.lowOrUnusableTranscript": {
-    title: "Low Or Unusable Transcripts",
-    description: "Calls in the low-confidence or unusable transcript bands. These rows require proof review before coaching conclusions.",
-    kind: "call"
+    title: "Automated Transcript Quality Unavailable",
+    description: "Retired semantic metric. No automated transcript-quality band is authoritative.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.probableLiveHuman": {
-    title: "Probable Live-Human Calls",
-    description: "Calls where transcript evidence suggests the salesperson reached a person.",
-    kind: "call"
+    title: "Live-Human Classification Unavailable",
+    description: "Retired semantic metric. Speaker meaning and chronology were not accurate enough for operational use.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.meaningfulConversation": {
-    title: "Meaningful Conversations",
-    description: "Calls with probable live-human contact and enough duration or transcript substance to review.",
-    kind: "call"
+    title: "Meaningful-Conversation Classification Unavailable",
+    description: "Retired semantic metric. No automated conversation-quality conclusion is available.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.followUpRequired": {
-    title: "Follow-Up Signals",
-    description: "Calls where the local evaluator found a callback, information, quote, appointment, or interest signal.",
-    kind: "call"
+    title: "Automated Follow-Up Decisions Unavailable",
+    description: "Retired semantic metric. Callback, information, quote, appointment, and interest meaning require manager-confirmed evidence.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.followUpIndeterminate": {
-    title: "Follow-Ups Needing More Future Data",
-    description: "Follow-up signals where the current upload does not contain enough later data to prove completion.",
-    kind: "call"
+    title: "Automated Follow-Up Decisions Unavailable",
+    description: "Retired semantic metric. No automated follow-up duty or completion state is inferred.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.aiVoiceAssistant": {
     title: "AI Call Assistant Encounters",
@@ -107,19 +114,22 @@ const METRICS = {
     kind: "call"
   },
   "calls.aiVoiceAssistantHandled": {
-    title: "AI Call Assistant Handled Well",
-    description: "AI call assistant encounters where the salesperson left a structured response.",
-    kind: "call"
+    title: "AI Assistant Handling Score Unavailable",
+    description: "Only literal assistant detection is permitted; handling quality is not evaluated.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.aiVoiceAssistantBailed": {
-    title: "AI Call Assistant Bail Events",
-    description: "AI call assistant encounters where the salesperson did not leave a useful response.",
-    kind: "call"
+    title: "AI Assistant Bail Decision Unavailable",
+    description: "Only literal assistant detection is permitted; seller response quality is not evaluated.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.aiVoiceAssistantFutureHuman": {
-    title: "AI Call Assistant Future Human Contact",
-    description: "AI call assistant encounters followed by a later probable live-human call to the same stable customer or lead.",
-    kind: "call"
+    title: "AI Assistant Recovery Decision Unavailable",
+    description: "Later calls may be matched by stable ID, but live-human recovery meaning is not evaluated.",
+    kind: "call",
+    authorityStatus: "unavailable"
   },
   "calls.systemAudio": {
     title: "System Audio Barriers",
@@ -147,23 +157,26 @@ const METRICS = {
     kind: "systemAudio"
   },
   "calls.systemAudioHandled": {
-    title: "System Audio Handled Well",
-    description: "Call-screening encounters where the salesperson left a useful response.",
-    kind: "systemAudio"
+    title: "System-Audio Handling Score Unavailable",
+    description: "Only literal system-audio detection is permitted; handling quality is not evaluated.",
+    kind: "systemAudio",
+    authorityStatus: "unavailable"
   },
   "calls.systemAudioBailed": {
-    title: "System Audio Bail Events",
-    description: "Call-screening encounters where the salesperson did not leave a useful response.",
-    kind: "systemAudio"
+    title: "System-Audio Bail Decision Unavailable",
+    description: "Only literal system-audio detection is permitted; response quality is not evaluated.",
+    kind: "systemAudio",
+    authorityStatus: "unavailable"
   },
   "calls.systemAudioRecovered": {
-    title: "System Audio Recovered Later",
-    description: "System-audio encounters followed by a later probable live-human call to the same stable customer or lead.",
-    kind: "systemAudio"
+    title: "System-Audio Recovery Decision Unavailable",
+    description: "Later calls may be matched by stable ID, but live-human recovery meaning is not evaluated.",
+    kind: "systemAudio",
+    authorityStatus: "unavailable"
   },
   "calls.riskReviews": {
-    title: "Risk Reviews",
-    description: "Calls with complaint or opt-out style transcript signals.",
+    title: "Direct Opt-Out Reviews",
+    description: "Calls with exact opt-out wording in a Customer-labelled transcript turn. Complaint meaning is not inferred.",
     kind: "call"
   },
   "source.bulkSourced": {
@@ -217,28 +230,32 @@ const METRICS = {
     kind: "lead"
   },
   "lead.callbackSameDayRequired": {
-    title: "Explicit Same-Day Callback Duties",
-    description: "Explicit customer callback requests or salesperson callback promises without future-day wording.",
-    kind: "lead"
+    title: "Automated Callback Duties Unavailable",
+    description: "Retired semantic metric. Callback meaning requires manager-confirmed evidence.",
+    kind: "lead",
+    authorityStatus: "unavailable"
   },
   "lead.callbackCompletedSameDay": {
-    title: "Callbacks With Later Same-Day Call",
-    description: "Explicit callback duties with a later same-day call to the same matched target.",
-    kind: "lead"
+    title: "Automated Callback Completion Unavailable",
+    description: "A later matching call does not prove completion, and callback meaning is not evaluated.",
+    kind: "lead",
+    authorityStatus: "unavailable"
   },
   "lead.callbackMissedSameDay": {
-    title: "Callbacks Missed Same Day",
-    description: "Explicit callback duties with no later same-day call to the same matched target.",
-    kind: "lead"
+    title: "Automated Missed-Callback Decisions Unavailable",
+    description: "Retired semantic metric. No missed-callback judgement is made.",
+    kind: "lead",
+    authorityStatus: "unavailable"
   },
   "lead.callbackFutureNeedsUpload": {
-    title: "Future Callback Pending",
-    description: "Callback duties with future-day wording that require later CSV uploads before judgement.",
-    kind: "lead"
+    title: "Automated Future-Callback Decisions Unavailable",
+    description: "Retired semantic metric. No callback duty is inferred from transcript wording.",
+    kind: "lead",
+    authorityStatus: "unavailable"
   },
   "lead.noContactLeadDays": {
-    title: "No-Contact Matched Records",
-    description: "Matched records where every call attempt was no-answer, voicemail, system audio, unknown, or otherwise not live-human.",
+    title: "Literal No-Contact Matched Records",
+    description: "Matched records where every attempt has exact no-answer, machine-voicemail, or carrier-system evidence. Unknown and blank transcripts are excluded.",
     kind: "lead"
   },
   "lead.noContactRetriedSameDay": {
@@ -247,14 +264,15 @@ const METRICS = {
     kind: "lead"
   },
   "lead.singleAttemptNoContact": {
-    title: "Single-Attempt No-Contact Records",
-    description: "No-contact matched records with only one attempt and no same-day retry.",
+    title: "Single-Attempt Literal No-Contact Records",
+    description: "Matched records with one exact literal no-contact attempt and no same-day retry. This is activity evidence, not a performance judgement.",
     kind: "lead"
   },
   "lead.wastedLeadIndicators": {
-    title: "Legacy Utilisation Review Indicators",
-    description: "Legacy matched-record proof rows retained for older reports. Use the one-dial no-contact/no-later drill-down for conservative manager reporting.",
-    kind: "lead"
+    title: "Legacy Utilisation Judgement Unavailable",
+    description: "Retired semantic metric. Literal activity facts cannot establish lead waste or salesperson under-utilisation.",
+    kind: "lead",
+    authorityStatus: "unavailable"
   },
   "reattempt.leadsTouched": {
     title: "Reattempt Records",
@@ -272,23 +290,35 @@ const METRICS = {
     kind: "reattempt"
   },
   "reattempt.oneDialValidOutcome": {
-    title: "Valid One-Dial Outcomes",
-    description: "One-dial records with deterministic evidence of a clear terminal outcome such as wrong number, not interested, complaint, or opt-out.",
+    title: "Literal Terminal One-Dial States",
+    description: "One-dial records with exact direct-customer wrong-number or opt-out wording.",
+    kind: "reattempt"
+  },
+  "reattempt.oneDialLiteralNoContact": {
+    title: "Literal One-Dial No-Contact",
+    description: "One-dial records with exact no-answer, machine-voicemail, or carrier-system evidence. Blank transcripts remain unknown.",
     kind: "reattempt"
   },
   "reattempt.oneDialRiskyNoContact": {
-    title: "One-Dial No-Contact",
-    description: "One-dial records with clear no-contact evidence: no answer, voicemail, system audio, or no usable speech evidence.",
+    title: "Retired Risk Label",
+    description: "This metric name was retired because literal no-contact facts do not establish risk. Use reattempt.oneDialLiteralNoContact.",
+    kind: "reattempt",
+    authorityStatus: "unavailable"
+  },
+  "reattempt.oneDialLiteralNoContactNoLater": {
+    title: "Literal One-Dial No-Contact With No Later Match",
+    description: "Literal one-dial no-contact records with no later matching call in the active dataset. This is neutral activity triage, not proof of under-utilisation.",
     kind: "reattempt"
   },
   "reattempt.oneDialNoContactNoLater": {
-    title: "Potential Lead Under-Utilisation",
-    description: "One-dial no-contact records with no later matching call observed for the same stable customer/contact/lead ID.",
-    kind: "reattempt"
+    title: "Retired Under-Utilisation Label",
+    description: "This metric name was retired because missing a later match does not establish under-utilisation. Use reattempt.oneDialLiteralNoContactNoLater.",
+    kind: "reattempt",
+    authorityStatus: "unavailable"
   },
   "reattempt.oneDialNeedsReview": {
-    title: "Ambiguous One-Dial Records Excluded",
-    description: "One-dial records that are ambiguous or contain follow-up/interest signals. These are excluded from the no-contact utilisation-risk score.",
+    title: "One-Dial Records Without A Validated Literal State",
+    description: "One-dial records with no exact terminal or no-contact fact. Semantic meaning is not evaluated.",
     kind: "reattempt"
   },
   "reattempt.noLaterCallByAnyone": {
@@ -302,34 +332,40 @@ const METRICS = {
     kind: "reattempt"
   },
   "harvest.newBusinessCandidates": {
-    title: "New Business Lead Harvest Candidates",
-    description: "New Business calls with deterministic live-human, positive-response, and callback/follow-up evidence. These are review candidates, not confirmed sales.",
-    kind: "harvest"
+    title: "Lead Harvest Automation Unavailable",
+    description: "Retired semantic metric. Automated interest, objection, callback, and handling meaning is not validated.",
+    kind: "harvest",
+    authorityStatus: "unavailable"
   },
   "harvest.warmBusinessCandidates": {
-    title: "Warm Business Lead Harvest Candidates",
-    description: "Warm Business calls with deterministic live-human, positive-response, and callback/follow-up evidence. These are review candidates, not confirmed sales.",
-    kind: "harvest"
+    title: "Lead Harvest Automation Unavailable",
+    description: "Retired semantic metric. Automated interest, objection, callback, and handling meaning is not validated.",
+    kind: "harvest",
+    authorityStatus: "unavailable"
   },
   "harvest.openCandidates": {
-    title: "Open Lead Harvest Candidates",
-    description: "Lead harvest candidates where no later matching call appears in the active call data. Stable IDs are used for matching; phone values and allocation data are not used.",
-    kind: "harvest"
+    title: "Lead Harvest Automation Unavailable",
+    description: "Retired semantic metric. No automated lead-harvest candidate is operational.",
+    kind: "harvest",
+    authorityStatus: "unavailable"
   },
   "harvest.reviewQueue": {
-    title: "Lead Harvest Review Queue",
-    description: "Lead harvest candidates that need manager review: no later matching call observed or matching unavailable from the active stable IDs.",
-    kind: "harvest"
+    title: "Lead Harvest Automation Unavailable",
+    description: "Retired semantic metric. No automated lead-harvest queue is operational.",
+    kind: "harvest",
+    authorityStatus: "unavailable"
   },
   "harvest.laterObserved": {
-    title: "Harvest Candidates With Later Matching Call Observed",
-    description: "Lead harvest candidates where a later call to the same stable customer/contact/lead ID appears in the active data. This does not prove completion.",
-    kind: "harvest"
+    title: "Lead Harvest Automation Unavailable",
+    description: "Retired semantic metric. A later matching call does not validate the candidate premise or prove completion.",
+    kind: "harvest",
+    authorityStatus: "unavailable"
   },
   "harvest.matchingUnavailable": {
-    title: "Harvest Candidates With Matching Unavailable",
-    description: "Lead harvest candidates missing a stable matching ID, so later-call follow-up cannot be proven from the active data.",
-    kind: "harvest"
+    title: "Lead Harvest Automation Unavailable",
+    description: "Retired semantic metric. No automated lead-harvest candidate is operational.",
+    kind: "harvest",
+    authorityStatus: "unavailable"
   }
 };
 
@@ -479,19 +515,19 @@ function buildCallProofRow(item) {
     totalSeconds: item.evaluation.totalSeconds,
     contactClassification: item.evaluation.contact.classification,
     localOutcome: item.evaluation.outcome.localCategory,
-    followUpStatus: item.followUpStatus,
-    followUpMatchedCallId: item.followUpMatchedCallId || "",
-    followUpMatch: item.followUpMatch || null,
-    followUpChannel: item.evaluation.opportunity.followUpChannel,
+    followUpStatus: "not_evaluated",
+    followUpMatchedCallId: "",
+    followUpMatch: null,
+    followUpChannel: "not_evaluated",
     aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
-    aiVoiceAssistantConfidence: item.evaluation.aiVoiceAssistant?.confidence || 0,
+    aiVoiceAssistantConfidence: null,
     aiVoiceAssistantResponse: item.evaluation.aiVoiceAssistant?.responseClassification || "not_encountered",
-    aiVoiceAssistantHandledSuccessfully: Boolean(item.evaluation.aiVoiceAssistant?.handledSuccessfully),
-    aiVoiceAssistantBailed: Boolean(item.evaluation.aiVoiceAssistant?.bailed),
-    aiVoiceAssistantResponseWordCount: item.evaluation.aiVoiceAssistant?.responseWordCount || 0,
+    aiVoiceAssistantHandledSuccessfully: null,
+    aiVoiceAssistantBailed: null,
+    aiVoiceAssistantResponseWordCount: null,
     aiVoiceAssistantTactics: item.evaluation.aiVoiceAssistant?.tacticLabels || [],
     aiVoiceAssistantFutureStatus: item.evaluation.aiVoiceAssistant?.followThrough?.status || "not_applicable",
-    aiVoiceAssistantFutureCallId: item.evaluation.aiVoiceAssistant?.followThrough?.futureCallId || "",
+    aiVoiceAssistantFutureCallId: null,
     systemAudioDetected: Boolean(item.evaluation.systemAudio?.detected),
     systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
     systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
@@ -664,6 +700,7 @@ function buildDrilldownResult(analysis, query = {}) {
       ? `New Business calls where Record Age is more than ${minImportAgeDays} days before the call date. Record Age uses CustomerImportDate first, then CustomerCreateDate.`
       : definition.description,
     kind: definition.kind,
+    authorityStatus: definition.authorityStatus || (definition.kind === "call" ? "raw_or_restricted_literal" : "deterministic_activity"),
     filters: {
       salesperson: clean(query.salesperson),
       source: clean(query.source),

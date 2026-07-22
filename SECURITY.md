@@ -10,11 +10,15 @@ This file defines the minimum safety expectations for Sales Dashboard.
 
 ## Local-Only AI Boundary
 - The MVP uses deterministic local rules and sends no transcript data to external AI services.
-- If local model processing is required, Sales Dashboard must use `C:\Users\User\Desktop\ai-execution-layer` and call the Execution Layer API. It must not call vLLM, Ollama, or provider runtimes directly.
+- No local-model capability is currently promoted. Sales Dashboard must remain AI-disabled and must fail closed at submission and operational-consumption boundaries.
+- A future independently promoted capability may use only `C:\Users\User\Desktop\ai-execution-layer` through `src/aiExecutionLayer.js`. Sales Dashboard must not call vLLM, Ollama, or provider runtimes directly.
 - Project credentials for the Execution Layer must come from the runtime environment and must never be committed.
 - If an LLM evaluator is added later, transcript text must be treated as untrusted data and wrapped separately from system instructions.
-- Future LLM outputs must use strict schema validation, evidence snippets, confidence scores, version metadata, and review/failure states.
-- Evaluation Studio prompts and knowledgebase entries are user-managed context. Treat them as untrusted local content, keep them versioned, and pass them only through the approved AI Execution Layer with explicit guardrails.
+- Future LLM outputs must use strict schema validation, exact evidence, immutable provenance, and explicit research/promotion/failure states. Model self-reported confidence is not semantic accuracy evidence.
+- Historical Evaluation Studio prompts and knowledgebase entries are untrusted local archive content. Keep them versioned and escaped; do not send them to a model while capabilities are unpromoted.
+- Human benchmark labels are sensitive local calibration data. Store them only in `data/store/evaluation-validation-lab.json`, validate every evidence quote against the current transcript server-side, and never copy historical model output into benchmark truth.
+- Benchmark manifests and candidate reports cannot grant authority. Only a separate externally approved capability-register change may do that after a strict frozen promotion pass.
+- A running Execution Layer or local model is not permission. Only the validated capability register may grant an exact submission or consumption use.
 
 ## Secrets
 - Never commit secrets, tokens, private keys, or real credentials.
@@ -28,6 +32,7 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - Treat manager review actors the same way: review actions resolve to `local_manager` server-side, client-supplied actor/reviewer fields are not authoritative, and manager corrections must not overwrite raw imported fields, deterministic outputs, LLM outputs, or generated alert evidence.
 - Manager review notes, correction reasons, and evidence assessments are untrusted display text and must be escaped when rendered.
 - Evaluation Studio knowledgebase entries, prompt/template text, output schemas, and run metadata are untrusted display text and must be escaped when rendered.
+- Validation Lab manifest names, capability IDs, exact-fact descriptions, reasons, labels, and transcript quotes are untrusted display text and must be escaped. Frozen source and exclusion fingerprints must be checked before comparison.
 - Hide parked or superseded report content from normal report APIs and dashboard report views while preserving local store records.
 - Add role-based access before exposing transcript detail outside localhost.
 

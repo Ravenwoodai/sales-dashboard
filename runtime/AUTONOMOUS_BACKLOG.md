@@ -1,29 +1,32 @@
 # Autonomous Backlog
-This file contains the machine-readable task list for the repository.
 
-# Status Values
-Allowed values:
-TODO  IN_PROGRESS  BLOCKED  DONE
+Allowed statuses: `TODO`, `IN_PROGRESS`, `BLOCKED`, `DONE`.
 
-# Backlog
+| ID | Priority | Task | Status | Blocker / Boundary | Next Action | Done Criteria |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | P0 | Boot local web app and import call exports | DONE | - | - | Health and active import verified |
+| 2 | P0 | Persist local import, alert, review, report, and archive history | DONE | - | - | JSON/SQLite stores pass integrity checks |
+| 3 | P0 | Enforce excluded phone, legacy-field, allocation, and commercial-claim boundaries | DONE | - | - | Tests and live projections show no forbidden use |
+| 4 | P1 | Provide transcript proof and manager review overlays | DONE | - | - | Call page shows evidence and non-destructive review history |
+| 5 | P1 | Provide six evidence-focused dashboard workspaces | DONE | - | - | Browser checks pass with no semantic scores or model controls |
+| 6 | P0 | Complete comprehensive local-model accuracy audit | DONE | - | - | Technical and semantic evidence separated for every evaluator |
+| 7 | P0 | Stop Qwen Spiel after repeated narrow semantic failure | DONE | Same-model rescue prohibited | - | V3-v6 preserved as failed/stopped research only |
+| 8 | P0 | Enforce machine-readable capability register end to end | DONE | - | - | All submission/consumption paths fail closed for unpromoted capabilities |
+| 9 | P0 | Quarantine active unpromoted jobs and runs | DONE | - | - | Zero active model jobs/runs; history preserved |
+| 10 | P0 | Remove scheduled/ad-hoc unpromoted execution | DONE | - | - | Scheduled task absent/disabled; controllers reject before network access |
+| 11 | P0 | Retire Lead Harvest and model-backed operational actions | DONE | - | - | APIs/UI unavailable and historical logic has no active consumer |
+| 12 | P0 | Convert Evaluation Studio to research-only archive | DONE | - | - | No create/submit/run/resume/harvest controls; authority is none |
+| 13 | P0 | Null active semantic projections and retain literal evidence only | DONE | - | - | Active DB audit shows semantic fields null and literal evidence complete |
+| 14 | P0 | Reconcile documentation with trusted runtime boundary | DONE | - | - | Startup, architecture, plan, quality, context, runtime, and decision docs agree |
+| 15 | P1 | Add recurring scheduled import automation | TODO | Watched/drop-folder contract not chosen | Define an import-only scheduler that has no model dependency | New exports ingest predictably without enabling inference |
+| 16 | P1 | Add authentication for non-local/multi-user use | TODO | Product scope not approved | Define users, roles, and deployment boundary | Review actors are authenticated and authorised |
+| 17 | P2 | Optimise Evaluation Studio archive pagination | TODO | No proven urgency beyond slower archive reads | Measure archive latency and query paginated SQLite directly if warranted | Archive reads meet agreed local latency without changing history |
+| 18 | P0 | Research a future semantic evaluator | BLOCKED | No materially different candidate or approved frozen program | Do nothing until the conditions in `docs/LOCAL_MODEL_CAPABILITY_POLICY.md` are met | Exact capability passes predeclared genuinely unseen gates and receives separate operational approval |
+| 19 | P0 | Make evaluator authority and failure evidence understandable | DONE | - | - | Studio catalog shows scope, provenance, authority, exclusions, evidence, failure, and next action for every registered capability |
+| 20 | P0 | Isolate genuinely unseen benchmark truth | DONE | - | - | Manifests exclude prior/current use, labels require exact quotes in batches of at most five, freezes are immutable, and no benchmark route calls a model |
+| 21 | P1 | Add deterministic voicemail and inbound evidence | DONE | - | - | Exact prompt/message/chronology/linkage/handler facts are visible without causal, receptiveness, or commercial inference |
+| 22 | P0 | Validate a materially different semantic candidate | BLOCKED | No approved candidate; Qwen family hard-stopped | Use the existing strict promotion partition only after a materially different candidate and explicit authorisation exist | At least 100 frozen balanced calls pass predeclared thresholds/budgets, then receive separate external approval |
 
-| ID | Priority | Task | Dependencies | Status | Blocker | Next Action | Done Criteria |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | P0 | Verify the primary runtime boots from the scaffold | - | DONE | - | - | The main workflow starts successfully or the startup gap is clearly documented |
-| 2 | P0 | Refine the project brief and acceptance criteria | 1 | DONE | - | - | The repository documents a concrete first milestone and its success criteria |
-| 3 | P1 | Capture the first execution plan | 2 | DONE | - | - | A repo-local plan explains how the next meaningful slice will be executed |
-| 4 | P1 | Maintain Project Context | 2 | DONE | - | - | Both Project Context files exist, follow the required structure, and match the current repo state |
-| 5 | P1 | Implement the first vertical slice | 3,4 | DONE | - | - | The repository delivers one complete workflow beyond the initial scaffold |
-| 6 | P1 | Add smoke verification for the critical path | 5 | DONE | - | - | The critical workflow can be validated without relying only on manual inspection |
-| 7 | P1 | Tighten architecture and ownership docs | 5 | DONE | - | - | Architecture, ownership, and key decisions are accurate and current |
-| 8 | P2 | Review runtime, security, and recovery assumptions | 1 | DONE | - | - | Security.md, docs/BACKUP_RECOVERY.md, and .ai context reflect real operational assumptions |
-| 9 | P2 | Refresh the quality score and risk register | 5 | DONE | - | - | Quality and risk are visible enough for the next agent to prioritize accurately |
-| 10 | P1 | Build the first user journey in the UI | 5 | DONE | - | - | A real user can complete one key journey in the browser |
-| 11 | P0 | Add durable scheduled import storage and manager review state | 5 | DONE | - | - | Multiple scheduled CSVs can be tracked without losing history or storing sensitive imports in Git |
-| 12 | P1 | Add strict-schema Evaluation Studio evaluator option | 11 | DONE | - | - | AI outputs are structured, evidence-backed, confidence-scored, versioned, testable, review-prefilled, quarantine/resume-governed, harvestable from local AI jobs, report-rollup-ready, and auditable without replacing deterministic or manager-reviewed values |
-| 13 | P1 | Add dashboard controls for manager review governance state | 11 | DONE | - | - | Managers can govern review state without relying on alert lifecycle actions |
-| 14 | P2 | Add scheduled import automation | 11 | TODO | - | Define the watched/drop folder or scheduler contract for recurring CSV arrivals | New CSV exports can be ingested predictably without manual restart |
-| 15 | P1 | Add weekly lead intelligence snapshot | - | DONE | - | - | Supply mix, trend, cohort rule, and limits are visible without changing active metrics |
-| 16 | P0 | Complete controlled Foundation scale-out | 12 | IN_PROGRESS | - | Monitor the installed 22:00-06:00 idle-aware controller; investigate any quality-gate halt before resuming | Every transcript-bearing call has a current Foundation result, every recommended specialist route has a stored result, and each controlled gate is auditable |
-| 17 | P0 | Install idle-aware overnight Foundation automation | 12 | DONE | - | - | Daily Melbourne-time task advances one bounded Foundation/specialist boundary only while the PC is idle and resource/quality gates pass |
-| 18 | P0 | Add auditable call commercial lifecycle and typed specialists | 12 | DONE | - | - | Results separate acceptance from payment/revenue state, expose authority/provenance/exact proof, preserve unknowns and compatibility, and pass live/reference regression checks |
+## Governing Rule
+
+Items 18 and 22 are not normal implementation backlog. They must not be advanced through another Qwen prompt, decomposition, replay, or adjacent fact lane. The Validation Lab is infrastructure for falsification, not evidence that any candidate works. The deterministic/literal product remains the required operating state unless a genuinely new research program is explicitly approved.

@@ -82,7 +82,7 @@ function referenceResults() {
   ];
 }
 
-test("reference call separates accepted offer, intended payment, and unverified commercial lifecycle states", () => {
+test("unpromoted reference results cannot establish a commercial lifecycle", () => {
   const results = referenceResults();
   const foundationContext = { ...results[0].foundationAssessment, sourceResultId: results[0].id };
   const aggregate = buildCallIntelligenceAggregate({
@@ -106,52 +106,51 @@ test("reference call separates accepted offer, intended payment, and unverified 
     }
   });
 
-  assert.equal(aggregate.commercialState.offerState, "accepted_offer_signal");
-  assert.equal(aggregate.commercialState.acceptanceStrength, "explicit");
-  assert.equal(aggregate.commercialState.quotedValue, 450);
-  assert.equal(aggregate.commercialState.quotedCurrency, "AUD");
-  assert.equal(aggregate.commercialState.currencyBasis, "metadata_inferred");
-  assert.equal(aggregate.commercialState.paymentState, "customer_stated_intention");
-  assert.equal(aggregate.commercialState.intendedPaymentDateRaw, "next Wednesday");
-  assert.equal(aggregate.commercialState.intendedPaymentDateResolved, "2026-07-08");
+  assert.equal(aggregate.commercialState.offerState, "unknown");
+  assert.equal(aggregate.commercialState.acceptanceStrength, "unknown");
+  assert.equal(aggregate.commercialState.quotedValue, null);
+  assert.equal(aggregate.commercialState.quotedCurrency, "unknown");
+  assert.equal(aggregate.commercialState.currencyBasis, "unknown");
+  assert.equal(aggregate.commercialState.paymentState, "not_established");
+  assert.equal(aggregate.commercialState.intendedPaymentDateRaw, "");
+  assert.equal(aggregate.commercialState.intendedPaymentDateResolved, "");
   assert.equal(aggregate.commercialState.paymentVerificationState, "not_verified");
   assert.equal(aggregate.commercialState.invoiceState, "unknown");
   assert.equal(aggregate.commercialState.fulfilmentState, "unknown");
   assert.equal(aggregate.commercialState.revenueState, "unknown");
   assert.equal(aggregate.commercialState.crmState, "unknown");
   assert.equal(aggregate.followUp.completionState, "not_established");
-  assert.match(aggregate.authoritativeResult.summary, /Accepted offer — payment pending verification/);
-  assert.match(aggregate.authoritativeResult.summary, /not established/);
-  assert.match(aggregate.keyEvidence.offer, /\$450/);
-  assert.match(aggregate.keyEvidence.acceptance, /we'll do it/i);
-  assert.match(aggregate.keyEvidence.paymentTiming, /next Wednesday/i);
+  assert.equal(aggregate.decisionBasis.evaluationGoal, "none");
+  assert.equal(aggregate.decisionBasis.authorityStatus, "no_promoted_capability");
+  assert.match(aggregate.decisionBasis.summary, /No promoted evaluator/);
+  assert.equal(aggregate.keyEvidence.offer, "");
+  assert.equal(aggregate.keyEvidence.acceptance, "");
+  assert.equal(aggregate.keyEvidence.paymentTiming, "");
 });
 
-test("Foundation and authoritative Offer Acceptance disagreement is recorded with its resolution rule", () => {
+test("unpromoted Foundation and Offer Acceptance disagreement is not operationally resolved", () => {
   const results = referenceResults();
   const aggregate = buildCallIntelligenceAggregate({
     results,
     foundationContext: { ...results[0].foundationAssessment, sourceResultId: results[0].id },
     call: { date: "02/07/2026" }
   });
-  assert.equal(aggregate.conflicts.length, 1);
-  assert.equal(aggregate.conflicts[0].type, "foundation_specialist_acceptance_disagreement");
-  assert.equal(aggregate.conflicts[0].resolutionRule, "offer_acceptance_specialist_authoritative");
-  assert.equal(aggregate.conflicts[0].resolvedValue, "customer_accepted_offer");
+  assert.equal(aggregate.conflicts.length, 0);
+  assert.equal(aggregate.decisionBasis.authorityStatus, "no_promoted_capability");
 });
 
-test("specialist routing distinguishes not routed, pending, evaluated clear, and evaluated issue", () => {
+test("unpromoted specialist outputs cannot create routing states", () => {
   const results = referenceResults();
   const aggregate = buildCallIntelligenceAggregate({
     results,
     foundationContext: { ...results[0].foundationAssessment, sourceResultId: results[0].id },
     call: { date: "02/07/2026" }
   });
-  assert.equal(aggregate.routing.offer_acceptance_classification.state, "evaluated_issue_found");
-  assert.equal(aggregate.routing.callback_opportunity.state, "routed_pending");
-  assert.equal(aggregate.routing.procedure_adherence.state, "evaluated_clear");
-  assert.equal(aggregate.routing.objection_handling.state, "not_routed_no_trigger");
-  assert.equal(aggregate.routing.lead_record_disposition_evidence_audit.state, "not_routed_no_trigger");
+  assert.equal(aggregate.routing.offer_acceptance_classification.state, "not_evaluated");
+  assert.equal(aggregate.routing.callback_opportunity.state, "not_evaluated");
+  assert.equal(aggregate.routing.procedure_adherence.state, "not_evaluated");
+  assert.equal(aggregate.routing.objection_handling.state, "not_evaluated");
+  assert.equal(aggregate.routing.lead_record_disposition_evidence_audit.state, "not_evaluated");
 });
 
 test("historical untyped specialist results are not presented as evaluated clear", () => {
@@ -170,7 +169,7 @@ test("historical untyped specialist results are not presented as evaluated clear
     foundationContext: { ...results[0].foundationAssessment, sourceResultId: results[0].id },
     call: { date: "02/07/2026" }
   });
-  assert.equal(aggregate.routing.procedure_adherence.state, "evaluated_legacy_untyped");
+  assert.equal(aggregate.routing.procedure_adherence.state, "not_evaluated");
 });
 
 test("Australian source dates are parsed as DD/MM/YYYY and relative weekdays retain ambiguity metadata", () => {
@@ -190,10 +189,10 @@ test("unknown timing remains unknown rather than becoming a negative commercial 
   assert.equal(aggregate.commercialState.paymentState, "not_established");
   assert.equal(aggregate.commercialState.quotedValue, null);
   assert.equal(aggregate.commercialState.intendedPaymentDateResolved, "");
-  assert.equal(aggregate.authoritativeResult.evaluationGoal, "none");
+  assert.equal(aggregate.decisionBasis.evaluationGoal, "none");
 });
 
-test("implausibly large transcript amounts remain raw context but require review", () => {
+test("unpromoted transcript amounts cannot enter commercial state", () => {
   const results = referenceResults();
   results[0].foundationAssessment.commercialContext.quoted_amount = 990000;
   const aggregate = buildCallIntelligenceAggregate({
@@ -201,8 +200,8 @@ test("implausibly large transcript amounts remain raw context but require review
     foundationContext: { ...results[0].foundationAssessment, sourceResultId: results[0].id },
     call: { date: "02/07/2026", transcript: "Salesperson: The quoted amount is $990,000. Customer: Sure, we'll do it." }
   });
-  assert.equal(aggregate.commercialState.quotedValue, 990000);
-  assert.equal(aggregate.commercialState.quotedValueReviewRequired, true);
-  assert.equal(aggregate.provenanceClaims.find((claim) => claim.claimType === "quoted_value").validationStatus, "implausible_transcript_amount_review_required");
-  assert.match(aggregate.authoritativeResult.summary, /requires review before use/i);
+  assert.equal(aggregate.commercialState.quotedValue, null);
+  assert.equal(aggregate.commercialState.quotedValueReviewRequired, false);
+  assert.equal(aggregate.provenanceClaims.find((claim) => claim.claimType === "quoted_value").validationStatus, "unknown");
+  assert.match(aggregate.decisionBasis.summary, /No promoted evaluator/);
 });

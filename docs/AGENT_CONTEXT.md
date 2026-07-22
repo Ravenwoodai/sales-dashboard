@@ -1,73 +1,91 @@
 # Agent Context
-This is the fastest handoff brief for new agents joining Sales Dashboard.
 
-## What This Project Is
-- Sales Dashboard is a local Node.js web app for scheduled CSV/XLSX sales-call transcript exports. Optional campaign/allocation imports are parked and excluded from active analytics.
-- It profiles CSV quality, deduplicates calls, evaluates transcripts locally, and renders manager-friendly call intelligence dashboards.
-- The MVP is deliberately local-only and uses no external AI service or database.
+This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup documents before changing behavior.
 
-## Current Operating Baseline
-- Run with sample data: `node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"`
-- Run with July 7 call data and parked allocation workbook: `node src/main.js --csv "C:\Users\User\Downloads\CallData 07.07.2026.xlsx" --allocations "C:\Users\User\Downloads\allocations 07.07.2026.xlsx"`
-- Generic run: `node src/main.js`
-- Test: `node --test tests/*.test.js`
-- Local URL: `http://127.0.0.1:3000`
+## Current Product
+
+- Sales Dashboard is a local Node.js application for CSV/XLSX sales-call exports.
+- Active reporting is limited to source-record facts, exact stable-ID relationships, literal transcript states, and manager-authored review overlays.
+- Optional allocation imports remain parked and excluded from active analytics.
+- The application does not currently have a promoted local-model capability. Historical Qwen outputs are research artifacts only.
+
+## Mandatory Local-Model Boundary
+
+- Read `docs/LOCAL_MODEL_CAPABILITY_POLICY.md`, `runtime/LOCAL_MODEL_CAPABILITY_REGISTER_2026-07-22.json`, and `runtime/LOCAL_MODEL_COMPREHENSIVE_AUDIT_2026-07-22.md` before touching model-related code or data.
+- The current register contains 20 capabilities and zero promoted capabilities. Every live submission and operational-consumption decision must fail closed.
+- Do not submit Qwen work, poll it for operational use, auto-route it, resume it, harvest it into active state, or use it for queues, denominators, rankings, coaching, compliance, discipline, finance, lead actions, or CRM decisions.
+- The Qwen Spiel v3-v6 family is stopped. A narrower prompt or another decomposition is prohibited unless a materially different model and a new independently approved research program are introduced.
+- JSON validity, exact copied quotes, completed jobs, and passing transport tests prove technical function only. They do not prove semantic accuracy.
+
+## Active Trusted Boundary
+
+- Exact literal terminal states only: recognised no-answer wording, machine/carrier voicemail or system-audio wording, a direct Customer wrong-number statement, and a direct Customer opt-out statement.
+- Literal AI-assistant phrase detection is descriptive evidence only.
+- Stable-ID reattempt relationships show only that another matching record or later attempt exists. They do not prove callback completion, contact quality, a sale, payment, or revenue.
+- Record age, source, salesperson, direction, call method, timestamps, and import coverage are source facts, not performance judgments.
+- Semantic fields such as human contact, meaningful conversation, decision-maker status, sentiment, next step, valid no-sale, lead quality, call quality, and model confidence remain `null`/unknown unless a manager records an explicit review overlay.
+- The application must not claim sales conversion, revenue, order value, close date, won/lost outcome, payment, fulfilment, ROI, or CRM completion.
+- `NoSaleType` and `Baz_DetailedNotes` are excluded untrusted legacy fields. Preserve them only in original raw input; never use or expose them in active analytics, model input, reviews, reports, APIs, or UI.
+- Do not use partial phone numbers for matching or display. Use only permitted stable IDs.
+
+## User-Facing Surfaces
+
+- Dashboard workspaces: `overview`, `opportunities`, `follow_up`, `reviews`, `intelligence`, and `records`.
+- Opportunities is intentionally unavailable while no relevant model capability is promoted.
+- Follow-Up is literal reattempt activity, not a semantic callback or sales-opportunity queue.
+- Intelligence is literal transcript triage with explicit provenance and guardrails.
+- Records & Reports contains source-record and attribution-review facts only.
+- Evaluation Studio at `/evaluation-studio` is a controlled validation workspace. It contains a read-only capability catalog, deterministic voicemail/inbound evidence, an isolated benchmark lab, and a visibly separate immutable historical research archive.
+- The only permitted Studio writes create benchmark manifests, record exact-evidence human labels in batches of at most five, and freeze complete manifests. They cannot create, submit, resume, poll, or harvest a model job and cannot mutate the archive.
+- Research metadata, quarantine state, semantic feedback, and result-to-review handoff are also locked; use the normal call page for an independent manager-authored review.
+- Lead Harvest and operational sales-opportunity APIs are retired or unavailable; do not restore them from historical code or documentation.
+- Call proof pages retain transcript evidence, literal detections, historical research clearly labelled non-authoritative, and manager review capture.
+
+## Runtime And Storage
+
+- Generic start: `node src/main.js`
+- Current-data example: `node src/main.js --csv "data/source/CallData 07.07.2026.csv"`
+- Test: `npm test`
+- Boundary audit: `npm run audit:trusted-boundary`
+- Default URL: `http://127.0.0.1:3000`
 - Health: `http://127.0.0.1:3000/health`
-- Summary API: `http://127.0.0.1:3000/api/summary`
-- Alerts API: `http://127.0.0.1:3000/api/alerts`
-- Imports API: `http://127.0.0.1:3000/api/imports`
-- Reports API: `http://127.0.0.1:3000/api/reports`
-- Allocations API: `http://127.0.0.1:3000/api/allocations`
-- Manager reviews API: `http://127.0.0.1:3000/api/manager-reviews`
-- Evaluation Studio UI: `http://127.0.0.1:3000/evaluation-studio`
-- Evaluation Studio API: `http://127.0.0.1:3000/api/evaluation-studio`
-- Lead Harvest API: `http://127.0.0.1:3000/api/lead-harvest`
-- Report viewer: `http://127.0.0.1:3000/reports/<report-id>`
-- Local store: `data/store/state.json` by default, ignored by Git. Evaluation Studio knowledgebase/template/run/result history is authoritative in adjacent `data/store/evaluation-studio.sqlite`; the JSON contains only its pointer and counts.
+- Main local state: `data/store/state.json`
+- Active derived call intelligence: `data/store/intelligence.sqlite`
+- Historical Evaluation Studio archive: `data/store/evaluation-studio.sqlite`
+- Isolated benchmark truth: `data/store/evaluation-validation-lab.json`
+- The Windows task `Sales Dashboard Overnight Evaluations` is present but disabled. Do not enable it. Both overnight and ad-hoc controllers must reject execution before any model network request while capabilities are unpromoted.
+- A separate AI Execution Layer may still be running for another project. Its presence does not enable Sales Dashboard; this application must remain disconnected and fail closed.
 
-## Current Product Rules
-- Ignore `dialled_phone_number` for MVP analytics. Valid `CustomerImportDate` and `CustomerCreateDate` may power source-quality Record Age; malformed date fragments are missing and raw date fields stay out of proof tables.
-- Do not use partial phone values for repeat contact, attribution, follow-up matching, or display.
-- Use stable IDs for limited matching where available.
-- Treat `NoSaleType` and `Baz_DetailedNotes` as excluded untrusted legacy fields, not context. Preserve them only in the original raw source; never use or expose them in active analytics, alerts, filters, reports, UI/APIs, manager-review prefill, or AI/evaluator inputs.
-- Do not claim sales conversion, revenue, order value, close date, or won/lost outcome.
-- When a user asks Codex to generate a data extract or report, save it through `POST /api/reports` or `saveGeneratedReport(...)` so it appears in the Reports Library.
-- Reports saved to the library should be openable from the dashboard through their `View` link when they are active. Normal report APIs and dashboard lists hide parked allocation, stale stable-target, and superseded lead-day report content by default while preserving raw store records.
-- Each CSV import now creates an automatic follow-up leakage report that tracks strict callback leakage, one-attempt/no-contact matched records, no-contact retry coverage, and future callback pending status by source ID.
-- Lead reattempt views treat one-dial records as neutral until split into deterministic buckets. The reportable utilisation-risk signal is deliberately narrow: one dial, clear no-contact, stable ID match, and no later matching call observed. Ambiguous rows stay excluded from the hard no-contact report unless later confirmed through manager-approved review.
-- Lead Harvest Queue views identify New Business positive-response callback candidates from call/transcript evidence. Possible names, callback timing, customer objection tags, salesperson handling tags, and handover notes are extracted review context only. Later matching call observed labels use stable IDs, not phone values, and mean a later call exists in the upload, not that completion is proven. Missing stable IDs are labelled matching unavailable.
-- The Team & Sources workspace includes a Self-Sourcing Attribution Audit. It reports long-held New Business records, confirmed old imports, and salesperson-created records separately. It is evidence for attribution review only, never proof that a salesperson found a number online or that a sale/value should be reassigned. Crystal `.rpt` files are deliberately optional and unsupported as a source format.
-- Team & Sources also includes Weekly Lead Intelligence: an isolated snapshot from the two supplied `.xls` reports. It shows supply mix, weekly volume, available workflow fields, and the lead-generator next-week handoff rule; it does not change current call, sales, revenue, allocation, attribution, or CRM metrics.
-- Long-term deferral wording such as "call back in 12 months", "in a year's time", or "next financial year" is labelled as long-term deferral/future nurture, not as an active callback or Lead Harvest opportunity. The final agreed timing overrides earlier provisional callback wording.
-- Optional allocation workbooks are parked. They may be parsed for diagnostic metadata, but must not power dashboard metrics, reports, alerts, filters, source/list quality, scorecards, or AI transcript context.
-- Evaluation Studio is complete for Batch 7 and lives at `/evaluation-studio` as a separate transcript-evaluation workspace. It stores Neuron/LatentPulse-derived seed knowledgebase entries, editable knowledgebase records, editable strict-schema templates with safe custom evaluation goals, queued evaluation runs with all-eligible-call selection support, one-call prompt test runs, automatic reconciliation of small queued prompt-test jobs on Studio page/API reads, versioned result records with prompt/template and knowledgebase-version provenance, global-filter-aware evidence/result/rollup views, manager-review handoffs from stored results with suggested correction prefill, run quarantine/resume history, batch result harvesting from local AI jobs, and report-safe lead utilisation/coaching rollups from labelled Evaluation Studio findings. The main Sales Dashboard shows only a compact Evaluation Results bridge and links to the studio; prompt/run tooling should stay out of the reporting dashboard. Results remain separate from active deterministic metrics and manager-reviewed overlays unless a future labelled workflow explicitly uses them; suggested prefill is not a manager correction until confirmed.
-- Evaluation Studio includes the editable `Offer Acceptance (Sale Signal) Review` template (`offer_acceptance_classification.v1`). Its three outputs are category 1 no sale signal, category 2 interested/follow-up only, and category 3 customer accepted the offer. Category 3 requires direct customer commitment to a presented offer with no unresolved condition; salesperson assertions and administrative acknowledgements are insufficient. The output is not proof of payment, fulfilment, revenue, or CRM closure.
-- Evaluation Studio includes active `Call Intelligence Foundation` template v6 with schema `call_intelligence_foundation.v3`. It records the transcript-grounded represented organisation/publication/client (or exactly `No product pitched`), call stage/outcome/context, exact callback/follow-up timing when stated, and independent opportunity, measurement-eligibility, and efficiency lenses, with no composite score. It resolves the final agreed state, represents distant follow-up as `long_term_nurture`, and prevents that outcome from routing to the active Callback Opportunity evaluator. Callback timing and represented-party context are shared across specialist result rows for the same call. A named represented party needs meaningful exact proof; an explicit `on behalf of` statement can be repaired locally from verbatim transcript evidence when the model misses it. Batch submission uses 12-way chunks with up to three idempotent transient retries; automatic harvesting advances at most 100 unfinished jobs per read.
-- The main dashboard uses the `view` query parameter for focused manager workspaces: `overview`, `harvest`, `follow_up`, `reviews`, `team`, `intelligence`, and `records`. Preserve the shared global filter query when linking between them; do not rebuild these as independent analytics pages.
-- Evaluation Studio now contains structured historical Neuron knowledge and de-identified LatentPulse calibration entries. They are visible as `pending_manager_approval` but excluded from evaluation context until a manager changes an entry to `approved_current`; do not bypass that approval gate or import raw historical transcripts into the knowledgebase.
-- Aggregated dashboard/report values should link to `/drilldown?metric=...` where possible. Drill-down rows should show short proof summaries, not raw transcript blobs, and link to `/calls/<call-id>` proof pages with sanitized raw fields, a readable Transcript Timeline, separate Detected Signal excerpts, raw transcript audit text, and manager review capture.
-- Optional local model processing is routed through `C:\Users\User\Desktop\ai-execution-layer` via the Execution Layer API. Use `src/aiExecutionLayer.js`; do not call vLLM/Ollama directly from this project.
-- The backlog is handled by Windows task `Sales Dashboard Overnight Evaluations`: 22:00-06:00 Melbourne time and no new batch after 04:30. It drains the 967 missing current typed specialist checks first in default 100-call batches, stopping on any failed/partial/errored/count-mismatched recovery run; only after that reaches zero may one 500-call Foundation boundary and its recommended specialists proceed. The task may wake the PC and keeps the system awake (not the display) during its controller window. The Execution Layer blocks the next protected job until 10 minutes of user inactivity and at least 4 GB available RAM. Do not bypass either gate or bulk-submit the remaining backlog directly.
-- Every result receives a read-only `call_intelligence_aggregate.v1` projection. It separates accepted-offer state, quoted context, intended payment timing, payment verification, invoice, fulfilment, revenue, and CRM state; records Foundation-vs-specialist authority conflicts; shows specialist lifecycle states and claim provenance; and preserves unknowns. Relative dates use source-call Australian DD/MM/YYYY, retain the raw phrase, and disclose ambiguity policy.
-- Exact stable-ID matching now records `later_attempt_observed` plus the matching fields and later call context. It does not establish callback completion, payment, or a completed sale. Active seeded Callback, Procedure, and Objection templates use typed v2 contracts with exact evidence; historical generic results and safe user-created custom templates remain compatible.
-- Evaluation task inputs include the complete app-source transcript length and SHA-256 fingerprint and require chronological evaluation through the final turn. Offer Acceptance template v3 also applies deterministic final-position precedence: a later withdrawal or unresolved condition overrides an earlier acceptance. Normal UI confidence is High/Medium/Low; numeric model confidence is retained only as uncalibrated audit detail. Live regression call 48544948 shows Customer ID 16830601, accepted-offer signal, AUD 450 quoted context, `next Wednesday` resolved to 2026-07-08, payment not verified, revenue/CRM unknown, and exact offer/acceptance proof. Full suite passes 198/198.
-- Verified Evaluation Studio execution route on 2026-07-18: model key `sales-dashboard-qwen3-30b-a3b-q4km`, provider model `hf.co/lmstudio-community/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M`, Ollama 0.30.10 native chat, `think=false`, JSON-schema output, `temperature=0`, `num_predict=1024`, and 300-second request timeout. `top_p`, seed, and `num_ctx` are not explicitly set by the client. The execution-layer catalogue's 8,192-token context value is not an enforced app truncation boundary; preserve the full input audit and do not claim a runtime context limit without direct runtime evidence.
-- The 2026-07-18 accuracy audit found active strict evidence healthy (Foundation v6 4,451/4,451 exact excerpts; Offer v2 1,014/1,014; Lead Audit v4 318/318). Reports now use one authoritative usable result per unique call and active Foundation v6, do not total quoted prices, and label unusually large transcript amounts for review. Store-wide Offer reporting covers 462 usable unique calls; the active import shown in Studio has 368 classified: 6 accepted, 215 follow-up only, 147 no-sale signal. One unavailable-evidence result is excluded.
-- Historical generic Callback/Procedure/Objection outputs are audit history, not typed decisions. There are 1,073 such results with 3,249 placeholder findings; UI/aggregate state is `evaluated_legacy_untyped`. Current active Foundation routing has 427/1,394 typed specialist checks complete and 967 missing across 551 calls. Recover those only through bounded overnight work; do not count legacy generic rows as completion.
+## Persistence And Review Rules
+
+- Raw input remains local and ignored by Git.
+- Derived deterministic facts and manager overlays are versioned local data.
+- Manager review is a non-destructive overlay. It never overwrites raw source, deterministic evidence, or historical model artifacts.
+- Alert lifecycle actor attribution remains the server-side placeholder `local_manager` until authentication exists.
+- Historical model runs/results/jobs remain preserved for audit, labelled `researchOnly` with authority `none`, and excluded from operational aggregates.
+- Human benchmark labels are calibration truth, not routine human review. Every decision, including unsupported, requires an exact transcript quote and validated turn index before freezing.
+- A strict promotion partition is at least 100 genuinely unseen, balanced calls. A passing comparison only becomes eligible for external approval; code never promotes automatically.
+- Generated reports shown in the library must be based only on the active trusted boundary. Historical unsafe reports may remain preserved but hidden.
+
+## Current Live Proof (2026-07-22)
+
+- Active import: 19,914 calls from `CallData 07.07.2026.csv`.
+- All active-import calls have `llm_status=not_requested`; all audited semantic columns are null.
+- Literal outcomes only: voicemail, system audio, direct wrong number, direct opt-out, or unknown.
+- No active Evaluation Studio runs or unresolved queued model jobs. The scheduled evaluation task exists but is disabled.
+- Deterministic current-import voicemail proof: 1,972 exact voicemail encounters; 22 literal callback requests; 0 exact approved-template messages; 135 later-inbound relationships; 113 clean chronology links.
+- Model submission, result ingestion, run creation, prompt testing, resume, harvest, and Lead Harvest adversarial requests fail closed without changing stored counts.
+- Live browser verification found no operational model controls, Lead Harvest surface, semantic quality scores, or browser console errors.
 
 ## Current Risks
-- The local evaluator is deterministic and useful for MVP triage, but it is not a final LLM-backed evaluation layer.
-- The deterministic one-dial bucket split is evidence-backed but conservative; ambiguous rows should stay out of lead-utilisation-risk reporting until manager review confirms whether meaningful contact occurred and the outcome was resolved.
-- Lead Harvest Queue rows are deterministic candidates for manager follow-up, not confirmed conversion outcomes. Possible names/timing/details, objection tags, and salesperson handling tags come from transcript text and should be checked against call evidence before use. Long-term deferrals are intentionally excluded from active callback candidate counts.
-- Follow-up completion is limited by the uploaded date range and available stable IDs.
-- Old allocation-derived reports/events may exist in local stores; active persistence views filter parked-data reports and parked-data alert events out of normal counts.
-- Alert volume must be explained by active transcript/call-data signals only; legacy imported dispositions cannot create or alter alerts.
-- Alert lifecycle controls are available in the Alert Centre and `/api/alerts`; active alert counts include only `new`, `acknowledged`, and `in_progress`.
-- Alert lifecycle actor attribution is fixed to the local placeholder `local_manager` until real authentication exists; client-supplied actor names are ignored for authoritative lifecycle history.
-- Manager review controls are available through call pages, the manager review queue, alert-centre linked review forms, `/api/manager-reviews`, and `/reviews`. Manager review statuses are separate from alert lifecycle statuses, and manager corrections are stored as overlays with corrections/history instead of overwriting raw imported, deterministic, LLM, or alert evidence.
-- Persistence is JSON-file backed and local-only; it is suitable for MVP history, not multi-user concurrent editing.
-- Do not claim 10,000 transcripts/day capacity. The overnight controller protects daytime use and uses two compatible workers at the existing 20-starts/minute ceiling, but completion speed still depends on model latency, specialist-route volume, idle time, and free memory.
+
+- Literal matching is intentionally conservative and may leave many calls unknown. Unknown is safer than a fabricated semantic decision.
+- Manager reviews are local single-user overlays, not an authenticated multi-user workflow.
+- Historical research names and outputs remain discoverable in the archive and source tree; their labels must never be interpreted as current capabilities.
+- The application has no automatic semantic call-quality evaluator. That is an explicit product boundary, not a backlog defect to bypass.
 
 ## Next Useful Work
-- Add browser smoke coverage for Evaluation Studio and manager review UI interactions if the workflows grow more complex.
-- Evaluation Studio history is already SQLite-backed. If later volumes make hydration expensive, add direct paginated SQL reads without changing evaluator contracts or historical records.
+
+- Preserve the zero-promoted fail-closed boundary.
+- Add a new evaluator only through the isolated, separately frozen, strictly unseen promotion program using a materially different candidate model or a genuinely deterministic rule. Promotion requires at least 100 balanced calls and external approval.
+- Improve usability, source-record reporting, literal evidence, and manager review without introducing semantic automation claims.

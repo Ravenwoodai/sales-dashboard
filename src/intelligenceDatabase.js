@@ -52,19 +52,19 @@ function migrateIntelligenceDb(db) {
       call_type TEXT,
       duration_seconds INTEGER DEFAULT 0,
       transcript_quality TEXT,
-      connected_to_human INTEGER DEFAULT 0,
+      connected_to_human INTEGER DEFAULT NULL,
       decision_maker_status TEXT,
       overall_call_outcome TEXT,
       customer_sentiment TEXT,
-      next_step_exists INTEGER DEFAULT 0,
+      next_step_exists INTEGER DEFAULT NULL,
       risk_flag_exists INTEGER DEFAULT 0,
-      valid_no_sale INTEGER DEFAULT 0,
-      lead_utilization_score INTEGER DEFAULT 0,
-      salesperson_quality_score INTEGER DEFAULT 0,
+      valid_no_sale INTEGER DEFAULT NULL,
+      lead_utilization_score INTEGER DEFAULT NULL,
+      salesperson_quality_score INTEGER DEFAULT NULL,
       manager_review_required INTEGER DEFAULT 0,
-      disposition_matches_transcript INTEGER DEFAULT 1,
-      llm_confidence REAL DEFAULT 0,
-      deterministic_confidence REAL DEFAULT 0,
+      disposition_matches_transcript INTEGER DEFAULT NULL,
+      llm_confidence REAL DEFAULT NULL,
+      deterministic_confidence REAL DEFAULT NULL,
       brief_reason TEXT,
       evidence_snippet TEXT,
       llm_status TEXT DEFAULT 'not_requested',
@@ -83,7 +83,7 @@ function migrateIntelligenceDb(db) {
       normalized_value TEXT,
       speaker TEXT,
       evidence TEXT,
-      confidence REAL DEFAULT 0,
+      confidence REAL DEFAULT NULL,
       source TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -96,10 +96,10 @@ function migrateIntelligenceDb(db) {
       speaker TEXT,
       raw_value TEXT,
       normalized_value TEXT,
-      follow_up_required INTEGER DEFAULT 0,
+      follow_up_required INTEGER DEFAULT NULL,
       due_at TEXT,
       evidence TEXT,
-      confidence REAL DEFAULT 0,
+      confidence REAL DEFAULT NULL,
       source TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -112,7 +112,7 @@ function migrateIntelligenceDb(db) {
       severity TEXT NOT NULL,
       speaker TEXT,
       evidence TEXT,
-      confidence REAL DEFAULT 0,
+      confidence REAL DEFAULT NULL,
       manager_review_recommended INTEGER DEFAULT 0,
       source TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -136,18 +136,18 @@ function migrateIntelligenceDb(db) {
       source TEXT,
       business_segment TEXT,
       call_count INTEGER DEFAULT 0,
-      max_score INTEGER DEFAULT 0,
-      avg_score REAL DEFAULT 0,
-      human_reached_count INTEGER DEFAULT 0,
-      meaningful_attempt_count INTEGER DEFAULT 0,
-      next_step_count INTEGER DEFAULT 0,
+      max_score INTEGER DEFAULT NULL,
+      avg_score REAL DEFAULT NULL,
+      human_reached_count INTEGER DEFAULT NULL,
+      meaningful_attempt_count INTEGER DEFAULT NULL,
+      next_step_count INTEGER DEFAULT NULL,
       risk_flag_count INTEGER DEFAULT 0,
       manager_review_count INTEGER DEFAULT 0,
       no_contact_count INTEGER DEFAULT 0,
-      low_value_human_count INTEGER DEFAULT 0,
-      repeated_short_attempt INTEGER DEFAULT 0,
-      waste_risk INTEGER DEFAULT 0,
-      high_quality_utilized INTEGER DEFAULT 0,
+      low_value_human_count INTEGER DEFAULT NULL,
+      repeated_short_attempt INTEGER DEFAULT NULL,
+      waste_risk INTEGER DEFAULT NULL,
+      high_quality_utilized INTEGER DEFAULT NULL,
       reason TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (import_id, lead_key)
@@ -259,29 +259,19 @@ function buildLeadRecords(callRecords) {
 
   return Array.from(groups.entries()).map(([leadKey, records]) => {
     const callCount = records.length;
-    const maxScore = Math.max(...records.map((record) => Number(record.leadUtilizationScore || 0)));
-    const totalScore = records.reduce((sum, record) => sum + Number(record.leadUtilizationScore || 0), 0);
-    const avgDuration = records.reduce((sum, record) => sum + Number(record.durationSeconds || 0), 0) / Math.max(1, callCount);
-    const humanReachedCount = records.filter((record) => record.connectedToHuman).length;
-    const meaningfulAttemptCount = records.filter((record) => Number(record.leadUtilizationScore || 0) >= 3).length;
-    const nextStepCount = records.filter((record) => record.nextStepExists).length;
+    const maxScore = null;
+    const humanReachedCount = null;
+    const meaningfulAttemptCount = null;
+    const nextStepCount = null;
     const riskFlagCount = records.filter((record) => record.riskFlagExists).length;
     const managerReviewCount = records.filter((record) => record.managerReviewRequired).length;
-    const noContactCount = records.filter((record) => Number(record.leadUtilizationScore || 0) <= 1).length;
-    const lowValueHumanCount = records.filter((record) => record.connectedToHuman && Number(record.leadUtilizationScore || 0) <= 2).length;
-    const repeatedShortAttempt = callCount >= 2 && avgDuration < 20 && maxScore <= 2;
-    const wasteRisk = maxScore <= 2 || repeatedShortAttempt || (lowValueHumanCount > 0 && nextStepCount === 0);
-    const highQualityUtilized = maxScore >= 4;
+    const noContactCount = records.filter((record) => ["no_answer", "voicemail", "system_audio"].includes(record.overallCallOutcome)).length;
+    const lowValueHumanCount = null;
+    const repeatedShortAttempt = null;
+    const wasteRisk = null;
+    const highQualityUtilized = null;
     const first = records[0];
-    const reason = wasteRisk
-      ? repeatedShortAttempt
-        ? "Repeated short attempts without meaningful lead utilization."
-        : lowValueHumanCount
-          ? "Human contact appears likely, but no meaningful pitch, qualification, or next step was captured."
-          : "All attempts appear to be no-answer, voicemail, unusable, or otherwise low-value."
-      : highQualityUtilized
-        ? "At least one call shows strong lead utilization or a useful next step."
-        : "Lead has at least one basic meaningful attempt.";
+    const reason = "Raw matched-call counts and restricted literal no-contact counts only. Lead utilisation, quality, and performance scoring are unavailable.";
 
     return {
       importId: first.importId,
@@ -292,7 +282,7 @@ function buildLeadRecords(callRecords) {
       businessSegment: businessSegmentForLead(records),
       callCount,
       maxScore,
-      avgScore: totalScore / Math.max(1, callCount),
+      avgScore: null,
       humanReachedCount,
       meaningfulAttemptCount,
       nextStepCount,
@@ -300,9 +290,9 @@ function buildLeadRecords(callRecords) {
       managerReviewCount,
       noContactCount,
       lowValueHumanCount,
-      repeatedShortAttempt: repeatedShortAttempt ? 1 : 0,
-      wasteRisk: wasteRisk ? 1 : 0,
-      highQualityUtilized: highQualityUtilized ? 1 : 0,
+      repeatedShortAttempt,
+      wasteRisk,
+      highQualityUtilized,
       reason
     };
   });
@@ -318,26 +308,6 @@ function replaceImportIntelligence(analysis, options = {}) {
 
   try {
     runTransaction(db, () => {
-      const existingLlmRows = db.prepare(`
-        SELECT
-          call_id,
-          llm_status,
-          llm_job_id,
-          llm_confidence,
-          decision_maker_status,
-          customer_sentiment,
-          manager_review_required,
-          risk_flag_exists,
-          brief_reason,
-          (SELECT MAX(r.created_at) FROM intelligence_llm_results r WHERE r.import_id = call_intelligence.import_id AND r.call_id = call_intelligence.call_id) AS llm_result_created_at
-        FROM call_intelligence
-        WHERE import_id = ?
-          AND llm_status <> 'not_requested'
-      `).all(importId);
-      const existingLlmByCallId = new Map(existingLlmRows
-        .filter((row) => String(row.llm_result_created_at || "") >= UNTRUSTED_LEGACY_AI_CUTOFF)
-        .map((row) => [row.call_id, row]));
-
       db.prepare("DELETE FROM intelligence_entities WHERE import_id = ? AND source = 'deterministic'").run(importId);
       db.prepare("DELETE FROM intelligence_events WHERE import_id = ? AND source = 'deterministic'").run(importId);
       db.prepare("DELETE FROM intelligence_risk_flags WHERE import_id = ? AND source = 'deterministic'").run(importId);
@@ -372,19 +342,6 @@ function replaceImportIntelligence(analysis, options = {}) {
           inputHash: analysis.inputHash,
           sourceName: analysis.sourceName
         });
-        const existingLlm = existingLlmByCallId.get(call.callId);
-        if (existingLlm) {
-          intelligence.call.llmStatus = existingLlm.llm_status || intelligence.call.llmStatus;
-          intelligence.call.llmJobId = existingLlm.llm_job_id || intelligence.call.llmJobId;
-          intelligence.call.llmConfidence = Number(existingLlm.llm_confidence || intelligence.call.llmConfidence || 0);
-          if (existingLlm.llm_status === "completed") {
-            intelligence.call.decisionMakerStatus = existingLlm.decision_maker_status || intelligence.call.decisionMakerStatus;
-            intelligence.call.customerSentiment = existingLlm.customer_sentiment || intelligence.call.customerSentiment;
-            intelligence.call.managerReviewRequired = existingLlm.manager_review_required || intelligence.call.managerReviewRequired ? 1 : 0;
-            intelligence.call.riskFlagExists = existingLlm.risk_flag_exists || intelligence.call.riskFlagExists ? 1 : 0;
-            intelligence.call.briefReason = existingLlm.brief_reason || intelligence.call.briefReason;
-          }
-        }
         insertCallRecord(insertCallRow, intelligence.call, now);
         insertedCalls.push(intelligence.call);
         intelligence.entities.forEach((entity) => insertEntity.run(
@@ -552,46 +509,48 @@ function getIntelligenceSummary(options = {}) {
 
     return {
       schemaVersion: "sales_dashboard_intelligence_summary.v1",
+      authorityStatus: "restricted_literal_only",
+      unavailableFields: ["lead_utilization", "call_quality", "human_reached", "meaningful_attempt", "next_step", "waste_risk", "high_quality", "coaching"],
       dbPath,
       importId: filters.importId,
       businessSegment: filters.businessSegment || "",
       totals: {
         callsIndexed: Number(callTotals.callsIndexed || 0),
         leadsIndexed: Number(leadTotals.leadsIndexed || 0),
-        wasteRiskLeads: Number(leadTotals.wasteRiskLeads || 0),
-        highQualityLeads: Number(leadTotals.highQualityLeads || 0),
-        repeatedShortAttemptLeads: Number(leadTotals.repeatedShortAttemptLeads || 0),
+        wasteRiskLeads: null,
+        highQualityLeads: null,
+        repeatedShortAttemptLeads: null,
         managerReviewCalls: Number(callTotals.managerReviewCalls || 0),
         riskFlagCalls: Number(callTotals.riskFlagCalls || 0),
-        avgCallUtilizationScore: Number(callTotals.avgCallUtilizationScore || 0),
-        avgLeadUtilizationScore: Number(leadTotals.avgLeadUtilizationScore || 0),
+        avgCallUtilizationScore: null,
+        avgLeadUtilizationScore: null,
         llmQueued: Number(callTotals.llmQueued || 0),
         llmCompleted: Number(callTotals.llmCompleted || 0),
         llmFailed: Number(callTotals.llmFailed || 0),
         llmNotRequested: Number(callTotals.llmNotRequested || 0),
-        deterministicHighConfidence: Number(callTotals.deterministicHighConfidence || 0),
-        deterministicMediumConfidence: Number(callTotals.deterministicMediumConfidence || 0),
-        deterministicLowConfidence: Number(callTotals.deterministicLowConfidence || 0),
-        deterministicUnusableTranscript: Number(callTotals.deterministicUnusableTranscript || 0),
+        deterministicHighConfidence: null,
+        deterministicMediumConfidence: null,
+        deterministicLowConfidence: null,
+        deterministicUnusableTranscript: null,
         deterministicUnknownConfidence: Number(callTotals.deterministicUnknownConfidence || 0)
       },
       salespeople: salespeople.map((row) => ({
         salesperson: row.salesperson || "Unknown",
         leads: Number(row.leads || 0),
-        wasteRiskLeads: Number(row.wasteRiskLeads || 0),
-        highQualityLeads: Number(row.highQualityLeads || 0),
-        repeatedShortAttemptLeads: Number(row.repeatedShortAttemptLeads || 0),
-        avgScore: Number(row.avgScore || 0),
-        wasteRiskRate: row.leads ? Number(row.wasteRiskLeads || 0) / Number(row.leads) : 0
+        wasteRiskLeads: null,
+        highQualityLeads: null,
+        repeatedShortAttemptLeads: null,
+        avgScore: null,
+        wasteRiskRate: null
       })),
       sources: sources.map((row) => ({
         source: row.source || "Unknown source",
         leads: Number(row.leads || 0),
-        wasteRiskLeads: Number(row.wasteRiskLeads || 0),
-        highQualityLeads: Number(row.highQualityLeads || 0),
-        repeatedShortAttemptLeads: Number(row.repeatedShortAttemptLeads || 0),
-        avgScore: Number(row.avgScore || 0),
-        wasteRiskRate: row.leads ? Number(row.wasteRiskLeads || 0) / Number(row.leads) : 0
+        wasteRiskLeads: null,
+        highQualityLeads: null,
+        repeatedShortAttemptLeads: null,
+        avgScore: null,
+        wasteRiskRate: null
       }))
     };
   } finally {
@@ -649,16 +608,16 @@ function listCallIntelligence(options = {}) {
     const rows = db.prepare(`
       SELECT
         c.*,
-        COALESCE(l.waste_risk, 0) AS lead_waste_risk,
-        COALESCE(l.high_quality_utilized, 0) AS lead_high_quality_utilized,
-        COALESCE(l.repeated_short_attempt, 0) AS lead_repeated_short_attempt,
+        NULL AS lead_waste_risk,
+        NULL AS lead_high_quality_utilized,
+        NULL AS lead_repeated_short_attempt,
         l.reason AS lead_reason
       FROM call_intelligence c
       LEFT JOIN lead_intelligence l
         ON l.import_id = c.import_id
        AND l.lead_key = c.lead_key
       ${where}
-      ORDER BY c.manager_review_required DESC, COALESCE(l.waste_risk, 0) DESC, c.lead_utilization_score ASC, c.call_id ASC
+      ORDER BY c.manager_review_required DESC, c.call_id ASC
       LIMIT ? OFFSET ?
     `).all(...params, limit, offset);
     return attachLlmAuditDetails(db, rows).map(({ disposition_matches_transcript: _retiredDispositionField, ...row }) => row);
@@ -1009,96 +968,19 @@ function saveLlmIntelligenceResult(options = {}) {
 
   try {
     runTransaction(db, () => {
-      db.prepare("DELETE FROM intelligence_entities WHERE import_id = ? AND call_id = ? AND source = 'llm'").run(importId, callId);
-      db.prepare("DELETE FROM intelligence_events WHERE import_id = ? AND call_id = ? AND source = 'llm'").run(importId, callId);
-      db.prepare("DELETE FROM intelligence_risk_flags WHERE import_id = ? AND call_id = ? AND source = 'llm'").run(importId, callId);
       db.prepare("DELETE FROM intelligence_llm_results WHERE import_id = ? AND call_id = ?").run(importId, callId);
       db.prepare(`
         INSERT INTO intelligence_llm_results (import_id, call_id, job_id, result_json, confidence, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(importId, callId, jobId, JSON.stringify(payload), Number(payload.call_summary?.confidence || payload.confidence || 0), now);
-
-      const insertEntity = db.prepare(`
-        INSERT INTO intelligence_entities (import_id, call_id, entity_type, raw_value, normalized_value, speaker, evidence, confidence, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'llm', ?)
-      `);
-      const insertEvent = db.prepare(`
-        INSERT INTO intelligence_events (import_id, call_id, event_type, speaker, raw_value, normalized_value, follow_up_required, due_at, evidence, confidence, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm', ?)
-      `);
-      const insertFlag = db.prepare(`
-        INSERT INTO intelligence_risk_flags (import_id, call_id, flag_type, severity, speaker, evidence, confidence, manager_review_recommended, source, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'llm', ?)
-      `);
-
-      (Array.isArray(payload.entities) ? payload.entities : []).forEach((entity) => insertEntity.run(
-        importId,
-        callId,
-        entity.entity_type || entity.entityType || "",
-        entity.raw_value || entity.rawValue || "",
-        entity.normalized_value || entity.normalizedValue || "",
-        entity.speaker || "unknown",
-        entity.evidence || "",
-        Number(entity.confidence || 0),
-        now
-      ));
-      (Array.isArray(payload.events) ? payload.events : []).forEach((event) => insertEvent.run(
-        importId,
-        callId,
-        event.event_type || event.eventType || "",
-        event.speaker || "unknown",
-        event.raw_value || event.rawValue || "",
-        event.normalized_value || event.normalizedValue || "",
-        event.follow_up_required || event.followUpRequired ? 1 : 0,
-        event.due_at || event.dueAt || "",
-        event.evidence || "",
-        Number(event.confidence || 0),
-        now
-      ));
-      (Array.isArray(payload.risk_flags) ? payload.risk_flags : Array.isArray(payload.riskFlags) ? payload.riskFlags : []).forEach((flag) => insertFlag.run(
-        importId,
-        callId,
-        flag.flag_type || flag.flagType || "",
-        flag.severity || "medium",
-        flag.speaker || "unknown",
-        flag.evidence || "",
-        Number(flag.confidence || 0),
-        flag.manager_review_recommended || flag.managerReviewRecommended ? 1 : 0,
-        now
-      ));
-
-      const summary = payload.call_summary || payload.callSummary || {};
-      const riskFlags = Array.isArray(payload.risk_flags) ? payload.risk_flags : Array.isArray(payload.riskFlags) ? payload.riskFlags : [];
-      const hasLlmRiskFlag = riskFlags.length > 0;
-      const llmManagerReviewRequired = Boolean(summary.manager_review_required || summary.managerReviewRequired || riskFlags.some((flag) => flag.manager_review_recommended || flag.managerReviewRecommended));
       db.prepare(`
         UPDATE call_intelligence
-        SET
-          llm_status = 'completed',
-          llm_job_id = ?,
-          llm_confidence = ?,
-          decision_maker_status = COALESCE(NULLIF(?, ''), decision_maker_status),
-          customer_sentiment = COALESCE(NULLIF(?, ''), customer_sentiment),
-          manager_review_required = CASE WHEN ? THEN 1 ELSE manager_review_required END,
-          risk_flag_exists = CASE WHEN ? THEN 1 ELSE risk_flag_exists END,
-          brief_reason = COALESCE(NULLIF(?, ''), brief_reason),
-          updated_at = ?
+        SET llm_status = 'not_requested', llm_job_id = '', llm_confidence = NULL, updated_at = ?
         WHERE import_id = ? AND call_id = ?
-      `).run(
-        jobId,
-        Number(summary.confidence || payload.confidence || 0),
-        summary.decision_maker_status || summary.decisionMakerStatus || "",
-        summary.customer_sentiment || summary.customerSentiment || "",
-        llmManagerReviewRequired ? 1 : 0,
-        hasLlmRiskFlag ? 1 : 0,
-        summary.brief_reason || summary.briefReason || "",
-        now,
-        importId,
-        callId
-      );
+      `).run(now, importId, callId);
     });
 
-    return { ok: true, importId, callId, jobId, payload };
+    return { ok: true, importId, callId, jobId, payload, researchOnly: true, operationallyPermitted: false };
   } finally {
     db.close();
   }

@@ -1,5 +1,6 @@
 "use strict";
 
+const { isOperationalEvaluationResult } = require("./localModelCapability");
 const { parseTranscriptTurns } = require("./transcriptEvaluator");
 
 const COMMERCIAL_STATE_SCHEMA_VERSION = "call_commercial_state.v1";
@@ -221,7 +222,7 @@ function acceptanceStrength(offerResult) {
 }
 
 function confidenceReason(result) {
-  if (!result) return { band: "unknown", reason: "No authoritative specialist result is stored.", auditValue: null };
+  if (!result) return { band: "unknown", reason: "No promoted evaluator result is available.", auditValue: null };
   const offer = result.acceptanceAssessment;
   const exactOffer = clean(offer?.offerEvidence?.quote);
   const exactResponse = clean(offer?.customerResponseEvidence?.quote);
@@ -275,7 +276,7 @@ function buildConflicts(foundation, offerResult) {
     type: "foundation_specialist_acceptance_disagreement",
     foundationValue: foundation.customerOutcome || "unknown",
     specialistValue: offerResult.acceptanceAssessment.classification || "unknown",
-    resolutionRule: "offer_acceptance_specialist_authoritative",
+    resolutionRule: "promoted_offer_acceptance_contract",
     resolvedValue: offerResult.acceptanceAssessment.classification || "unknown",
     status: "resolved_by_policy",
     reviewRecommended: false,
@@ -284,24 +285,33 @@ function buildConflicts(foundation, offerResult) {
 }
 
 function buildCallIntelligenceAggregate({ results = [], call = {}, foundationContext = null, offerAcceptanceContext = null } = {}) {
-  const offerResult = resultForGoal(results, "offer_acceptance_classification") || (offerAcceptanceContext ? {
+  const operationalResults = (results || []).filter((result) => isOperationalEvaluationResult(result));
+  const suppliedOfferPermitted = offerAcceptanceContext?.localModelCapability?.operationallyPermitted === true;
+  const offerResult = resultForGoal(operationalResults, "offer_acceptance_classification") || (suppliedOfferPermitted ? {
     ...offerAcceptanceContext,
     id: offerAcceptanceContext.sourceResultId,
     evaluationGoal: "offer_acceptance_classification"
   } : null);
-  const foundationResult = resultForGoal(results, "call_intelligence_foundation");
-  const sourceFoundation = foundationContext || foundationResult?.foundationAssessment || null;
+  const foundationResult = resultForGoal(operationalResults, "call_intelligence_foundation");
+  const deterministicFoundation = foundationContext?.contextProvenance === "deterministic_transcript_fallback";
+  const suppliedFoundationPermitted = foundationContext?.localModelCapability?.operationallyPermitted === true;
+  const sourceFoundation = deterministicFoundation || suppliedFoundationPermitted
+    ? foundationContext
+    : foundationResult?.foundationAssessment || null;
   const foundation = sourceFoundation ? {
     ...sourceFoundation,
     sourceResultId: sourceFoundation.sourceResultId || foundationResult?.id || ""
   } : null;
   const commercialState = buildCommercialState({ foundation, offerResult, call });
-  const strongestEvidence = strongestTranscriptEvidence(call, commercialState.quotedValue);
-  const acceptanceEvidence = offerResult?.acceptanceAssessment?.customerResponseEvidence?.quote || strongestEvidence.acceptance || "";
-  const offerEvidence = offerResult?.acceptanceAssessment?.offerEvidence?.quote || strongestEvidence.offer || "";
+  // Commercial evidence must come from an operationally permitted result. A
+  // transcript substring match alone does not establish offer or acceptance
+  // semantics, so it is deliberately unavailable while the capability is
+  // quarantined.
+  const acceptanceEvidence = offerResult?.acceptanceAssessment?.customerResponseEvidence?.quote || "";
+  const offerEvidence = offerResult?.acceptanceAssessment?.offerEvidence?.quote || "";
   const timingEvidence = (foundation?.evidence || []).find((item) => item.supports === "follow_up_timing")?.quote || "";
   const routing = Object.fromEntries(SPECIALIST_GOALS.map((goal) => {
-    const specialist = resultForGoal(results, goal);
+    const specialist = resultForGoal(operationalResults, goal);
     return [goal, {
       state: routingState(goal, foundation, specialist),
       routedByFoundation: foundation?.specialistRoutes?.[goal] === true,
@@ -325,15 +335,16 @@ function buildCallIntelligenceAggregate({ results = [], call = {}, foundationCon
     : commercialState.quotedValueReviewRequired
       ? ` Transcript-extracted quoted amount ${commercialState.quotedCurrency === "unknown" ? "" : `${commercialState.quotedCurrency} `}${commercialState.quotedValue} requires review before use.`
       : ` Quoted value ${commercialState.quotedCurrency === "unknown" ? "" : `${commercialState.quotedCurrency} `}${commercialState.quotedValue}.`;
-  const authoritativeSummary = accepted
+  const operationalSummary = accepted
     ? `Accepted offer — payment pending verification.${quotedValueSummary}${date ? ` Customer-stated payment timing resolves to ${date}.` : ""} Payment receipt, invoicing, fulfilment, revenue and CRM closure are not established.`
-    : offerResult?.managerSummary || foundationResult?.managerSummary || "No authoritative commercial outcome is established.";
+    : offerResult?.managerSummary || foundationResult?.managerSummary || "No promoted evaluator establishes a commercial outcome.";
   return {
     schemaVersion: CALL_INTELLIGENCE_AGGREGATE_SCHEMA_VERSION,
-    authoritativeResult: {
+    decisionBasis: {
       evaluationGoal: offerResult ? "offer_acceptance_classification" : foundation ? "call_intelligence_foundation" : "none",
       resultId: offerResult?.id || foundation?.sourceResultId || "",
-      summary: authoritativeSummary
+      summary: operationalSummary,
+      authorityStatus: offerResult || foundationResult ? "promoted_capability" : deterministicFoundation ? "deterministic_literal_context_only" : "no_promoted_capability"
     },
     commercialState,
     keyEvidence: {

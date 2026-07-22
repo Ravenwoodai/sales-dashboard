@@ -151,6 +151,14 @@ function sampleCsv() {
   return `${header.join(",")}\n${header.map((field) => row[field]).join(",")}\n`;
 }
 
+function directOptOutSampleCsv(callId = "48500001") {
+  const lines = sampleCsv().trim().split(/\r?\n/);
+  const values = lines[1].split(",");
+  values[header.indexOf("call_id")] = callId;
+  values[header.indexOf("transcription_text")] = "Outbound call Customer: Please do not call me again. Agent: I understand.";
+  return `${lines[0]}\n${values.join(",")}\n`;
+}
+
 function csvRows(rows) {
   return `${header.join(",")}\n${rows.join("\n")}\n`;
 }
@@ -162,11 +170,11 @@ test("persistAnalysis stores import history, evaluation artifact, and automatic 
   const store = readStore({ storePath });
 
   assert.equal(store.imports.length, 1);
-  assert.equal(store.reports.length, 2);
+  assert.equal(store.reports.length, 1);
   assert.equal(store.imports[0].id, result.importRecord.id);
   assert.equal(store.imports[0].evaluationRowCount, 1);
   assert.ok(store.reports.some((report) => report.type === "executive_summary"));
-  assert.ok(store.reports.some((report) => report.type === "lead_utilization_report"));
+  assert.equal(store.reports.some((report) => report.type === "lead_utilization_report"), false);
 
   const artifactPath = path.join(path.dirname(storePath), store.imports[0].artifactPath);
   assert.equal(fs.existsSync(artifactPath), true);
@@ -282,7 +290,7 @@ test("dashboardPersistence excludes parked allocation reports and alert events f
 
 test("alert lifecycle actions save status, actors, notes, and active-count changes", () => {
   const storePath = tempStorePath();
-  const analysis = analyzeCsvText(sampleCsv(), { sourceName: "sample.csv" });
+  const analysis = analyzeCsvText(directOptOutSampleCsv(), { sourceName: "sample.csv" });
   const persisted = persistAnalysis(analysis, { csvPath: "C:/private/sample.csv", storePath });
   let store = readStore({ storePath });
   const alertId = store.alertEvents[0].id;
@@ -358,7 +366,7 @@ test("alert lifecycle actions save status, actors, notes, and active-count chang
 test("bulk alert lifecycle updates only selected active alerts", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csvRows([
-    sampleCsv().trim().split(/\r?\n/)[1],
+    directOptOutSampleCsv().trim().split(/\r?\n/)[1],
     header.map((field) => ({
       ...Object.fromEntries(header.map((key) => [key, ""])),
       call_id: "risk-2",
@@ -400,7 +408,7 @@ test("bulk alert lifecycle updates only selected active alerts", () => {
 test("bulk alert lifecycle supports selected acknowledge resolve and false-positive actions with local actor", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csvRows([
-    sampleCsv().trim().split(/\r?\n/)[1],
+    directOptOutSampleCsv().trim().split(/\r?\n/)[1],
     header.map((field) => ({
       ...Object.fromEntries(header.map((key) => [key, ""])),
       call_id: "risk-2",
@@ -555,8 +563,8 @@ test("manager review corrections are auditable and do not overwrite raw or deriv
     reviewScope: "outcome",
     fieldName: "local_outcome_category",
     rawValue: "NULL",
-    deterministicValue: "callback_requested",
-    previousDisplayValue: "callback_requested",
+    deterministicValue: "unknown",
+    previousDisplayValue: "unknown",
     managerCorrectedValue: "information_requested",
     correctionReason: "Transcript asks for information only.",
     evidenceAssessment: "evidence_accepted",
@@ -568,14 +576,14 @@ test("manager review corrections are auditable and do not overwrite raw or deriv
   assert.equal(saved.review.reviewedBy, "local_manager");
   assert.equal(saved.review.corrections.length, 1);
   assert.equal(saved.review.corrections[0].fieldName, "local_outcome_category");
-  assert.equal(saved.review.corrections[0].previousDisplayValue, "callback_requested");
+  assert.equal(saved.review.corrections[0].previousDisplayValue, "unknown");
   assert.equal(saved.review.corrections[0].managerCorrectedValue, "information_requested");
   assert.equal(saved.review.reviewHistory[0].actor, "local_manager");
   assert.match(saved.review.managerNotes, /<script>alert\(1\)<\/script>/);
 
   const artifact = JSON.parse(fs.readFileSync(path.join(path.dirname(storePath), persisted.importRecord.artifactPath), "utf8"));
   const evaluation = artifact.evaluationRows.find((row) => row.callId === "48500001");
-  assert.equal(evaluation.localOutcome, "callback_requested");
+  assert.equal(evaluation.localOutcome, "unknown");
   assert.equal(evaluation.importedNoSaleRaw, undefined);
   assert.equal(saved.review.corrections[0].rawValue, "");
 
@@ -711,6 +719,6 @@ test("loadAnalysis persists a configured CSV into the selected store", () => {
 
   assert.equal(state.error, null);
   assert.equal(state.analysis.persistence.counts.imports, 1);
-  assert.equal(state.analysis.persistence.counts.reports, 2);
+  assert.equal(state.analysis.persistence.counts.reports, 1);
   assert.ok(state.importRecord.id.startsWith("import_"));
 });

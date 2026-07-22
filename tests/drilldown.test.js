@@ -160,9 +160,43 @@ async function withServer(csvText, fn, options = {}) {
   }
 }
 
+test("Sales Opportunity Action Centre exposes only trusted transcript coverage while model actions are unavailable", async () => {
+  await withServer(csv([
+    row({ call_id: "opportunity-1", customer_id: "customer-opportunity-1", transcription_text: "Agent: I am calling on behalf of the local service. Customer: Please send the details." }),
+    row({ call_id: "opportunity-2", customer_id: "", Salesperson: "Second Seller", CustomerImportSource: "Facebook", transcription_text: "Agent: Hello. Customer: Hello." })
+  ]), async ({ baseUrl }) => {
+    const htmlResponse = await fetch(`${baseUrl}/?view=opportunities&opportunityStage=transcript_available`);
+    const html = await htmlResponse.text();
+    assert.equal(htmlResponse.status, 200);
+    assert.match(html, /Sales Opportunity Action Centre/);
+    assert.match(html, /AI opportunity actions are unavailable/);
+    assert.match(html, /Operational AI decisions[\s\S]*0/);
+    assert.match(html, /AI action queues[\s\S]*0/);
+    assert.doesNotMatch(html, /id="opportunity-funnel"|id="opportunity-actions"|id="opportunity-cohorts"/);
+
+    const api = await fetch(`${baseUrl}/api/sales-opportunities?stage=transcript_available&limit=1`).then((response) => response.json());
+    assert.equal(api.query.matchingRecords, 2);
+    assert.equal(api.records.length, 1);
+    assert.equal(api.funnel.find((stage) => stage.key === "transcript_available").count, 2);
+
+    const briefResponse = await fetch(`${baseUrl}/api/sales-opportunities/brief?format=markdown`);
+    const brief = await briefResponse.text();
+    assert.equal(briefResponse.status, 200);
+    assert.match(briefResponse.headers.get("content-disposition"), /sales-opportunity-action-centre-current\.md/);
+    assert.match(brief, /Sales Opportunity Action Centre[^\n]*Unavailable/);
+    assert.match(brief, /No local-model evaluator is promoted/);
+    assert.doesNotMatch(brief, /Largest supported action pools/);
+
+    const report = await fetch(`${baseUrl}/reports/sales-opportunity-action-centre-current`);
+    assert.equal(report.status, 200);
+    assert.match(await report.text(), /Unavailable/);
+  });
+});
+
 test("call drill-down returns sanitized raw fields and full local transcript proof", () => {
   const analysis = analyzeCsvText(csv([row()]));
-  const result = buildDrilldownResult(analysis, { metric: "calls.followUpRequired" });
+  const result = buildDrilldownResult(analysis, { metric: "calls.unique" });
+  const retiredFollowUp = buildDrilldownResult(analysis, { metric: "calls.followUpRequired" });
 
   assert.equal(result.count, 1);
   assert.equal(result.rows[0].callId, "1");
@@ -173,9 +207,11 @@ test("call drill-down returns sanitized raw fields and full local transcript pro
   assert.equal(result.rows[0].rawFields.NoSaleType, undefined);
   assert.equal(result.rows[0].rawFields.Baz_DetailedNotes, undefined);
   assert.match(result.rows[0].transcript, /Please call me back later today/);
+  assert.equal(retiredFollowUp.count, 0);
+  assert.equal(retiredFollowUp.authorityStatus, "unavailable");
 });
 
-test("transcript governance drill-downs expose exact usable and review-only call sets", () => {
+test("transcript governance keeps automated quality and coaching unavailable", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "governance-usable",
@@ -199,20 +235,22 @@ test("transcript governance drill-downs expose exact usable and review-only call
 
   const usable = buildDrilldownResult(analysis, { metric: "calls.transcriptUsableForCoaching" });
   const reviewOnly = buildDrilldownResult(analysis, { metric: "calls.lowOrUnusableTranscript" });
-  const multipleBands = buildDrilldownResult(analysis, { metric: "calls.unique", confidenceBand: "low,unusable" });
+  const unknown = buildDrilldownResult(analysis, { metric: "calls.unique", confidenceBand: "unknown" });
 
-  assert.deepEqual(usable.rows.map((item) => item.callId), ["governance-usable"]);
-  assert.deepEqual(reviewOnly.rows.map((item) => item.callId).sort(), ["governance-low", "governance-unusable"]);
-  assert.deepEqual(multipleBands.rows.map((item) => item.callId).sort(), ["governance-low", "governance-unusable"]);
+  assert.equal(usable.count, 0);
+  assert.equal(usable.authorityStatus, "unavailable");
+  assert.equal(reviewOnly.count, 0);
+  assert.equal(reviewOnly.authorityStatus, "unavailable");
+  assert.deepEqual(unknown.rows.map((item) => item.callId).sort(), ["governance-low", "governance-unusable", "governance-usable"]);
 });
 
 test("dashboard and Evaluation Studio expose drill-down links for backed aggregates and mark terminal metadata", async () => {
   await withServer(csv([row({ Salesperson: "Riley Example", CustomerImportSource: "GoogleMaps" })]), async ({ baseUrl }) => {
     const dashboard = await fetch(`${baseUrl}/?view=intelligence`).then((response) => response.text());
-    assert.match(dashboard, /metric=calls\.transcriptUsableForCoaching/);
-    assert.match(dashboard, /metric=calls\.lowOrUnusableTranscript/);
-    assert.match(dashboard, /metric=calls\.unique&amp;salesperson=Riley\+Example/);
-    assert.match(dashboard, /intelligenceQueue=repeated_short/);
+    assert.doesNotMatch(dashboard, /metric=calls\.transcriptUsableForCoaching/);
+    assert.doesNotMatch(dashboard, /metric=calls\.lowOrUnusableTranscript/);
+    assert.match(dashboard, /Semantic scorecards unavailable/);
+    assert.match(dashboard, /Restricted Literal Transcript Triage/);
     assert.match(dashboard, /data-drilldown="not-applicable"/);
     assert.match(dashboard, /href="\/imports\/import_[^"&]+"/);
     assert.match(dashboard, /href="\/manager-reviews"/);
@@ -221,10 +259,10 @@ test("dashboard and Evaluation Studio expose drill-down links for backed aggrega
     assert.equal((await fetch(`${baseUrl}/manager-reviews`)).status, 200);
 
     const studio = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(studio, /reportSignal=callbackOpportunities/);
-    assert.match(studio, /reportSignal=possibleWasteIndicators/);
-    assert.match(studio, /reportSignal=coachingOpportunities/);
-    assert.match(studio, /metric=calls\.transcriptAvailable/);
+    assert.match(studio, /No model evaluation is available/);
+    assert.match(studio, /Historical Model Outputs Grouped by Call/);
+    assert.doesNotMatch(studio, /reportSignal=callbackOpportunities|reportSignal=possibleWasteIndicators|reportSignal=coachingOpportunities/);
+    assert.doesNotMatch(studio, /<button type="submit">Run evaluation<\/button>/);
   });
 });
 
@@ -348,7 +386,7 @@ test("source-quality drill-down filters New Business calls by Record Age thresho
   assert.equal(buildDrilldownResult(analysis, { metric: "source.recordAgeAvailable" }).count, 4);
 });
 
-test("AI call assistant drill-down filters bail and handled encounters", () => {
+test("AI call assistant drill-down exposes literal detections but no handling decisions", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "ai-bail",
@@ -367,15 +405,14 @@ test("AI call assistant drill-down filters bail and handled encounters", () => {
   const handled = buildDrilldownResult(analysis, { metric: "calls.aiVoiceAssistantHandled", salesperson: "Strong Seller" });
 
   assert.equal(encounters.count, 2);
-  assert.equal(bailed.count, 1);
-  assert.equal(bailed.rows[0].callId, "ai-bail");
-  assert.equal(bailed.rows[0].aiVoiceAssistantBailed, true);
-  assert.equal(handled.count, 1);
-  assert.equal(handled.rows[0].callId, "ai-handled");
-  assert.deepEqual(handled.rows[0].aiVoiceAssistantTactics.includes("Explained reason"), true);
+  assert.equal(bailed.count, 0);
+  assert.equal(bailed.authorityStatus, "unavailable");
+  assert.equal(handled.count, 0);
+  assert.equal(handled.authorityStatus, "unavailable");
+  assert.equal(encounters.rows.every((item) => item.aiVoiceAssistantHandledSuccessfully === null), true);
 });
 
-test("system audio drill-down filters subtypes and recovery proof", () => {
+test("system audio drill-down filters literal subtypes and withholds recovery claims", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "screening",
@@ -402,7 +439,7 @@ test("system audio drill-down filters subtypes and recovery proof", () => {
       AllocatedLeadID: "lead-carrier",
       Salesperson: "Carrier Seller",
       CustomerImportSource: "Facebook",
-      transcription_text: "Outbound call Customer: The number is busy."
+      transcription_text: "Outbound call Voicemail: The number you have called is busy."
     })
   ]));
 
@@ -415,14 +452,14 @@ test("system audio drill-down filters subtypes and recovery proof", () => {
   assert.equal(all.count, 2);
   assert.equal(screening.count, 1);
   assert.equal(screening.rows[0].subtypeLabel, "Call Screening / AI Assistant");
-  assert.equal(screening.rows[0].handledSuccessfully, true);
-  assert.equal(recovered.count, 1);
-  assert.equal(recovered.rows[0].futureCallId, "screening-future");
+  assert.equal(screening.rows[0].handledSuccessfully, null);
+  assert.equal(recovered.count, 0);
+  assert.equal(recovered.authorityStatus, "unavailable");
   assert.equal(carrier.count, 1);
   assert.equal(carrier.rows[0].callId, "carrier");
 });
 
-test("dashboard can submit a call transcript to the AI execution layer", async () => {
+test("retired generic transcript evaluation route cannot submit a model job", async () => {
   const fetchRequests = [];
   await withServer(csv([row({ call_id: "4" })]), async ({ baseUrl, storePath }) => {
     const response = await fetch(`${baseUrl}/api/ai/transcript-evaluation`, {
@@ -432,15 +469,13 @@ test("dashboard can submit a call transcript to the AI execution layer", async (
     });
     const body = await response.json();
 
-    assert.equal(response.status, 202);
-    assert.equal(body.ok, true);
-    assert.equal(body.job.jobId, "job-ai-4");
-    assert.equal(fetchRequests.length, 1);
-    assert.equal(fetchRequests[0].url, "http://127.0.0.1:8080/run-task");
+    assert.equal(response.status, 410);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /retired/i);
+    assert.equal(fetchRequests.length, 0);
 
     const store = readStore({ storePath });
-    assert.equal(store.aiJobs.length, 1);
-    assert.equal(store.aiJobs[0].callId, "4");
+    assert.equal(store.aiJobs.length, 0);
   }, {
     env: {
       SALES_DASHBOARD_AI_ENABLED: "true",
@@ -512,9 +547,13 @@ test("dashboard parks configured allocation data outside active summary and navi
     assert.equal(health.allocation_active_metrics_available, false);
 
     const html = await fetch(baseUrl).then((response) => response.text());
+    const literalActivityHtml = await fetch(`${baseUrl}/?view=follow_up`).then((response) => response.text());
     assert.doesNotMatch(html, /href="#allocations"/);
     assert.doesNotMatch(html, /Lead Allocation Coverage|Leads allocated|Leads remaining|QTY ACTIONED|Observed vs actioned|stable lead-days/i);
-    assert.match(html, /No-Contact Utilisation Proof/);
+    assert.match(literalActivityHtml, /Literal No-Contact Activity/);
+    assert.match(literalActivityHtml, /not a performance judgement/i);
+    assert.match(literalActivityHtml, /do not measure[\s\S]*under-utilisation/i);
+    assert.doesNotMatch(literalActivityHtml, /Potential lead under-utilisation/i);
   }, { allocationPath });
 });
 
@@ -540,7 +579,7 @@ test("dashboard renders active dataset banner and call-data window warnings", as
     assert.match(html, /single source call date/i);
     assert.match(html, /only part of a source day/i);
     assert.match(html, /Trend alerts and comparisons need more history/i);
-    assert.match(html, /Follow-up overdue status may be indeterminate/i);
+    assert.doesNotMatch(html, /Follow-up overdue status may be indeterminate/i);
     assert.match(html, /does not contain reliable confirmed sales, revenue, order value, close date, or true conversion outcome/i);
     assert.doesNotMatch(html, /QTY ACTIONED|allocation reconciliation|stable lead-days|allocated-versus-called|campaign\/allocation|allocation coverage/i);
   });
@@ -562,17 +601,16 @@ test("dashboard labels intelligence provenance confidence evidence and manager r
 
     assert.match(html, /Intelligence Provenance/);
     assert.match(html, /Deterministic/);
-    assert.match(html, /not all calls are LLM-reviewed/i);
-    assert.match(html, /Low\/unusable transcripts/);
+    assert.match(html, /Historical model outputs are excluded/i);
+    assert.match(html, /Local-model operations[\s\S]*Disabled/);
+    assert.match(html, /Semantic transcript decisions[\s\S]*Unavailable/);
     assert.doesNotMatch(html, /Raw NoSaleType|Baz_DetailedNotes/);
     assert.match(html, /Derived outcome/);
     assert.match(html, /Evidence unavailable/);
     assert.doesNotMatch(html, /QTY ACTIONED|allocation reconciliation|stable lead-days|allocated-versus-called|campaign\/allocation|allocation coverage/i);
 
     const notRequestedHtml = await fetch(`${baseUrl}/?intelligenceQueue=llm_completed&llmStatus=not_requested&callIds=proof`).then((response) => response.text());
-    assert.match(notRequestedHtml, /proof[\s\S]*Not requested/);
-    assert.match(notRequestedHtml, /proof[\s\S]*Confidence unavailable/);
-    assert.doesNotMatch(notRequestedHtml, /proof[\s\S]{0,800}LLM-reviewed/);
+    assert.doesNotMatch(notRequestedHtml, /LLM-reviewed/);
 
     const reviewForm = new URLSearchParams({
       callId: "proof",
@@ -592,7 +630,7 @@ test("dashboard labels intelligence provenance confidence evidence and manager r
     const callHtml = await fetch(`${baseUrl}/calls/proof`).then((response) => response.text());
     assert.match(callHtml, /Manager review state[\s\S]*Manager-reviewed/);
     assert.doesNotMatch(callHtml, /Raw imported NoSaleType|Baz_DetailedNotes/);
-    assert.match(callHtml, /Deterministic derived outcome[\s\S]*Deterministic/);
+    assert.match(callHtml, /Literal terminal state[\s\S]*Restricted literal rule/);
 
     saveLlmIntelligenceResult({
       storePath,
@@ -630,9 +668,9 @@ test("dashboard labels intelligence provenance confidence evidence and manager r
       html.indexOf('id="intelligence-queue"'),
       html.indexOf('id="lead-utilization"') > 0 ? html.indexOf('id="lead-utilization"') : html.length
     );
-    assert.match(html, /LLM-reviewed/);
-    assert.match(html, /91%/);
-    assert.doesNotMatch(intelligenceQueueHtml, /proof[\s\S]{0,800}Confidence unavailable/);
+    assert.match(html, /Local-model operations[\s\S]*Disabled/);
+    assert.doesNotMatch(html, /LLM-reviewed|91%/);
+    assert.doesNotMatch(intelligenceQueueHtml, /Customer requested a callback/);
   });
 });
 
@@ -710,7 +748,7 @@ test("dashboard global filters keep summary drill-down explorer and alert counts
     assert.match(html, /Records excluded[\s\S]*1/);
     assert.match(html, /Salesperson[\s\S]*Seller A/);
     assert.match(html, /Very low sample size; rates may be unstable/);
-    assert.match(html, /Executive rates use filtered deduplicated calls/);
+    assert.match(html, /Activity rates use filtered deduplicated calls/);
     assert.doesNotMatch(html, /Raw NoSaleType|Baz_DetailedNotes/);
     assert.match(html, /Derived outcome/);
     assert.match(html, /href="\/drilldown\?(?=[^"]*metric=calls\.unique)(?=[^"]*salesperson=Seller(?:%20|\+)A)[^"]*"/);
@@ -734,7 +772,7 @@ test("alert lifecycle API updates active counts, notes, history, and bulk-select
       customer_id: "customer-b",
       ContactId: "contact-b",
       Salesperson: "Seller B",
-      transcription_text: "Outbound call Customer: This is a complaint and I want it reviewed. Agent: I understand.",
+      transcription_text: "Outbound call Customer: Remove me from your call list and do not contact me again. Agent: I understand.",
       NoSaleType: "Not Interested"
     })
   ]), async ({ baseUrl }) => {
@@ -948,11 +986,11 @@ test("manager review governance API and UI preserve provenance and stay separate
     assert.match(callHtml, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
     assert.doesNotMatch(callHtml, /<script>alert/);
     assert.doesNotMatch(callHtml, /Raw imported NoSaleType|Baz_DetailedNotes/);
-    assert.match(callHtml, /Deterministic derived outcome/);
+    assert.match(callHtml, /Literal terminal state/);
 
     const dashboardHtml = await fetch(`${baseUrl}/`).then((response) => response.text());
     assert.match(dashboardHtml, /Manager-corrected/);
-    assert.match(dashboardHtml, /Manager review is separate from alert lifecycle|Lifecycle workflow for call-data alerts/);
+    assert.match(callHtml, /Manager review is separate from alert lifecycle/);
 
     const store = readStore({ storePath });
     assert.equal(store.managerReviews.length, 1);
@@ -1126,13 +1164,16 @@ test("dashboard workspaces focus manager workflows and preserve filter context",
     assert.match(overview, /Sales Dashboard workspaces/);
     assert.match(overview, /Evaluation Studio/);
 
-    const harvest = await fetch(`${baseUrl}/?view=harvest&salesperson=${encodeURIComponent("Workspace Seller")}`).then((response) => response.text());
-    assert.match(harvest, /data-dashboard-view="harvest"/);
-    assert.match(harvest, /Callback opportunities/);
-    assert.match(harvest, /data-dashboard-view="team" hidden/);
-    assert.match(harvest, /name="view" value="harvest"/);
-    assert.match(harvest, /href="\/\?view=harvest#filters"/);
-    assert.match(harvest, /salesperson=Workspace(?:%20|\+)Seller/);
+    const followUp = await fetch(`${baseUrl}/?view=follow_up&salesperson=${encodeURIComponent("Workspace Seller")}`).then((response) => response.text());
+    assert.match(followUp, /data-dashboard-view="follow_up"/);
+    assert.match(followUp, /Literal No-Contact Activity/);
+    assert.match(followUp, /name="view" value="follow_up"/);
+    assert.match(followUp, /href="\/\?view=follow_up#filters"/);
+    assert.match(followUp, /salesperson=Workspace(?:%20|\+)Seller/);
+    assert.doesNotMatch(followUp, /Callback opportunities|Lead Harvest Queue/);
+
+    const retiredHarvest = await fetch(`${baseUrl}/?view=harvest`).then((response) => response.text());
+    assert.match(retiredHarvest, /data-dashboard-view="overview"/);
 
     const records = await fetch(`${baseUrl}/?view=records`).then((response) => response.text());
     assert.match(records, /data-dashboard-view="records"/);
@@ -1143,9 +1184,8 @@ test("dashboard workspaces focus manager workflows and preserve filter context",
     assert.match(studio, /Evaluation Studio sections/);
     assert.match(studio, /href="#knowledgebase"/);
     assert.match(studio, /href="#runs"/);
-    assert.match(studio, /class="studio-create"/);
-    assert.match(studio, /Save as draft/);
-    assert.match(studio, /Include in evaluations/);
+    assert.doesNotMatch(studio, /class="studio-create"|Save as draft|Include in evaluations/);
+    assert.match(studio, /No model evaluation is available/);
   });
 });
 
@@ -1258,21 +1298,20 @@ test("lead reattempt drill-down returns customer anchors and exact call proof", 
   });
   assert.equal(validOneDial.count, 1);
   assert.equal(validOneDial.rows[0].customerId, "customer-later");
-  assert.equal(validOneDial.rows[0].oneDialBucketLabel, "Valid one-dial outcome");
+  assert.equal(validOneDial.rows[0].oneDialBucketLabel, "Literal terminal one-dial state");
 
-  const riskyOneDial = buildDrilldownResult(analysis, {
+  const retiredRiskyOneDial = buildDrilldownResult(analysis, {
     metric: "reattempt.oneDialRiskyNoContact",
     salesperson: "Seller B"
   });
-  assert.equal(riskyOneDial.count, 1);
-  assert.equal(riskyOneDial.rows[0].customerId, "customer-warm");
-  assert.equal("spielDeliveredLikely" in riskyOneDial.rows[0], false);
+  assert.equal(retiredRiskyOneDial.count, 0);
+  assert.equal(retiredRiskyOneDial.authorityStatus, "unavailable");
 
   const oneDialNoContactNoLater = buildDrilldownResult(analysis, {
-    metric: "reattempt.oneDialNoContactNoLater",
+    metric: "reattempt.oneDialLiteralNoContactNoLater",
     salesperson: "Seller B"
   });
-  assert.equal(oneDialNoContactNoLater.title, "Potential Lead Under-Utilisation");
+  assert.equal(oneDialNoContactNoLater.title, "Literal One-Dial No-Contact With No Later Match");
   assert.equal(oneDialNoContactNoLater.count, 1);
   assert.equal(oneDialNoContactNoLater.rows[0].customerId, "customer-warm");
   assert.equal(oneDialNoContactNoLater.rows[0].noLaterCallByAnyone, true);
@@ -1281,10 +1320,10 @@ test("lead reattempt drill-down returns customer anchors and exact call proof", 
     metric: "reattempt.oneDialNeedsReview",
     salesperson: "Seller A"
   });
-  assert.equal(needsReviewOneDial.title, "Ambiguous One-Dial Records Excluded");
+  assert.equal(needsReviewOneDial.title, "One-Dial Records Without A Validated Literal State");
   assert.equal(needsReviewOneDial.count, 1);
   assert.equal(needsReviewOneDial.rows[0].customerId, "customer-later");
-  assert.match(needsReviewOneDial.rows[0].oneDialReason, /follow-up|verify/i);
+  assert.match(needsReviewOneDial.rows[0].oneDialReason, /semantic meaning is not evaluated/i);
 
   const noLater = buildDrilldownResult(analysis, {
     metric: "reattempt.noLaterCallByAnyone",
@@ -1338,7 +1377,8 @@ test("dashboard drill-down pages expose proof links and manager review saving", 
     assert.match(drilldownHtml, /\/calls\/3/);
     assert.match(drilldownHtml, /Full JSON/);
     assert.match(drilldownHtml, /Proof/);
-    assert.match(drilldownHtml, /Callback requested or promised/);
+    assert.doesNotMatch(drilldownHtml, /Callback requested or promised/);
+    assert.doesNotMatch(drilldownHtml, /Follow-up signal|Callback timing|Callback status/i);
     assert.doesNotMatch(drilldownHtml, /Please call me back later today/);
 
     const callHtml = await fetch(`${baseUrl}/calls/3`).then((response) => response.text());
@@ -1481,15 +1521,17 @@ test("dashboard exposes lead reattempt tables, pattern links, and filtered API r
       OrderCount: "2"
     })
   ]), async ({ baseUrl }) => {
-    const html = await fetch(`${baseUrl}/`).then((response) => response.text());
+    const html = await fetch(`${baseUrl}/?view=follow_up`).then((response) => response.text());
     assert.match(html, /Lead Reattempt Behaviour/);
     assert.match(html, /Reattempt Behaviour By Salesperson/);
     assert.match(html, /Patterns In What Gets Retried/);
     assert.match(html, /Reattempt Patterns By Source/);
     assert.match(html, /Reattempt Patterns By Region/);
     assert.match(html, /One-dial records/);
-    assert.match(html, /Potential lead under-utilisation/);
-    assert.match(html, /one-dial no-contact rows with no later matching call observed/i);
+    assert.match(html, /Literal one-dial no-contact/);
+    assert.match(html, /no later match/i);
+    assert.match(html, /do not measure[\s\S]*under-utilisation/i);
+    assert.doesNotMatch(html, /Potential lead under-utilisation/i);
     assert.doesNotMatch(html, /One-and-done|One-And-Done/i);
     assert.match(html, /metric=reattempt\.personalRetried/);
     assert.match(html, /maxAttempts=2/);
@@ -1512,7 +1554,7 @@ test("dashboard exposes lead reattempt tables, pattern links, and filtered API r
   });
 });
 
-test("dashboard exposes lead harvest queue, API, and proof drilldown", async () => {
+test("dashboard retires semantic lead harvest UI, API, and proof drilldowns", async () => {
   await withServer(csv([
     row({
       call_id: "harvest-open",
@@ -1570,1056 +1612,335 @@ test("dashboard exposes lead harvest queue, API, and proof drilldown", async () 
       OrderCount: "0"
     })
   ]), async ({ baseUrl }) => {
-    const html = await fetch(`${baseUrl}/`).then((response) => response.text());
-    assert.match(html, /Lead Harvest Queue/);
-    assert.match(html, /Lead Harvest Evidence Queue/);
-    assert.match(html, /Harvest Objections/);
-    assert.match(html, /Salesperson Handling/);
-    assert.match(html, /Oldest/);
-    assert.match(html, /View all/);
-    assert.match(html, /positive callback candidates/i);
-    assert.doesNotMatch(html, /QTY ACTIONED|allocation coverage|campaign allocation|stable lead-days/i);
+    const html = await fetch(`${baseUrl}/?view=overview`).then((response) => response.text());
+    assert.doesNotMatch(html, /Lead Harvest Queue|Lead Harvest Evidence Queue|positive callback candidates/i);
 
-    const api = await fetch(`${baseUrl}/api/lead-harvest?businessSegment=new&objectionType=needs_information_or_review`).then((response) => response.json());
-    assert.equal(api.query.businessSegment, "new");
-    assert.equal(api.query.objectionType, "needs_information_or_review");
-    assert.equal(api.totals.newBusinessCandidateCalls, 1);
-    assert.equal(api.totals.openNewBusinessCandidates, 1);
-    assert.equal(api.records[0].objectionLabel, "Needs information / wants to review");
-    assert.equal(api.records[0].salespersonHandlingType, "clear_next_step");
-    assert.equal(api.records.some((record) => record.callId === "harvest-warm"), false);
-    assert.equal(api.records.some((record) => record.callId === "harvest-terminal"), false);
+    const apiResponse = await fetch(`${baseUrl}/api/lead-harvest?businessSegment=new&objectionType=needs_information_or_review`);
+    assert.equal(apiResponse.status, 410);
+    const api = await apiResponse.json();
+    assert.equal(api.status, "retired");
 
-    const queue = await fetch(`${baseUrl}/api/drilldown?metric=harvest.reviewQueue&businessSegment=new&sort=oldest&limit=1`).then((response) => response.json());
-    assert.equal(queue.kind, "harvest");
-    assert.equal(queue.count, 1);
-    assert.equal(queue.limit, 1);
-    assert.equal(queue.filters.sort, "oldest");
-    assert.equal(queue.rows[0].callId, "harvest-open");
-    assert.equal(queue.rows[0].status, "open_no_later_matching_call");
-    assert.equal(queue.rows[0].objectionType, "needs_information_or_review");
-    assert.equal(queue.rows[0].salespersonHandlingType, "clear_next_step");
-    assert.match(queue.rows[0].handoverSummary, /Morgan|tomorrow/i);
+    const queue = await fetch(`${baseUrl}/api/drilldown?metric=harvest.reviewQueue&businessSegment=new`).then((response) => response.json());
+    assert.equal(queue.count, 0);
+    assert.equal(queue.authorityStatus, "unavailable");
 
     const later = await fetch(`${baseUrl}/api/drilldown?metric=harvest.laterObserved&businessSegment=new`).then((response) => response.json());
-    assert.equal(later.count, 1);
-    assert.equal(later.rows[0].laterCallId, "harvest-later-follow");
+    assert.equal(later.count, 0);
+    assert.equal(later.authorityStatus, "unavailable");
   });
 });
 
-test("dashboard exposes Evaluation Studio APIs, queued runs, and management UI", async () => {
+test("dashboard exposes the Evaluation Studio research archive while model operations are quarantined", async () => {
+  const externalRequests = [];
   await withServer(csv([
     row({
       call_id: "studio-1",
       Salesperson: "Riley Example",
       transcription_text: "Outbound call Customer: I am interested but please call me back tomorrow. Agent: I can do that and will make a note."
-    }),
-    row({
-      call_id: "studio-2",
-      Salesperson: "Avery Filter",
-      customer_id: "customer-2",
-      AllocatedLeadID: "lead-2",
-      ContactId: "contact-2",
-      transcription_text: "Outbound call Customer: I am not sure this is for me. Agent: No worries, thanks for your time."
     })
   ]), async ({ baseUrl, storePath }) => {
     const initial = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
     assert.equal(initial.summary.activeKnowledgebaseEntries >= 1, true);
     assert.equal(initial.summary.activeTemplates >= 1, true);
-    assert.equal(initial.knowledgebaseEntries.some((entry) => entry.sourceProject === "Neuron-Compute-Training"), true);
-    assert.equal(initial.evaluationTemplates.some((template) => template.evaluationGoal === "offer_acceptance_classification"), true);
-    const initialPage = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(initialPage, /Choose calls and run an evaluation/);
-    assert.match(initialPage, /Preview selection/);
-    assert.match(initialPage, /Evaluation Results/);
-    assert.match(initialPage, /Offer Acceptance \(Sale Signal\) Review/);
-    assert.match(initialPage, /<option value="template_call_intelligence_foundation_v6" selected>Call Intelligence Foundation/);
-    assert.doesNotMatch(initialPage, /Pending manager approval/);
 
-    const kbResponse = await fetch(`${baseUrl}/api/evaluation-studio/knowledgebase`, {
+    const capability = await fetch(`${baseUrl}/api/local-model-capabilities`).then((response) => response.json());
+    assert.equal(capability.ok, true);
+    assert.equal(capability.capabilityPolicy.liveSubmissionPermitted, false);
+    assert.deepEqual(capability.capabilityPolicy.promotedCapabilityIds, []);
+
+    const page = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
+    assert.match(page, /No model evaluation is available/);
+    assert.match(page, /Historical Model Outputs Grouped by Call/);
+    assert.match(page, /research-only|research only/i);
+    assert.doesNotMatch(page, /<button type="submit">Run evaluation<\/button>/);
+    assert.doesNotMatch(page, /Test one transcript first/);
+
+    const knowledgebaseResponse = await fetch(`${baseUrl}/api/evaluation-studio/knowledgebase`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         title: "Local Callback Standard",
         category: "callback_handling",
-        tags: "callback,manager",
-        content: "Capture requested timing, objection, and next action.",
-        actor: "spoofed_manager"
+        content: "Capture requested timing, objection, and next action."
       })
-    }).then((response) => response.json());
-    assert.equal(kbResponse.ok, true);
-    assert.equal(kbResponse.knowledgebaseEntry.updatedBy, "local_user");
-    assert.equal(kbResponse.knowledgebaseEntry.approvalStatus, "approved_current");
-
-    const kbEditResponse = await fetch(`${baseUrl}/evaluation-studio/knowledgebase`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        id: kbResponse.knowledgebaseEntry.id,
-        title: "Local Callback Standard Updated",
-        category: "callback_handling",
-        tags: "callback,manager,updated",
-        content: "Updated callback standard from the dashboard form."
-      }),
-      redirect: "manual"
     });
-    assert.equal(kbEditResponse.status, 303);
-    const kbAfterEdit = await fetch(`${baseUrl}/api/evaluation-studio/knowledgebase?includeArchived=true`).then((response) => response.json());
-    const editedKb = kbAfterEdit.knowledgebaseEntries.find((entry) => entry.id === kbResponse.knowledgebaseEntry.id);
-    assert.equal(editedKb.title, "Local Callback Standard Updated");
-    assert.equal(editedKb.version, 2);
+    const knowledgebase = await knowledgebaseResponse.json();
+    assert.equal(knowledgebaseResponse.status, 423);
+    assert.equal(knowledgebase.ok, false);
+    assert.equal(knowledgebase.code, "EVALUATION_STUDIO_RESEARCH_ARCHIVE_LOCKED");
 
-    const templateResponse = await fetch(`${baseUrl}/api/evaluation-studio/templates`, {
+    const templateMutation = await fetch(`${baseUrl}/api/evaluation-studio/templates/template_call_intelligence_foundation_v6`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Unsafe archive mutation" })
+    });
+    assert.equal(templateMutation.status, 423);
+
+    const archiveReview = await fetch(`${baseUrl}/api/evaluation-studio/results/historical-result/review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: "Callback Test Template",
-        evaluationGoal: "callback_opportunity",
-        instructions: "Return callback opportunity, timing, objection, evidence, and confidence.",
-        outputSchema: { callback_opportunity: "boolean", evidence: "string", confidence: "0-1" },
-        updatedBy: "spoofed_manager"
-      })
-    }).then((response) => response.json());
-    assert.equal(templateResponse.ok, true);
-    assert.equal(templateResponse.evaluationTemplate.updatedBy, "local_user");
+      body: JSON.stringify({ action: "mark_review_needed" })
+    });
+    assert.equal(archiveReview.status, 423);
 
-    const preview = await fetch(`${baseUrl}/api/evaluation-studio/selection-preview`, {
+    const semanticFeedback = await fetch(`${baseUrl}/api/evaluation-studio/results/historical-result/semantic-feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: templateResponse.evaluationTemplate.id,
-        businessSegment: "new",
-        evaluationState: "unevaluated",
-        selectionMode: "oldest",
-        limit: 1
-      })
-    }).then((response) => response.json());
-    assert.equal(preview.ok, true);
-    assert.equal(preview.matchingCalls, 1);
-    assert.equal(preview.preview[0].callId, "studio-1");
-
-    const templateEditResponse = await fetch(`${baseUrl}/evaluation-studio/templates`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        id: templateResponse.evaluationTemplate.id,
-        name: "Callback Test Template Updated",
-        evaluationGoal: "callback_opportunity",
-        tags: "callback,updated",
-        instructions: "Updated instructions for callback opportunity testing.",
-        outputSchema: JSON.stringify({ callback_requested: "boolean", evidence: "string", confidence: "0-1" })
-      }),
-      redirect: "manual"
+      body: JSON.stringify({ label: "incorrect" })
     });
-    assert.equal(templateEditResponse.status, 303);
-    const templatesAfterEdit = await fetch(`${baseUrl}/api/evaluation-studio/templates?includeArchived=true`).then((response) => response.json());
-    const editedTemplate = templatesAfterEdit.evaluationTemplates.find((template) => template.id === templateResponse.evaluationTemplate.id);
-    assert.equal(editedTemplate.name, "Callback Test Template Updated");
-    assert.equal(editedTemplate.version, 2);
+    assert.equal(semanticFeedback.status, 423);
 
-    const customTemplateResponse = await fetch(`${baseUrl}/evaluation-studio/templates`, {
+    const quarantineMutation = await fetch(`${baseUrl}/api/evaluation-studio/runs/historical-run/quarantine`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        name: "Payment Ask Quality Review",
-        evaluationGoal: "payment_ask_quality",
-        tags: "payment,close",
-        instructions: "Check whether the payment or next-step ask was clear and evidence-backed.",
-        outputSchema: JSON.stringify({ payment_ask_quality: "string", evidence: "string", confidence: "0-1" })
-      }),
-      redirect: "manual"
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "archive should not mutate" })
     });
-    assert.equal(customTemplateResponse.status, 303);
-    const templatesAfterCustom = await fetch(`${baseUrl}/api/evaluation-studio/templates`).then((response) => response.json());
-    assert.equal(templatesAfterCustom.evaluationTemplates.some((template) => template.evaluationGoal === "payment_ask_quality"), true);
+    assert.equal(quarantineMutation.status, 423);
 
+    const template = initial.evaluationTemplates.find((item) => item.evaluationGoal === "call_intelligence_foundation");
     const runResponse = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: templateResponse.evaluationTemplate.id,
-        limit: 2,
-        businessSegment: "new"
-      })
-    }).then((response) => response.json());
-    assert.equal(runResponse.ok, true);
-    assert.equal(runResponse.evaluationRun.status, "queued");
-    assert.equal(runResponse.evaluationRun.plannedCallCount, 2);
-    assert.equal(runResponse.submitted, false);
-
-    const quarantinedRun = await fetch(`${baseUrl}/api/evaluation-studio/runs/${encodeURIComponent(runResponse.evaluationRun.id)}/quarantine`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "Prompt output needs schema review." })
-    }).then((response) => response.json());
-    assert.equal(quarantinedRun.ok, true);
-    assert.equal(quarantinedRun.evaluationRun.status, "quarantined");
-    assert.equal(quarantinedRun.evaluationRun.quarantinedBy, "local_user");
-    assert.equal(quarantinedRun.evaluationRun.runHistory[0].action, "quarantine");
-
-    const quarantinedRunHtml = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(quarantinedRunHtml, /Resume/);
-
-    const resumedRun = await fetch(`${baseUrl}/api/evaluation-studio/runs/${encodeURIComponent(runResponse.evaluationRun.id)}/resume`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "Ready to continue." })
-    }).then((response) => response.json());
-    assert.equal(resumedRun.ok, true);
-    assert.equal(resumedRun.evaluationRun.status, "queued");
-    assert.equal(resumedRun.evaluationRun.resumeCount, 1);
-    assert.equal(resumedRun.evaluationRun.runHistory[1].action, "resume");
-
-    const runHtmlBeforeResult = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(runHtmlBeforeResult, /Harvest results/);
-    assert.match(runHtmlBeforeResult, /Quarantine/);
-    assert.match(runHtmlBeforeResult, /history events/);
-
-    const resultResponse = await fetch(`${baseUrl}/api/evaluation-studio/results`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        runId: runResponse.evaluationRun.id,
-        templateId: templateResponse.evaluationTemplate.id,
-        jobId: "studio-job-1",
-        result: {
-          call_id: "studio-1",
-          evaluation_goal: "callback_opportunity",
-          status: "usable",
-          confidence: 0.86,
-          evidence_availability: "available",
-          transcript_quality: "high",
-          manager_summary: "Customer asked for a callback tomorrow; this is a reviewable opportunity, not a confirmed sale.",
-          findings: [
-            {
-              field: "callback_requested",
-              value: true,
-              previous_display_value: "indeterminate",
-              evidence: "Customer: I am interested but please call me back tomorrow.",
-              confidence: 0.86,
-              manager_review_recommended: true
-            },
-            {
-              field: "callback_timing",
-              value: "tomorrow",
-              evidence: "Customer: please call me back tomorrow.",
-              confidence: 0.83
-            }
-          ]
-        }
-      })
-    }).then((response) => response.json());
-    assert.equal(resultResponse.ok, true);
-    assert.equal(resultResponse.evaluationResult.callId, "studio-1");
-    assert.equal(resultResponse.evaluationResult.managerReviewRecommended, true);
-
-    const secondResultResponse = await fetch(`${baseUrl}/api/evaluation-studio/results`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        runId: runResponse.evaluationRun.id,
-        templateId: customTemplateResponse.status === 303 ? templateResponse.evaluationTemplate.id : templateResponse.evaluationTemplate.id,
-        jobId: "studio-job-2",
-        result: {
-          call_id: "studio-2",
-          evaluation_goal: "coaching_opportunity",
-          status: "usable",
-          confidence: 0.72,
-          evidence_availability: "partial",
-          transcript_quality: "medium",
-          manager_summary: "The close may need coaching review.",
-          findings: [
-            {
-              field: "coaching_priority",
-              value: "medium",
-              evidence: "Agent: No worries, thanks for your time.",
-              confidence: 0.72
-            }
-          ]
-        }
-      })
-    }).then((response) => response.json());
-    assert.equal(secondResultResponse.ok, true);
-    assert.equal(secondResultResponse.evaluationResult.callId, "studio-2");
-
-    const resultsResponse = await fetch(`${baseUrl}/api/evaluation-studio/results?currentOnly=true&reviewRecommended=true`).then((response) => response.json());
-    assert.equal(resultsResponse.results.length, 1);
-    assert.equal(resultsResponse.results[0].callId, "studio-1");
-    assert.equal(resultsResponse.results[0].provenance, "evaluation_studio_local_model");
-
-    const studioAfterResult = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    assert.equal(studioAfterResult.reportRollups.totals.callbackOpportunities, 1);
-    assert.equal(studioAfterResult.reportRollups.totals.evaluatedCalls, 2);
-    assert.equal(studioAfterResult.reportRollups.priorityExamples[0].callId, "studio-1");
-
-    const rollupOnly = await fetch(`${baseUrl}/api/evaluation-studio/report-rollups?currentOnly=true`).then((response) => response.json());
-    assert.equal(rollupOnly.reportRollups.totals.callbackOpportunities, 1);
-    assert.equal(rollupOnly.reportRollups.scope.use, "Report-ready lead utilisation and coaching signals for manager review, not disciplinary proof.");
-
-    const filteredRollup = await fetch(`${baseUrl}/api/evaluation-studio/report-rollups?currentOnly=true&salesperson=${encodeURIComponent("Riley Example")}`).then((response) => response.json());
-    assert.equal(filteredRollup.reportRollups.scope.filteredCallIds, 1);
-    assert.equal(filteredRollup.reportRollups.totals.evaluatedCalls, 1);
-    assert.equal(filteredRollup.reportRollups.priorityExamples.every((row) => row.callId === "studio-1"), true);
-
-    const filteredResults = await fetch(`${baseUrl}/api/evaluation-studio/results?currentOnly=true&salesperson=${encodeURIComponent("Riley Example")}`).then((response) => response.json());
-    assert.equal(filteredResults.query.filteredCallIds, 1);
-    assert.equal(filteredResults.query.matchingResults, 1);
-    assert.equal(filteredResults.results[0].callId, "studio-1");
-
-    const reviewHandoff = await fetch(`${baseUrl}/api/evaluation-studio/results/${encodeURIComponent(resultResponse.evaluationResult.id)}/review`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        actor: "spoofed_reviewer",
-        updatedBy: "admin",
-        note: "<script>alert('review')</script>"
-      })
-    }).then((response) => response.json());
-    assert.equal(reviewHandoff.ok, true);
-    assert.equal(reviewHandoff.review.callId, "studio-1");
-    assert.equal(reviewHandoff.review.reviewStatus, "review_needed");
-    assert.equal(reviewHandoff.review.reviewScope, "follow_up");
-    assert.equal(reviewHandoff.review.reviewedBy, "local_manager");
-    assert.equal(reviewHandoff.review.source, "evaluation_studio");
-    assert.equal(reviewHandoff.review.corrections.length, 0);
-    assert.equal(reviewHandoff.review.suggestedCorrections.length, 2);
-    assert.deepEqual(reviewHandoff.review.suggestedCorrections.map((item) => item.fieldName), ["follow_up_required", "follow_up_due_text"]);
-    assert.equal(reviewHandoff.review.suggestedCorrections[0].managerSuggestedValue, "true");
-    assert.match(reviewHandoff.review.signalName, /evaluation_studio:callback_opportunity/);
-    assert.match(reviewHandoff.review.managerNotes, /Evaluation result ID/);
-    assert.match(reviewHandoff.review.managerNotes, /Suggested correction prefill/);
-    assert.match(reviewHandoff.review.managerNotes, /<script>alert\('review'\)<\/script>/);
-    assert.equal(reviewHandoff.review.reviewHistory[0].actor, "local_manager");
-
-    const callReviews = await fetch(`${baseUrl}/api/calls/studio-1/reviews`).then((response) => response.json());
-    assert.equal(callReviews.reviews.length, 1);
-    assert.equal(callReviews.reviews[0].reviewStatus, "review_needed");
-
-    const dashboardHtml = await fetch(`${baseUrl}/`).then((response) => response.text());
-    assert.match(dashboardHtml, /Evaluation Results/);
-    assert.match(dashboardHtml, /href="\/evaluation-studio"/);
-    assert.match(dashboardHtml, /Open Evaluation Studio/);
-    assert.doesNotMatch(dashboardHtml, /Knowledgebase Entries/);
-    assert.doesNotMatch(dashboardHtml, /evaluation-goal-options/);
-    assert.doesNotMatch(dashboardHtml, /Test A Prompt/);
-    assert.doesNotMatch(dashboardHtml, /Evaluation Evidence Queue/);
-    assert.doesNotMatch(dashboardHtml, /QTY ACTIONED|stable lead-days|allocated-versus-called/i);
-
-    const studioHtml = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(studioHtml, /Evaluation Studio/);
-    assert.match(studioHtml, /<h3 id="knowledgebase-heading">Knowledgebase<\/h3>/);
-    assert.match(studioHtml, /Load text file/);
-    assert.match(studioHtml, /<h3 id="templates-heading">Evaluation templates<\/h3>/);
-    assert.match(studioHtml, /evaluation-goal-options/);
-    assert.match(studioHtml, /Payment Ask Quality Review/);
-    assert.match(studioHtml, /Test one transcript first/);
-    assert.match(studioHtml, /Results Needing Attention/);
-    assert.match(studioHtml, /Report-Safe Evaluation Rollups/);
-    assert.match(studioHtml, /Callback opportunities/);
-    assert.match(studioHtml, /Manual check suggested/);
-    assert.match(studioHtml, /Browse output/);
-    assert.match(studioHtml, /Customer asked for a callback tomorrow|Customer: I am interested but please call me back tomorrow/);
-    assert.doesNotMatch(studioHtml, /QTY ACTIONED|stable lead-days|allocated-versus-called/i);
-
-    const callHtml = await fetch(`${baseUrl}/calls/studio-1`).then((response) => response.text());
-    assert.match(callHtml, /Suggested prefill/);
-    assert.match(callHtml, /follow_up_required/);
-    assert.match(callHtml, /Suggested only; not a manager correction until confirmed/);
-
-    const store = readStore({ storePath });
-    assert.equal(store.evaluationStudio.evaluationRuns.length >= 1, true);
-    assert.equal(store.evaluationStudio.evaluationResults.length, 2);
-    assert.equal(store.managerReviews.length, 1);
-    assert.equal(store.evaluationStudio.evaluationResults.some((result) => result.managerSummary === "Customer asked for a callback tomorrow; this is a reviewable opportunity, not a confirmed sale."), true);
-  });
-});
-
-test("Evaluation Studio batch harvest stores completed jobs, marks failures, and blocks quarantined runs", async () => {
-  const fetchRequests = [];
-  await withServer(csv([
-    row({
-      call_id: "harvest-1",
-      transcription_text: "Outbound call Customer: I am interested but need a call back tomorrow. Agent: I will call tomorrow."
-    }),
-    row({
-      call_id: "harvest-2",
-      transcription_text: "Outbound call Customer: I am not ready. Agent: I can follow up later if useful."
-    })
-  ]), async ({ baseUrl, storePath }) => {
-    saveBadLeadClaim({
-      lead_id: "lead-1",
-      call_id: "harvest-1",
-      claimed_reason: "wrong_number",
-      claim_text: "The salesperson alleges that the recipient identified a wrong number."
-    }, {
-      submittedByUserId: "salesperson-17",
-      submittedByRole: "salesperson",
-      now: "2026-07-11T08:00:00.000Z"
-    }, { storePath });
-    const studio = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
-    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity") || studio.evaluationTemplates[0];
-
-    const runResponse = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: template.id,
-        limit: "all",
-        submitNow: true
-      })
+      body: JSON.stringify({ templateId: template.id, limit: 1, submitNow: true })
     });
     const runBody = await runResponse.json();
-    assert.equal(runResponse.status, 202);
-    assert.equal(runBody.ok, true);
-    assert.equal(runBody.evaluationRun.status, "running");
-    assert.equal(runBody.evaluationRun.queuedJobs.length, 2);
-    const claimedCallRequest = fetchRequests
-      .map((request) => JSON.parse(request.options.body))
-      .find((requestBody) => requestBody.input?.source?.call_id === "harvest-1");
-    assert.equal(claimedCallRequest.input.salesperson_allegation.match_basis, "call_id");
-    assert.equal(claimedCallRequest.input.salesperson_allegation.claim.claimed_reason, "wrong_number");
+    assert.equal(runResponse.status, 423);
+    assert.equal(runBody.ok, false);
+    assert.match(runBody.error, /capability|promoted|quarantin/i);
 
-    const quarantined = await fetch(`${baseUrl}/api/evaluation-studio/runs/${encodeURIComponent(runBody.evaluationRun.id)}/quarantine`, {
+    const promptResponse = await fetch(`${baseUrl}/api/evaluation-studio/prompt-tests`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "Pause before harvesting." })
-    }).then((response) => response.json());
-    assert.equal(quarantined.evaluationRun.status, "quarantined");
-
-    const blockedHarvest = await fetch(`${baseUrl}/api/evaluation-studio/runs/${encodeURIComponent(runBody.evaluationRun.id)}/harvest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}"
+      body: JSON.stringify({ templateId: template.id, callId: "studio-1", submitNow: true })
     });
-    const blockedBody = await blockedHarvest.json();
-    assert.equal(blockedHarvest.status, 400);
-    assert.match(blockedBody.error, /must be resumed/i);
-
-    await fetch(`${baseUrl}/api/evaluation-studio/runs/${encodeURIComponent(runBody.evaluationRun.id)}/resume`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "Ready to collect results." })
-    });
-
-    const harvestResponse = await fetch(`${baseUrl}/api/evaluation-studio/runs/${encodeURIComponent(runBody.evaluationRun.id)}/harvest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}"
-    });
-    const harvestBody = await harvestResponse.json();
-    assert.equal(harvestResponse.status, 200);
-    assert.equal(harvestBody.ok, true);
-    assert.equal(harvestBody.completed.length, 1);
-    assert.equal(harvestBody.failed.length, 1);
-    assert.equal(harvestBody.pending.length, 0);
-    assert.equal(harvestBody.evaluationRun.status, "partially_completed");
-    assert.equal(harvestBody.evaluationRun.completedCallCount, 1);
-    assert.equal(harvestBody.evaluationRun.failedCallCount, 1);
-    assert.equal(harvestBody.evaluationRun.queuedJobCount, 0);
-    assert.equal(harvestBody.evaluationRun.runHistory.at(-1).action, "harvest");
-    assert.equal(harvestBody.evaluationRun.runHistory.at(-1).actor, "local_user");
+    assert.equal(promptResponse.status, 423);
 
     const store = readStore({ storePath });
-    const savedResults = store.evaluationStudio.evaluationResults.filter((result) => result.runId === runBody.evaluationRun.id);
-    assert.equal(savedResults.length, 1);
-    assert.equal(savedResults[0].callId, "harvest-1");
-    assert.equal(savedResults[0].managerReviewRecommended, true);
-    assert.equal(store.aiJobs.some((job) => job.jobId === "eval-job-harvest-1" && job.status === "completed"), true);
-    assert.equal(store.aiJobs.some((job) => job.jobId === "eval-job-harvest-2" && job.status === "failed"), true);
-
-    const html = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(html, /Harvest results/);
-    assert.match(html, /Waiting to start|Results available; some jobs failed|Processing automatically/);
-    assert.match(html, /Advanced/);
-    assert.match(html, /data-evaluation-run-status/);
-    assert.doesNotMatch(html, /QTY ACTIONED/);
-    assert.doesNotMatch(html, /allocation coverage/i);
-  }, {
-    env: {
-      SALES_DASHBOARD_AI_ENABLED: "true",
-      SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
-    },
-    fetchImpl: async (url, options = {}) => {
-      fetchRequests.push({ url, options });
-      if (String(url).endsWith("/run-task")) {
-        const requestBody = JSON.parse(options.body);
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({
-            job_id: `eval-job-${requestBody.metadata.source_record_id}`,
-            status: "queued"
-          })
-        };
-      }
-      const jobId = decodeURIComponent(String(url).split("/jobs/")[1] || "");
-      if (jobId === "eval-job-harvest-1") {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({
-            job_id: jobId,
-            status: "completed",
-            result_payload: typedCallbackPayload(
-              "harvest-1",
-              "I am interested but need a call back tomorrow.",
-              "tomorrow",
-              {
-                manager_review_recommended: true,
-                manager_summary: "Customer showed interest and asked for a callback tomorrow."
-              }
-            )
-          })
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({
-          job_id: jobId,
-          status: "failed",
-          error: "local model returned invalid JSON"
-        })
-      };
-    }
-  });
-
-  assert.equal(fetchRequests.filter((request) => String(request.url).endsWith("/run-task")).length, 2);
-  assert.equal(fetchRequests.filter((request) => String(request.url).includes("/jobs/")).length, 2);
-});
-
-test("Evaluation Studio prompt test submits one call and stores completed local result", async () => {
-  const fetchRequests = [];
-  await withServer(csv([
-    row({
-      call_id: "prompt-test-call",
-      transcription_text: "Outbound call Customer: I am interested, but I need to speak to my partner. Please call me back tomorrow. Agent: I will call tomorrow and note that."
-    })
-  ]), async ({ baseUrl, storePath }) => {
-    saveBadLeadClaim({
-      lead_id: "lead-1",
-      call_id: "prompt-test-call",
-      claimed_reason: "wrong_number",
-      claim_text: "The salesperson alleges that the recipient identified a wrong number."
-    }, {
-      submittedByUserId: "salesperson-17",
-      submittedByRole: "salesperson",
-      now: "2026-07-11T08:00:00.000Z"
-    }, { storePath });
-    const studio = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
-    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity") || studio.evaluationTemplates[0];
-
-    const response = await fetch(`${baseUrl}/api/evaluation-studio/prompt-tests`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: template.id,
-        callId: "prompt-test-call",
-        submitNow: true
-      })
-    });
-    const body = await response.json();
-
-    assert.equal(response.status, 202);
-    assert.equal(body.ok, true);
-    assert.equal(body.submitted, true);
-    assert.equal(body.callId, "prompt-test-call");
-    assert.equal(body.evaluationRun.runType, "prompt_test");
-    assert.equal(body.evaluationRun.status, "completed");
-    assert.equal(body.evaluationResult.callId, "prompt-test-call");
-    assert.equal(body.evaluationResult.evaluationGoal, template.evaluationGoal);
-    assert.equal(body.evaluationResult.provenance, "evaluation_studio_local_model");
-    assert.equal(body.taskInput.source.call_id, "prompt-test-call");
-    assert.equal("QTY ACTIONED" in body.taskInput.call_csv_context, false);
-    assert.equal("salesperson_allegation" in body.taskInput, false);
-
-    assert.equal(fetchRequests.length, 1);
-    const requestBody = JSON.parse(fetchRequests[0].options.body);
-    assert.equal(fetchRequests[0].url, "http://127.0.0.1:8080/run-task");
-    assert.equal(requestBody.task_type, "sales_dashboard_evaluation_studio");
-    assert.equal(requestBody.metadata.source_type, "evaluation_studio_prompt_test");
-    assert.equal(requestBody.metadata.source_record_id, "prompt-test-call");
-    assert.match(fetchRequests[0].options.headers["Idempotency-Key"], /evaluation-studio:dynamic-schema-v1/);
-    assert.equal(requestBody.input.evaluation_template.id, template.id);
-    assert.equal(requestBody.input.salesperson_allegation.match_basis, "call_id");
-    assert.equal(requestBody.input.salesperson_allegation.claim.claimed_reason, "wrong_number");
-    assert.equal("manager_decision" in requestBody.input.salesperson_allegation.claim, false);
-
-    const store = readStore({ storePath });
-    assert.equal(store.aiJobs.length, 1);
-    assert.equal(store.aiJobs[0].taskType, "sales_dashboard_evaluation_studio");
-    assert.equal(store.evaluationStudio.evaluationRuns[0].runType, "prompt_test");
-    assert.equal(store.evaluationStudio.evaluationResults.length, 1);
-    assert.doesNotMatch(JSON.stringify(store.aiJobs), /salesperson_allegation|trusted_bad_lead_claim_context/);
-    assert.doesNotMatch(JSON.stringify(store.evaluationStudio.evaluationRuns), /salesperson_allegation|trusted_bad_lead_claim_context/);
-    const proxiedJob = await fetch(`${baseUrl}/api/ai/jobs/prompt-test-job-1`).then((response) => response.json());
-    assert.equal(proxiedJob.ok, true);
-    assert.doesNotMatch(JSON.stringify(proxiedJob), /salesperson_allegation|trusted_bad_lead_claim_context|wrong_number/);
-  }, {
-    env: {
-      SALES_DASHBOARD_AI_ENABLED: "true",
-      SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
-    },
-    fetchImpl: async (url, options) => {
-      fetchRequests.push({ url, options });
-      if (options.method === "GET") {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({
-            job: {
-              id: "prompt-test-job-1",
-              status: "completed",
-              input: {
-                salesperson_allegation: {
-                  availability: "present",
-                  claim: { claimed_reason: "wrong_number" }
-                }
-              }
-            }
-          })
-        };
-      }
-      const requestBody = JSON.parse(options.body);
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({
-          job_id: "prompt-test-job-1",
-          status: "completed",
-          result_payload: typedCallbackPayload(
-            requestBody.metadata.source_record_id,
-            "I am interested, but I need to speak to my partner. Please call me back tomorrow.",
-            "tomorrow",
-            {
-              confidence: 0.91,
-              objection: "I need to speak to my partner.",
-              manager_review_recommended: true,
-              manager_summary: "Customer is interested and requested a callback tomorrow."
-            }
-          )
-        })
-      };
-    }
-  });
-});
-
-test("Evaluation Studio auto-harvests completed queued prompt tests on Studio API reads", async () => {
-  const fetchRequests = [];
-  await withServer(csv([
-    row({
-      call_id: "prompt-auto-harvest",
-      transcription_text: "Outbound call Customer: I like the idea, please call me tomorrow. Agent: I will call tomorrow."
-    })
-  ]), async ({ baseUrl, storePath }) => {
-    const studio = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
-    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity") || studio.evaluationTemplates[0];
-
-    const response = await fetch(`${baseUrl}/api/evaluation-studio/prompt-tests`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: template.id,
-        callId: "prompt-auto-harvest",
-        submitNow: true
-      })
-    });
-    const body = await response.json();
-
-    assert.equal(response.status, 202);
-    assert.equal(body.ok, true);
-    assert.equal(body.evaluationRun.runType, "prompt_test");
-    assert.equal(body.evaluationRun.status, "running");
-    assert.equal(body.evaluationResult ?? null, null);
-
-    let store = readStore({ storePath });
-    assert.equal(store.evaluationStudio.evaluationRuns[0].status, "running");
+    assert.equal(store.aiJobs.length, 0);
+    assert.equal(store.evaluationStudio.knowledgebaseEntries.some((entry) => entry.title === "Local Callback Standard"), false);
+    assert.equal(store.evaluationStudio.evaluationRuns.length, 0);
     assert.equal(store.evaluationStudio.evaluationResults.length, 0);
-
-    const progress = await fetch(`${baseUrl}/api/evaluation-studio/progress?currentOnly=true`).then((apiResponse) => apiResponse.json());
-    assert.equal(progress.schemaVersion, "sales_dashboard_evaluation_studio_progress.v1");
-    assert.equal(progress.autoHarvest.checkedRunCount, 1);
-    assert.equal(progress.autoHarvest.harvested.length, 1);
-    assert.equal(progress.autoHarvest.harvested[0].status, "completed");
-    assert.equal(progress.evaluationRuns[0].status, "completed");
-    assert.equal(progress.evaluationRuns[0].completedCallCount, 1);
-    assert.equal(progress.evaluationRuns[0].hasPendingJobs, false);
-
-    const refreshedStudio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((apiResponse) => apiResponse.json());
-    assert.equal(refreshedStudio.autoHarvest.checkedRunCount, 0);
-    assert.equal(refreshedStudio.summary.byStatus.completed, 1);
-    assert.equal(refreshedStudio.evaluationRuns[0].status, "completed");
-    assert.equal(refreshedStudio.evaluationResults.length, 1);
-    assert.equal(refreshedStudio.evaluationResults[0].callId, "prompt-auto-harvest");
-
-    const runsAfterHarvest = await fetch(`${baseUrl}/api/evaluation-studio/runs?importId=${encodeURIComponent(body.evaluationRun.importId)}`).then((apiResponse) => apiResponse.json());
-    assert.equal(runsAfterHarvest.autoHarvest.checkedRunCount, 0);
-    assert.equal(runsAfterHarvest.evaluationRuns[0].status, "completed");
-
-    store = readStore({ storePath });
-    assert.equal(store.evaluationStudio.evaluationRuns[0].status, "completed");
-    assert.equal(store.evaluationStudio.evaluationRuns[0].runHistory.at(-1).action, "harvest");
-    assert.equal(store.evaluationStudio.evaluationResults.length, 1);
-    assert.equal(store.aiJobs.some((job) => job.jobId === "prompt-auto-harvest-job" && job.status === "completed"), true);
   }, {
     env: {
       SALES_DASHBOARD_AI_ENABLED: "true",
       SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
     },
     fetchImpl: async (url, options = {}) => {
-      fetchRequests.push({ url, options });
-      if (String(url).endsWith("/run-task")) {
-        const requestBody = JSON.parse(options.body);
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({
-            job_id: `${requestBody.metadata.source_record_id}-job`,
-            status: "queued"
-          })
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({
-          job_id: "prompt-auto-harvest-job",
-          status: "completed",
-          result_payload: typedCallbackPayload(
-            "prompt-auto-harvest",
-            "I like the idea, please call me tomorrow.",
-            "tomorrow",
-            {
-              confidence: 0.89,
-              manager_review_recommended: true,
-              manager_summary: "Customer gave a positive response and asked for a callback tomorrow."
-            }
-          )
-        })
-      };
+      externalRequests.push({ url, options });
+      throw new Error("Execution Layer must not be contacted while capabilities are quarantined.");
     }
   });
-
-  assert.equal(fetchRequests.filter((request) => String(request.url).endsWith("/run-task")).length, 1);
-  assert.equal(fetchRequests.filter((request) => String(request.url).includes("/jobs/")).length, 1);
+  assert.equal(externalRequests.length, 0);
 });
 
-test("Evaluation Studio terminal semantic failures are harvested once and stop running", async () => {
-  const fetchRequests = [];
+test("Evaluation Studio batch submission fails closed before jobs or network calls", async () => {
+  const externalRequests = [];
   await withServer(csv([
-    row({
-      call_id: "prompt-terminal-schema-failure",
-      transcription_text: "Outbound call Customer: Please email the information and call tomorrow. Agent: I will do that."
-    })
+    row({ call_id: "harvest-1", transcription_text: "Customer: Please call tomorrow. Agent: I will." }),
+    row({ call_id: "harvest-2", transcription_text: "Customer: No thank you. Agent: Understood." })
   ]), async ({ baseUrl, storePath }) => {
     const studio = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
-    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "lead_record_disposition_evidence_audit");
-    assert.ok(template);
+    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity");
 
-    const submitted = await fetch(`${baseUrl}/api/evaluation-studio/prompt-tests`, {
+    const response = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: template.id,
-        callId: "prompt-terminal-schema-failure",
-        submitNow: true
-      })
-    }).then((response) => response.json());
-    assert.equal(submitted.evaluationRun.status, "running");
+      body: JSON.stringify({ templateId: template.id, limit: "all", submitNow: true })
+    });
+    const body = await response.json();
 
-    const firstRefresh = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    assert.equal(firstRefresh.autoHarvest.checkedRunCount, 1);
-    assert.equal(firstRefresh.autoHarvest.harvested[0].status, "failed");
-    assert.equal(firstRefresh.evaluationRuns[0].status, "failed");
-    assert.equal(firstRefresh.evaluationRuns[0].failedCallCount, 1);
-    assert.equal(firstRefresh.evaluationRuns[0].errors.length, 1);
-    assert.equal(firstRefresh.evaluationRuns[0].errors[0].category, "evaluator_semantic_validation_failed");
-    assert.ok(firstRefresh.evaluationRuns[0].queuedJobs[0].terminalHandledAt);
+    assert.equal(response.status, 423);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /capability|promoted|quarantin/i);
 
-    const firstStore = readStore({ storePath });
-    const firstRun = firstStore.evaluationStudio.evaluationRuns[0];
-    const firstHistoryCount = firstRun.runHistory.length;
-    const firstErrorCount = firstRun.errors.length;
-
-    const secondRefresh = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    assert.equal(secondRefresh.autoHarvest.checkedRunCount, 0);
-    assert.equal(secondRefresh.evaluationRuns[0].status, "failed");
-
-    const secondRun = readStore({ storePath }).evaluationStudio.evaluationRuns[0];
-    assert.equal(secondRun.runHistory.length, firstHistoryCount);
-    assert.equal(secondRun.errors.length, firstErrorCount);
-    assert.equal(secondRun.queuedJobs[0].terminalFailureCategory, "evaluator_semantic_validation_failed");
+    const store = readStore({ storePath });
+    assert.equal(store.aiJobs.length, 0);
+    assert.equal(store.evaluationStudio.evaluationRuns.length, 0);
+    assert.equal(store.evaluationStudio.evaluationResults.length, 0);
   }, {
     env: {
       SALES_DASHBOARD_AI_ENABLED: "true",
       SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
     },
     fetchImpl: async (url, options = {}) => {
-      fetchRequests.push({ url, options });
-      if (String(url).endsWith("/run-task")) {
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({
-            job_id: "prompt-terminal-schema-failure-job",
-            status: "queued"
-          })
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({
-          job: {
-            id: "prompt-terminal-schema-failure-job",
-            status: "done",
-            result_payload: {
-              schema_version: "sales_dashboard_evaluation_result.v1",
-              evaluation_goal: "lead_record_disposition_evidence_audit",
-              call_id: "prompt-terminal-schema-failure",
-              status: "usable",
-              confidence: 0.8,
-              findings: [],
-              manager_summary: "Old generic output that must not be accepted."
-            }
-          }
-        })
-      };
+      externalRequests.push({ url, options });
+      throw new Error("unexpected Execution Layer request");
     }
   });
-
-  assert.equal(fetchRequests.filter((request) => String(request.url).endsWith("/run-task")).length, 1);
-  assert.equal(fetchRequests.filter((request) => String(request.url).includes("/jobs/")).length, 1);
+  assert.equal(externalRequests.length, 0);
 });
 
-test("Call Intelligence Foundation automatically routes only eligible specialist evaluations", async () => {
-  const fetchRequests = [];
-  const callId = "foundation-routing-call";
-  const transcript = "Outbound call Salesperson: I am calling on behalf of the local yearbook. Customer: Please send the information and call me tomorrow afternoon.";
-  const foundationPayload = {
-    schema_version: "call_intelligence_foundation.v3",
-    evaluation_goal: "call_intelligence_foundation",
-    call_id: callId,
-    status: "usable",
-    confidence: 0.9,
-    evidence_availability: "available",
-    transcript_quality: "high",
-    contact_result: "live_decision_maker",
-    decision_maker_status: "confirmed",
-    conversation_stage: "purpose_explained",
-    offer_presented: false,
-    price_presented: false,
-    objection_present: false,
-    customer_outcome: "callback_requested",
-    next_step_status: "actionable",
-    follow_up_timing: "tomorrow afternoon",
-    lead_record_signal: "none",
-    called_on_behalf_of: "the local yearbook",
-    commercial_context: { product_or_package: "", quoted_amount_available: false, quoted_amount: 0, currency: "unknown" },
-    intelligence_lenses: {
-      opportunity_status: "actionable",
-      measurement_eligibility: "eligible",
-      efficiency_status: "efficient_progression"
-    },
-    specialist_routes: {
-      offer_acceptance_classification: false,
-      callback_opportunity: false,
-      objection_handling: false,
-      procedure_adherence: false,
-      lead_record_disposition_evidence_audit: false
-    },
-    evidence: [{
-      supports: "called_on_behalf_of",
-      speaker: "salesperson",
-      quote: "I am calling on behalf of the local yearbook."
-    }, {
-      supports: "next_step_status",
-      speaker: "customer",
-      quote: "Please send the information and call me tomorrow afternoon."
-    }],
-    manager_review_recommended: false,
-    manager_summary: "The customer requested information and an actionable callback.",
-    limitations: [],
-    findings: []
-  };
+test("Evaluation Studio one-call tests fail closed before jobs or network calls", async () => {
+  const externalRequests = [];
+  await withServer(csv([
+    row({ call_id: "prompt-test-call", transcription_text: "Customer: Call tomorrow. Agent: I will call tomorrow." })
+  ]), async ({ baseUrl, storePath }) => {
+    const studio = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
+    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity");
 
-  await withServer(csv([row({ call_id: callId, transcription_text: transcript })]), async ({ baseUrl, storePath }) => {
+    const response = await fetch(`${baseUrl}/api/evaluation-studio/prompt-tests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ templateId: template.id, callId: "prompt-test-call", submitNow: true })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 423);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /capability|promoted|quarantin/i);
+
+    const store = readStore({ storePath });
+    assert.equal(store.aiJobs.length, 0);
+    assert.equal(store.evaluationStudio.evaluationRuns.length, 0);
+    assert.equal(store.evaluationStudio.evaluationResults.length, 0);
+  }, {
+    env: {
+      SALES_DASHBOARD_AI_ENABLED: "true",
+      SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
+    },
+    fetchImpl: async (url, options = {}) => {
+      externalRequests.push({ url, options });
+      throw new Error("unexpected Execution Layer request");
+    }
+  });
+  assert.equal(externalRequests.length, 0);
+});
+
+test("Evaluation Studio reads do not poll historical jobs while capability quarantine is active", async () => {
+  const externalRequests = [];
+  await withServer(csv([
+    row({ call_id: "no-auto-harvest", transcription_text: "Customer: Hello. Agent: Hello." })
+  ]), async ({ baseUrl }) => {
     const studio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    const foundationTemplate = studio.evaluationTemplates.find((item) => item.evaluationGoal === "call_intelligence_foundation");
-    assert.ok(foundationTemplate);
+    assert.equal(studio.autoHarvest.checkedRunCount, 0);
+    assert.deepEqual(studio.autoHarvest.harvested, []);
 
-    const submitted = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
+    const progress = await fetch(`${baseUrl}/api/evaluation-studio/progress?currentOnly=true`).then((response) => response.json());
+    assert.equal(progress.autoHarvest.checkedRunCount, 0);
+    assert.deepEqual(progress.autoHarvest.harvested, []);
+
+    const results = await fetch(`${baseUrl}/api/evaluation-studio/results?currentOnly=true`).then((response) => response.json());
+    assert.equal(results.autoHarvest.checkedRunCount, 0);
+    assert.deepEqual(results.autoHarvest.harvested, []);
+  }, {
+    env: {
+      SALES_DASHBOARD_AI_ENABLED: "true",
+      SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
+    },
+    fetchImpl: async (url, options = {}) => {
+      externalRequests.push({ url, options });
+      throw new Error("historical jobs must not be polled");
+    }
+  });
+  assert.equal(externalRequests.length, 0);
+});
+
+test("direct Evaluation Studio result ingestion is retired and cannot forge provenance", async () => {
+  await withServer(csv([
+    row({ call_id: "forged-result", transcription_text: "Customer: Maybe. Agent: Thank you." })
+  ]), async ({ baseUrl, storePath }) => {
+    const response = await fetch(`${baseUrl}/api/evaluation-studio/results`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        templateId: foundationTemplate.id,
-        callIds: callId,
-        selectionMode: "call_ids",
-        evaluationState: "all",
-        limit: 1,
+        callId: "forged-result",
+        jobId: "forged-job",
+        result: {
+          call_id: "forged-result",
+          evaluation_goal: "offer_acceptance_classification",
+          status: "usable",
+          model_metadata: {
+            execution_layer_verified: true,
+            provider_model_digest: "forged",
+            capability_register_hash: "forged"
+          }
+        }
+      })
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 410);
+    assert.equal(body.ok, false);
+    assert.match(body.error, /Direct Evaluation Studio result ingestion is retired/);
+
+    const store = readStore({ storePath });
+    assert.equal(store.evaluationStudio.evaluationResults.length, 0);
+    assert.equal(store.aiJobs.length, 0);
+  });
+});
+
+test("Foundation and specialist routing remain blocked until every exact capability is promoted", async () => {
+  const externalRequests = [];
+  await withServer(csv([
+    row({ call_id: "foundation-route-blocked", transcription_text: "Customer: Call tomorrow. Agent: I will call tomorrow." })
+  ]), async ({ baseUrl, storePath }) => {
+    const recovery = await fetch(`${baseUrl}/api/evaluation-studio/specialist-recovery`).then((response) => response.json());
+    assert.equal(recovery.ok, true);
+    assert.equal(recovery.blocked, true);
+    assert.equal(recovery.backlog.totalChecks, 0);
+    assert.equal(recovery.backlog.researchInventoryExcluded, true);
+    assert.equal(recovery.nextBatch, null);
+
+    const studio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
+    const foundation = studio.evaluationTemplates.find((item) => item.evaluationGoal === "call_intelligence_foundation");
+    const response = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        templateId: foundation.id,
+        callIds: ["foundation-route-blocked"],
         submitNow: true,
         autoRouteSpecialists: true
       })
-    }).then((response) => response.json());
-    assert.equal(submitted.evaluationRun.status, "running");
+    });
+    assert.equal(response.status, 423);
 
-    const foundationRefresh = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    const parent = foundationRefresh.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
-    assert.equal(parent.status, "completed");
-    assert.equal(parent.specialistRouting.status, "completed");
-    assert.deepEqual(parent.specialistRouting.childRuns.map((run) => run.goal).sort(), ["callback_opportunity", "procedure_adherence"]);
-    assert.equal(parent.specialistRouting.requestedChecks, 2);
-    assert.equal(foundationRefresh.evaluationResults.some((result) => result.evaluationGoal === "call_intelligence_foundation"), true);
-
-    const specialistRefresh = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    const goals = specialistRefresh.evaluationResults.map((result) => result.evaluationGoal);
-    assert.equal(goals.includes("callback_opportunity"), true);
-    assert.equal(goals.includes("procedure_adherence"), true);
-    assert.equal(goals.includes("offer_acceptance_classification"), false);
-    assert.equal(goals.includes("objection_handling"), false);
-    assert.equal(goals.includes("lead_record_disposition_evidence_audit"), false);
-    assert.equal(specialistRefresh.evaluationResults.every((result) => result.callIntelligence?.schemaVersion === "call_intelligence_aggregate.v1"), true);
-    assert.equal(specialistRefresh.evaluationResults.every((result) => result.customerId === "customer-1"), true);
-    const resultsApi = await fetch(`${baseUrl}/api/evaluation-studio/results?callId=${encodeURIComponent(callId)}&currentOnly=true`).then((response) => response.json());
-    assert.equal(resultsApi.results.every((result) => result.callIntelligence?.schemaVersion === "call_intelligence_aggregate.v1"), true);
-    assert.equal(resultsApi.results.every((result) => result.customerId === "customer-1"), true);
-    assert.equal(specialistRefresh.foundationReport.totals.routedSpecialistChecks, 2);
-    assert.equal(specialistRefresh.foundationReport.totals.completedSpecialistChecks, 2);
-    const html = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
-    assert.match(html, /Opportunity, Measurement & Efficiency/);
-    assert.match(html, /Automatically route Foundation results to the five specialist evaluators/);
-    assert.match(html, /Call Intelligence Foundation/);
-    assert.match(html, /Called on behalf of/);
-    assert.match(html, /the local yearbook/);
-    assert.match(html, /Callback timing/);
-    assert.match(html, /tomorrow afternoon/);
-    assert.match(html, /2 \/ 2/);
-    assert.match(html, /foundationOpportunityStatus=actionable_or_accepted/);
-    assert.match(html, /foundationMeasurementEligibility=eligible/);
-    assert.match(html, /class="evaluation-result-card"/);
-    assert.match(html, /data-evaluation-studio-progress/);
-    assert.match(html, /\/api\/evaluation-studio\/progress\?currentOnly=true/);
-    assert.match(html, /sales-dashboard-evaluation-studio-refresh-state\.v1/);
-    assert.match(html, /completedCallCount/);
-    assert.match(html, /window\.scrollTo/);
-
-    const storedParent = readStore({ storePath }).evaluationStudio.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
-    assert.equal(storedParent.runHistory.some((event) => event.action === "route_specialists"), true);
+    const store = readStore({ storePath });
+    assert.equal(store.evaluationStudio.evaluationRuns.length, 0);
+    assert.equal(store.aiJobs.length, 0);
   }, {
     env: {
       SALES_DASHBOARD_AI_ENABLED: "true",
       SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
     },
     fetchImpl: async (url, options = {}) => {
-      fetchRequests.push({ url, options });
-      if (String(url).endsWith("/run-task")) {
-        const requestBody = JSON.parse(options.body);
-        const goal = requestBody.metadata.evaluation_goal;
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ job_id: `${goal}-job`, status: "queued" })
-        };
-      }
-      const jobId = decodeURIComponent(String(url).split("/").at(-1));
-      const goal = jobId.replace(/-job$/, "");
-      const resultPayload = goal === "call_intelligence_foundation"
-        ? foundationPayload
-        : goal === "callback_opportunity"
-          ? typedCallbackPayload(
-              callId,
-              "Please send the information and call me tomorrow afternoon.",
-              "tomorrow afternoon"
-            )
-          : typedProcedurePayload(
-              callId,
-              "Please send the information and call me tomorrow afternoon."
-            );
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({ job: { id: jobId, status: "done", result_payload: resultPayload } })
-      };
+      externalRequests.push({ url, options });
+      throw new Error("routing must not contact the Execution Layer");
     }
   });
-
-  assert.equal(fetchRequests.filter((request) => String(request.url).endsWith("/run-task")).length, 3);
+  assert.equal(externalRequests.length, 0);
 });
 
-test("large Evaluation Studio runs submit concurrently and auto-harvest in bounded chunks", async () => {
-  let runTaskAttempts = 0;
+test("large Evaluation Studio requests are blocked before selection can create model work", async () => {
+  const externalRequests = [];
   const calls = Array.from({ length: 101 }, (_, index) => row({
-    call_id: `bounded-${String(index + 1).padStart(3, "0")}`,
-    customer_id: `customer-bounded-${index + 1}`,
-    AllocatedLeadID: `lead-bounded-${index + 1}`,
-    transcription_text: "Outbound call Customer: Please send the information and call tomorrow. Agent: I will call tomorrow."
+    call_id: `large-blocked-${index + 1}`,
+    transcription_text: `Customer: Transcript ${index + 1}. Agent: Thank you.`
   }));
-  await withServer(csv(calls), async ({ baseUrl }) => {
+  await withServer(csv(calls), async ({ baseUrl, storePath }) => {
     const studio = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity");
-    const submitted = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
+    const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "call_intelligence_foundation");
+    const response = await fetch(`${baseUrl}/api/evaluation-studio/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        templateId: template.id,
-        evaluationState: "all",
-        selectionMode: "oldest",
-        limit: 101,
-        submitNow: true
-      })
-    }).then((response) => response.json());
-    assert.equal(submitted.evaluationRun.queuedJobs.length, 101);
-    assert.equal(runTaskAttempts, 102);
+      body: JSON.stringify({ templateId: template.id, limit: 101, submitNow: true })
+    });
 
-    const first = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    const firstRun = first.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
-    assert.equal(first.autoHarvest.harvested[0].completed, 100);
-    assert.equal(firstRun.completedCallCount, 100);
-    assert.equal(firstRun.queuedJobCount, 1);
-    assert.equal(firstRun.status, "running");
-
-    const second = await fetch(`${baseUrl}/api/evaluation-studio?currentOnly=true`).then((response) => response.json());
-    const secondRun = second.evaluationRuns.find((run) => run.id === submitted.evaluationRun.id);
-    assert.equal(second.autoHarvest.harvested[0].completed, 1);
-    assert.equal(secondRun.completedCallCount, 101);
-    assert.equal(secondRun.queuedJobCount, 0);
-    assert.equal(secondRun.status, "completed");
+    assert.equal(response.status, 423);
+    const store = readStore({ storePath });
+    assert.equal(store.evaluationStudio.evaluationRuns.length, 0);
+    assert.equal(store.aiJobs.length, 0);
   }, {
     env: {
       SALES_DASHBOARD_AI_ENABLED: "true",
       SALES_DASHBOARD_AI_PROJECT_API_KEY: "project-key"
     },
     fetchImpl: async (url, options = {}) => {
-      if (String(url).endsWith("/run-task")) {
-        runTaskAttempts += 1;
-        if (runTaskAttempts === 1) throw new Error("fetch failed");
-        const requestBody = JSON.parse(options.body);
-        return {
-          ok: true,
-          status: 200,
-          text: async () => JSON.stringify({ job_id: `${requestBody.metadata.source_record_id}-job`, status: "queued" })
-        };
-      }
-      const jobId = decodeURIComponent(String(url).split("/").at(-1));
-      const callId = jobId.replace(/-job$/, "");
-      return {
-        ok: true,
-        status: 200,
-        text: async () => JSON.stringify({
-          job: {
-            id: jobId,
-            status: "done",
-            result_payload: typedCallbackPayload(
-              callId,
-              "Please send the information and call tomorrow.",
-              "tomorrow",
-              { confidence: 0.85, manager_summary: "Customer requested information and a callback." }
-            )
-          }
-        })
-      };
+      externalRequests.push({ url, options });
+      throw new Error("large quarantined request reached the Execution Layer");
     }
   });
+  assert.equal(externalRequests.length, 0);
 });
 
 test("Evaluation Studio fills the requested batch from transcript-bearing calls before applying the limit", async () => {
@@ -2646,7 +1967,7 @@ test("Evaluation Studio fills the requested batch from transcript-bearing calls 
   });
 });
 
-test("dashboard exposes system audio audit section and API", async () => {
+test("dashboard exposes literal system-audio API without semantic recovery claims", async () => {
   await withServer(csv([
     row({
       call_id: "screening",
@@ -2676,20 +1997,18 @@ test("dashboard exposes system audio audit section and API", async () => {
       transcription_text: "Outbound call Customer: The number is busy."
     })
   ]), async ({ baseUrl }) => {
-    const html = await fetch(`${baseUrl}/`).then((response) => response.text());
-    assert.match(html, /System Audio Audit/);
-    assert.match(html, /System Audio Subtypes/);
-    assert.match(html, /System Audio By Salesperson/);
-    assert.match(html, /Latest System Audio Proof/);
+    const html = await fetch(`${baseUrl}/?view=intelligence`).then((response) => response.text());
+    assert.match(html, /Restricted Literal Transcript Triage/);
 
     const api = await fetch(`${baseUrl}/api/system-audio?subtype=call_screening`).then((response) => response.json());
     assert.equal(api.query.subtype, "call_screening");
     assert.equal(api.totals.encounters, 1);
-    assert.equal(api.records[0].futureCallId, "screening-future");
+    assert.equal(api.records[0].futureCallId, "");
+    assert.equal("recovered" in api.records[0], false);
 
     const proofHtml = await fetch(`${baseUrl}/drilldown?metric=calls.systemAudioRecovered`).then((response) => response.text());
-    assert.match(proofHtml, /System audio proof/);
-    assert.match(proofHtml, /Future call/);
+    assert.match(proofHtml, /live-human recovery meaning is not evaluated/i);
+    assert.doesNotMatch(proofHtml, /screening-future/);
   });
 });
 
@@ -2743,8 +2062,10 @@ test("Evaluation Studio presents lead-record results as a concise decision with 
   assert.match(html, /class="evaluation-result-facts"/);
   assert.match(html, /Open transcript/);
   assert.match(html, /Evidence sufficient/);
-  assert.match(html, /authoritative current outcome and summary/i);
-  assert.match(html, /It is not the probability that payment or fulfilment occurred/);
+  assert.match(html, /Historical research[^<]*not a decision/i);
+  assert.match(html, /Archived model claim \(not a decision\)/);
+  assert.doesNotMatch(html, /<span>Lead record decision<\/span>/);
+  assert.match(html, /not a current customer outcome, score, finding, or action/i);
 });
 
 test("Evaluation Studio labels historical untyped specialists without inventing a pass or lead-record decision", () => {
@@ -2774,12 +2095,12 @@ test("Evaluation Studio labels historical untyped specialists without inventing 
     }
   });
   assert.match(html, /Historical untyped result/);
-  assert.match(html, /Rerun with active v2 before reporting/);
+  assert.match(html, /Rerun with the active v2 specialist template/);
   assert.match(html, /must not be read as evaluated-clear or issue-found/);
-  assert.doesNotMatch(html, /Lead record decision/);
+  assert.doesNotMatch(html, /Promoted lead record decision/);
 });
 
-test("Evaluation Studio presents Offer Acceptance outcomes and reportable rates instead of generic audit fields", () => {
+test("Evaluation Studio quarantines historical Offer Acceptance output without an operational rate", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "accepted-display",
@@ -2832,6 +2153,8 @@ test("Evaluation Studio presents Offer Acceptance outcomes and reportable rates 
     }
   });
 
+  const operationalReportVisible = html.includes("Offer Acceptance Performance");
+  if (operationalReportVisible) {
   assert.match(html, /Offer Acceptance Performance/);
   assert.match(html, /Offer acceptance rate/);
   assert.match(html, /100\.0%/);
@@ -2852,9 +2175,18 @@ test("Evaluation Studio presents Offer Acceptance outcomes and reportable rates 
   assert.match(html, /dateFrom=2026-07-16&amp;dateTo=2026-07-16/);
   assert.doesNotMatch(html, />Not Supplied</);
   assert.doesNotMatch(html, />usable</i);
+  }
+  assert.equal(operationalReportVisible, false);
+  assert.match(html, /Operational AI reporting is unavailable/);
+  assert.match(html, /Archived model claim: Customer accepted offer/);
+  assert.match(html, /Historical offer acceptance classification research output/i);
+  assert.match(html, /Archived model claim \(not a decision\)/);
+  assert.doesNotMatch(html, /Promoted offer acceptance result/);
+  assert.match(html, /Customer ID:[\s\S]*customer-1/);
+  assert.match(html, /class="evaluation-result-card"/);
 });
 
-test("Foundation result cards surface authoritative acceptance and always show Customer ID", () => {
+test("Foundation and Offer cards retain research claims without presenting authoritative acceptance", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "foundation-accepted-display",
@@ -2935,8 +2267,8 @@ test("Foundation result cards surface authoritative acceptance and always show C
     }
   });
 
-  assert.match(html, /Customer accepted offer/);
-  assert.match(html, /Authoritative Offer Acceptance/);
+  assert.match(html, /Archived model claim: Customer accepted offer/);
+  assert.doesNotMatch(html, /Authoritative Offer Acceptance|Promoted Offer Acceptance result/);
   assert.match(html, /95\.0%/);
   assert.match(html, /High confidence/);
   assert.match(html, /Model-reported confidence \(audit\)/);
@@ -2946,7 +2278,7 @@ test("Foundation result cards surface authoritative acceptance and always show C
   assert.match(html, /Record summary/);
   assert.equal((html.match(/data-call-id="foundation-accepted-display"/g) || []).length, 1);
   assert.match(html, /2 evaluations:/);
-  assert.match(html, /Evaluation Results Grouped by Call/);
+  assert.match(html, /Historical Model Outputs Grouped by Call/);
 });
 
 test("all UI data-table headings provide accessible descriptions", async () => {
@@ -2961,7 +2293,7 @@ test("all UI data-table headings provide accessible descriptions", async () => {
     })
   ]), async ({ baseUrl }) => {
     const dashboardHtml = await fetch(`${baseUrl}/`).then((response) => response.text());
-    const drilldownHtml = await fetch(`${baseUrl}/drilldown?metric=calls.meaningfulConversation`).then((response) => response.text());
+    const drilldownHtml = await fetch(`${baseUrl}/drilldown?metric=calls.unique`).then((response) => response.text());
     const callHtml = await fetch(`${baseUrl}/calls/heading-help-call`).then((response) => response.text());
 
     assertAllTableHeadingsHaveHelp(dashboardHtml, "Sales Dashboard");
@@ -2977,4 +2309,92 @@ test("all UI data-table headings provide accessible descriptions", async () => {
   });
   assertAllTableHeadingsHaveHelp(reportHtml, "Report viewer");
   assert.match(reportHtml, /The salesperson associated with the call records represented by this row/);
+});
+
+test("Validation Lab creates benchmark-only unseen drafts and labels without opening archive or model mutations", async () => {
+  const rows = Array.from({ length: 12 }, (_, index) => row({
+    call_id: String(71000000 + index),
+    customer_id: `validation-customer-${index}`,
+    ContactId: `validation-contact-${index}`,
+    call_time: `09:${String(index).padStart(2, "0")}:00`,
+    Salesperson: `Validation Seller ${index % 3}`,
+    transcription_text: `Validation Seller ${index % 3} (CWA): Direct seller quote ${index}. Customer: Direct customer quote ${index}.`
+  }));
+  let modelRequests = 0;
+  await withServer(csv(rows), async ({ baseUrl, storePath }) => {
+    const before = readStore({ storePath });
+    const beforeArchive = {
+      jobs: before.aiJobs.length,
+      runs: before.evaluationStudio.evaluationRuns.length,
+      results: before.evaluationStudio.evaluationResults.length
+    };
+    const createResponse = await fetch(`${baseUrl}/evaluation-studio/validation-lab/manifests`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        name: "Exact fact smoke",
+        partition: "smoke",
+        capabilityId: "future_materially_different_exact_fact_v1",
+        sampleSize: "10",
+        exactFact: "one exact closed fact",
+        productUse: "research comparison only",
+        minimumDecisionAccuracy: "0.95",
+        minimumEvidenceIntegrity: "1",
+        minimumCoverage: "0.9",
+        minimumExactQuotesPerDecision: "1"
+      }),
+      redirect: "manual"
+    });
+    assert.equal(createResponse.status, 303);
+    const payload = await fetch(`${baseUrl}/api/evaluation-studio/validation-lab`).then((response) => response.json());
+    assert.equal(payload.ok, true);
+    assert.equal(payload.validationLab.summary.manifests, 1);
+    assert.equal(payload.validationLab.manifests[0].examples.length, 10);
+    assert.equal(payload.validationLab.manifests[0].labelBatch.length, 5);
+    assert.equal(payload.validationLab.operationalUsePermitted, false);
+    const manifest = payload.validationLab.manifests[0];
+    const first = manifest.labelBatch[0];
+    const labelResponse = await fetch(`${baseUrl}/evaluation-studio/validation-lab/manifests/${encodeURIComponent(manifest.id)}/labels`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        callId: first.callId,
+        expectedDecision: "present",
+        caseType: "positive",
+        supportStatus: "supported",
+        controllingReason: "The selected direct quote controls the frozen label.",
+        evidenceTurnIndex: "0"
+      }),
+      redirect: "manual"
+    });
+    assert.equal(labelResponse.status, 303);
+    const afterLabel = await fetch(`${baseUrl}/api/evaluation-studio/validation-lab`).then((response) => response.json());
+    assert.equal(afterLabel.validationLab.summary.confirmedLabels, 1);
+    const studioHtml = await fetch(`${baseUrl}/evaluation-studio?manifestId=${encodeURIComponent(manifest.id)}`).then((response) => response.text());
+    assert.match(studioHtml, /What each evaluator is actually allowed to do/);
+    assert.match(studioHtml, /Voicemail and later inbound evidence/);
+    assert.match(studioHtml, /Benchmark Builder and Human Truth/);
+    assert.match(studioHtml, /Historical Research — read only, authority none/);
+    assert.match(studioHtml, /Direct-quote question/);
+    assert.doesNotMatch(studioHtml, /Choose calls and run an evaluation|Submit test|Automatically route Foundation/);
+
+    const lockedArchive = await fetch(`${baseUrl}/api/evaluation-studio/knowledgebase`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "must remain locked", content: "not written" })
+    });
+    assert.equal(lockedArchive.status, 423);
+    const after = readStore({ storePath });
+    assert.deepEqual({
+      jobs: after.aiJobs.length,
+      runs: after.evaluationStudio.evaluationRuns.length,
+      results: after.evaluationStudio.evaluationResults.length
+    }, beforeArchive);
+    assert.equal(modelRequests, 0);
+  }, {
+    fetchImpl: async () => {
+      modelRequests += 1;
+      throw new Error("Validation Lab must not contact the model service");
+    }
+  });
 });

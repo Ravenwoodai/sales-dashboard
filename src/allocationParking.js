@@ -85,10 +85,13 @@ function reportContainsParkedAllocationData(report = {}) {
 function classifyReportVisibility(report = {}) {
   const parkedAllocationRelated = reportContainsParkedAllocationData(report);
   const untrustedLegacyRelated = reportContainsUntrustedLegacyData(report);
-  const hiddenFromActiveReports = parkedAllocationRelated || untrustedLegacyRelated;
+  const retiredSemanticRelated = report.type === "lead_utilization_report" || report.metadata?.generatedBy === "automatic_lead_utilization_report";
+  const hiddenFromActiveReports = parkedAllocationRelated || untrustedLegacyRelated || retiredSemanticRelated;
   return {
     schemaVersion: "sales_dashboard_report_visibility.v1",
-    status: parkedAllocationRelated
+    status: retiredSemanticRelated
+      ? "retired_unvalidated_semantic_report"
+      : parkedAllocationRelated
       ? "parked_data_related"
       : untrustedLegacyRelated
         ? "untrusted_legacy_data_related"
@@ -97,8 +100,11 @@ function classifyReportVisibility(report = {}) {
     activeReportVisible: !hiddenFromActiveReports,
     parkedAllocationRelated,
     untrustedLegacyRelated,
+    retiredSemanticRelated,
     reason: hiddenFromActiveReports
-      ? parkedAllocationRelated
+      ? retiredSemanticRelated
+        ? "Report used an unvalidated semantic utilisation or performance judgement and is retained only as audit history."
+        : parkedAllocationRelated
         ? "Report contains parked allocation or superseded stable-target terminology."
         : "Report relies on untrusted legacy disposition or note fields and is superseded."
       : ""

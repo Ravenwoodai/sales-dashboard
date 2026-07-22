@@ -1,162 +1,176 @@
 # Specification
 
 ## MVP User Journey
-1. Operator starts the local dashboard with a scheduled CSV path.
-2. The system parses the CSV, deduplicates by `call_id`, and computes data-confidence checks.
-3. The local evaluator classifies transcripts into contact, outcome, follow-up, and risk signals.
-4. The dashboard presents supported metrics and review queues with evidence and confidence context.
-5. The system saves a derived import snapshot, alert events, and an automatic executive-summary report.
-6. Managers inspect alerts, calls, import history, and saved reports without seeing or depending on intentionally incomplete phone values.
-7. When an allocation workbook is supplied, the system preserves only parked diagnostic metadata and managers continue using call/transcript analytics.
-8. Managers can review, confirm, correct, dismiss, escalate, and note call/signal classifications without overwriting raw imported, deterministic, LLM, or alert evidence.
-9. Managers can inspect a Lead Harvest Queue of positive-response callback candidates for New Business, with possible name, callback timing, handover context, confidence, and evidence snippets.
-10. Managers can use an Evaluation Studio foundation to manage sales knowledgebase entries, strict-schema evaluation templates, queued evaluation runs, local result harvesting, and report-safe evaluation rollups before optional local model submission.
+
+1. An operator starts the local application with a call CSV/XLSX.
+2. The application validates, deduplicates, and profiles the source without copying it into Git.
+3. A manager sees import coverage, call activity, source/record facts, exact reattempt relationships, and conservative literal transcript detections.
+4. Unsupported semantic areas visibly remain unavailable or unknown.
+5. A manager can open a contributing call, read the transcript and exact evidence, and record a non-destructive review overlay.
+6. A manager can inspect capability boundaries, deterministic voicemail/inbound evidence, and benchmark-only human-truth work in Evaluation Studio.
+7. Historical model work remains in a separate immutable Evaluation Research Archive, clearly labelled non-authoritative.
 
 ## Data Contract
-Required MVP columns:
-- `call_id`
-- `call_date`
-- `call_time`
-- `Salesperson`
-- `CallType`
-- `call_direction`
-- `CallTotalSeconds`
-- `ring_time_seconds`
-- `call_duration_seconds`
-- `transcription_text`
-- `CustomerImportSource`
 
-Optional untrusted legacy columns:
-- `NoSaleType`: unverified human-entered disposition that is often inaccurate.
-- `Baz_DetailedNotes`: unverified legacy model output whose model, prompt, provenance, and accuracy are unknown.
+- Deduplicate by `call_id`.
+- Treat raw transcript text as untrusted display content and escape it.
+- Preserve source speaker/turn order; do not claim independent diarisation.
+- Use valid source timestamps and display them in Australian format/AEST.
+- Use valid `CustomerImportDate` and `CustomerCreateDate` only for record-age/source reporting.
+- Treat malformed date fragments as missing.
+- Never use or display `dialled_phone_number` or partial/redacted phone values for matching.
+- Use only permitted exact source IDs, including `customer_id`, `ContactId`, `AllocatedLeadID`, `FoundCustomerID`, and `FoundContactID`, for limited relationships.
+- A later stable-ID match means `later_attempt_observed` only. It does not prove callback completion, human contact, lead validity, sale, payment, or revenue.
+- `NoSaleType` and `Baz_DetailedNotes` are excluded untrusted legacy fields. Preserve them only in original raw input; never use or expose them in active analytics, filters, alerts, reports, UI/APIs, manager-review prefill, or evaluator input.
+- Optional campaign/allocation imports are parked and excluded from active analytics, filters, reports, alerts, scorecards, and evaluator context.
 
-These columns are preserved unchanged in the raw source only. Their absence does not fail the active data contract, and their values must not affect active analytics, alerts, filters, reports, scorecards, normal UI/APIs, manager-review prefill, or AI/evaluator context.
-Derived reports, alerts, reviews, Evaluation Studio records, and local LLM intelligence created under the earlier policy remain preserved for audit but are excluded from active views or quarantined until recreated without these fields.
+## Active Evaluation Rules
 
-Optional stable linkage fields:
-- `customer_id`
-- `ContactId`
-- `AllocatedLeadID`
-- `FoundContactID`
-- `FoundCustomerID`
+The active evaluator is deterministic and literal only.
 
-Parked allocation workbook columns:
-- `LEAD CAMPAIGN`
-- `QTY ALLOCATED`
-- `QTY ACTIONED`
-- `QTY REMAINING`
-- `DATE`
-- `SALES MANAGER`
-- `SALESPERSON`
-- `TYPE`
+Allowed outcomes:
 
-These fields are preserved only in the parked allocation parser/diagnostic path. They must not feed active metrics, alerts, filters, source/list quality, reports, scorecards, or AI transcript context.
+- `no_answer` only for a recognised exact no-answer phrase.
+- `voicemail` only for machine/carrier voicemail wording.
+- `system_audio` only for machine/carrier/system wording covered by the closed rules.
+- `wrong_number` only for a direct Customer wrong-contact statement.
+- `opt_out` only for a direct Customer opt-out statement.
+- otherwise `null`/unknown.
 
-Restricted current fields:
-- `dialled_phone_number`: intentionally incomplete for security and ignored for MVP analytics.
-- `CustomerCreateDate`: used only when it parses as a valid source date for Record Age fallback; malformed fragments are treated as missing.
-- `CustomerImportDate`: used only when it parses as a valid source date for Record Age; malformed fragments are treated as missing.
+Allowed events:
 
-## Local Evaluation Rules
-- Duration above zero is treated only as a telephony-connected signal.
-- Probable live-human contact requires transcript evidence, not duration alone.
-- Untrusted legacy disposition/note fields are not evaluation context and must not be inferred or reconstructed.
-- Local outcome classification is generated independently.
-- Evidence snippets are recorded for follow-up, complaint, and opt-out signals.
-- Unknown is preferred when the transcript or stable IDs are insufficient.
-- One-dial reattempt records are neutral until deterministic evidence separates valid one-dial outcomes, risky one-dial no-contact/no-pitch rows, and ambiguous rows needing manager or later local-LLM review.
-- Lead harvest candidates require deterministic live-human, positive-response, and callback/follow-up evidence. Later-call status is labelled as "later matching call observed" only when stable source IDs match; missing stable IDs are labelled matching unavailable.
+- Exact voicemail/system-audio/no-answer evidence.
+- Direct Customer wrong-number evidence.
+- Direct Customer opt-out evidence.
+- Literal AI-assistant phrases as descriptive evidence, never a quality judgment.
+
+The following stay null/unknown unless a manager explicitly authors an overlay:
+
+- transcript quality;
+- connected to human;
+- meaningful/actionable conversation;
+- decision-maker status;
+- customer sentiment;
+- next step/follow-up meaning;
+- valid no-sale;
+- lead quality/score;
+- call quality/score;
+- Spiel/handling quality;
+- evaluator confidence.
 
 ## Dashboard Modules
-- Executive overview
-- Data confidence panel
-- Import history
-- Reports library
-- Alert centre
-- Manager review queue
-- Salesperson scorecards
-- Source/list quality
-- Follow-up leakage and reattempt behaviour
-- Lead Harvest Queue for positive callback candidates
-- Evaluation Studio for knowledgebase, prompt templates, and queued governed evaluation runs
-- Sanitized raw call explorer
 
-## Manager Review Governance
-- Manager review is separate from alert lifecycle. Alert lifecycle tracks alert triage; manager review tracks human review and correction of call/signal classifications.
-- Supported review statuses are `unreviewed`, `review_needed`, `in_review`, `reviewed_confirmed`, `reviewed_corrected`, `dismissed`, and `escalated`.
-- Manager corrections are stored as separate review records with correction entries and review history. They include actor, timestamp, reviewed field, previous/displayed value, manager-corrected value, reason or note where supplied, and evidence assessment where supplied.
-- Review actors resolve to `local_manager` until authentication exists. Client-supplied actor/reviewer names are not authoritative.
-- Correctable fields are allowlisted to derived contact, outcome, follow-up, coaching, risk, and evidence-assessment fields. Raw imported fields, raw transcript text, untrusted legacy disposition/note fields, source IDs, phone fields, import metadata, alert evidence, and parked allocation/campaign fields cannot be corrected through manager review.
-- Dashboard display may show manager-corrected values as manager-reviewed overlays, but raw imported, deterministic, and LLM values must remain inspectable.
+- **Overview:** active dataset, filters, denominators, provenance, call activity, trusted coverage, reattempt facts, record/source facts, and attention items derived from literal evidence or manager state.
+- **Opportunities:** explicit unavailable state while required capabilities are unpromoted. No model-backed funnel or action queue.
+- **Follow-Up:** reattempt activity derived from exact stable IDs and literal no-contact states. It is not a semantic callback queue.
+- **Alerts & Reviews:** lifecycle controls for supported literal alerts plus manager review records.
+- **Intelligence:** literal transcript triage, exact evidence, provenance, and guardrail disclosure.
+- **Records & Reports:** source records, record-age/source summaries, attribution-review facts, and safe reports.
+- **Evaluation Studio:** controlled validation laboratory with a complete capability catalog, deterministic voicemail/inbound lane, benchmark builder, direct-quote human labelling in batches of at most five, strict frozen promotion checks, and a separate immutable Historical Research area. It has no model submit, run, retry, resume, harvest, or operational review-handoff controls.
+- **Call proof:** ordered transcript timeline, literal detections, sanitized source fields, historical model research warnings, manager review, and audit history.
+- Lead Harvest and semantic team-performance panels are retired.
 
-## Evaluation Studio Governance
-- Evaluation Studio artifacts are separate from active deterministic metrics and manager review corrections.
-- Knowledgebase entries are active or archived, versioned, tagged, and attributed to the local `local_manager` actor when edited through Sales Dashboard.
-- Evaluation templates define an evaluation goal, prompt instructions, strict JSON output schema, version/hash metadata, and evidence/confidence expectations.
-- Evaluation runs store the import ID, run type, template snapshot, knowledgebase snapshot, call selection, planned call count, status, queued local AI job references, and guardrails.
-- Evaluation runs can be quarantined, resumed, and harvested non-destructively. Quarantine/resume/harvest actions store local-manager actor metadata, timestamp, reason/status metadata, and run history without deleting jobs or result records.
-- Prompt test runs use run type `prompt_test`, target one call with transcript evidence, can be created as draft previews, and can optionally submit through the AI Execution Layer.
-- Evaluation results store the import ID, run ID, call ID, template/version/hash, evaluation goal, status, confidence, evidence availability, transcript quality, findings, limitations, provenance, and manager-review recommendation as separate versioned evidence records.
-- Evaluation results can be sent into the governed manager review workflow as review-needed items. This creates a manager review overlay/history event and may attach safe suggested correction prefill from allowlisted findings, but it does not alter the stored result, deterministic output, raw import, LLM output, alert evidence, or confirmed manager corrections.
-- Suggested correction prefill is advisory only. It must be stored and displayed separately from confirmed manager corrections until a manager explicitly confirms or corrects the field.
-- Optional local model submission must use the existing AI Execution Layer. Sales Dashboard must not call Ollama, vLLM, or external providers directly.
-- Evaluation Studio may keep raw call CSV `AllocatedLeadID` as raw/canonical context, but it must not use parked campaign/allocation imports or allocation-performance concepts.
-- Evaluation Studio results are evidence-backed review signals. They must not claim confirmed sales, revenue, order value, close rate, true conversion, or lost revenue, and must not silently replace deterministic or manager-reviewed values.
-- The active Call Intelligence Foundation uses goal `call_intelligence_foundation`, schema `call_intelligence_foundation.v3`, and template version 6. It records contact result, decision-maker status, conversation stage, offer/price/objection signals, customer outcome, next step/timing, lead-record signals, the represented organisation/publication/client, optional quoted-amount context, exact evidence, and three independent lenses: opportunity status, measurement eligibility, and efficiency status. `called_on_behalf_of` is transcript-grounded and independent of acceptance or offer stage; when absent it must be exactly `No product pitched`. Explicit `on behalf of` evidence can repair a missed represented party. The final agreed disposition overrides earlier provisional wording, and distant timing such as `in a year's time` becomes `long_term_nurture` rather than an active callback. The latest Foundation represented-party and timing context is reusable by specialist rows for the same call. It must not emit an overall score or infer payment, revenue, ROI, fulfilment, or CRM closure.
-- Transient batch-submission failures are retried up to three times with the same idempotency key. HTTP validation failures are not retried.
-- Foundation specialist routes are derived and reconciled locally from validated output. When automatic routing is enabled, the system creates non-destructive child batch runs only for the relevant active specialist templates: Offer Acceptance, Callback Opportunity, Objection Handling, Procedure, and Lead Record Audit. Existing specialist results are not overwritten, and specialist outputs remain authoritative for their own question.
-- Batch job submission uses bounded concurrency of 12. Automatic harvesting processes at most 100 unfinished jobs per pass and leaves larger runs active until all chunks are terminal, preventing a 100-job UI reconciliation limit from stranding larger batches.
-- The active Offer Acceptance evaluator uses goal `offer_acceptance_classification` and schema `offer_acceptance_classification.v1`. It returns exactly category 1 `no_sale_signal`, category 2 `interested_follow_up_only`, or category 3 `customer_accepted_offer`. Category 3 requires a presented offer, direct customer commitment or a completed acceptance action, no unresolved approval/decision condition, and verified transcript quotes. It is an operational transcript signal only and is not proof of payment, fulfilment, recognized revenue, or CRM closure.
-- The active lead-record evaluator is `Lead Record & Disposition Evidence Audit` with goal `lead_record_disposition_evidence_audit` and output schema `lead_record_disposition_evidence_audit.v1`. It separates record evidence from salesperson-allegation assessment, requires direct transcript/system proof for supported or contradictory conclusions, treats missing allegations as explicitly absent, and emits recommendations only. Its results remain outside report rollups and cannot mutate claim or lead state.
+## Alert And Manager Review Governance
+
+- Alerts are generated only from the active trusted boundary.
+- Active alert statuses are `new`, `acknowledged`, and `in_progress`; closed statuses do not inflate active totals.
+- Alert lifecycle actions append history and never change original evidence.
+- Server-resolved actor is `local_manager` until authentication exists; client actor names are not authoritative.
+- Manager review is separate from alert lifecycle.
+- Manager review can confirm, correct, dismiss, escalate, reopen, or add a note within the allowlisted review contract.
+- Corrections are overlays containing previous/displayed/corrected values, reason, evidence assessment, note, actor, time, and history.
+- Manager review never overwrites raw input, literal evidence, or historical model artifacts.
+
+## Local-Model Governance
+
+- `docs/LOCAL_MODEL_CAPABILITY_POLICY.md` and the latest capability register are authoritative.
+- Every exact capability has separate submission and operational-consumption permission.
+- Missing, malformed, stale, unknown, failed, stopped, quarantined, or unpromoted state is denied.
+- The current Qwen register contains zero promoted capabilities.
+- No Qwen work may be submitted, resumed, harvested, auto-routed, or operationally consumed.
+- Technical service health, valid JSON/schema, exact copied excerpts, successful jobs, test coverage, and plausible explanations are not semantic promotion evidence.
+- Once an atomic/narrow unseen semantic gate fails, another same-model decomposition or adjacent fact lane is prohibited for that evaluator family.
+- A materially different future candidate must have predeclared facts, exclusions, evidence minimums, frozen human labels, genuinely unseen promotion calls, critical-error limits, and separate explicit operational approval.
+
+## Evaluation Research Archive
+
+- Preserve historical knowledgebase entries, templates, runs, jobs, results, prompts, evidence, provenance, audits, and quarantine history.
+- Archive records are immutable research evidence with `researchOnly: true` and authority `none`.
+- Historical names such as Foundation, Offer Acceptance, Callback, Objection, Procedure, Lead Record, Spiel Quality, or Lead Harvest do not grant current authority.
+- Archive reads must not automatically poll the model service, reconcile into active state, route new jobs, create reviews, or alter active denominators.
+- Knowledgebase/template edits, archive/quarantine changes, semantic feedback, and result-to-review handoff are also locked; the archive is read-only, not merely inference-disabled.
+- Result-ingestion endpoints are retired (`410`).
+- Run creation, prompt testing, resume, and harvest are capability-locked (`423`) while unpromoted.
+- Direct transcript-evaluation endpoints and Lead Harvest are retired (`410`).
+
+## Benchmark Validation Lab
+
+- Store benchmark truth separately in `data/store/evaluation-validation-lab.json`; never write it into the historical archive or operational manager-review queue.
+- A manifest is bound to one exact fact, one research product use, one partition (`smoke`, `development`, `promotion`, or `shadow`), the active import, transcript/source hashes, and a complete prior-audit exclusion fingerprint.
+- Selection excludes every call mentioned in runtime audits or repository rule/prompt/test/script artifacts, every current/historical Studio result, attempted run selection or queued job, and every earlier Validation Lab manifest.
+- Human labelling presents no more than five calls at once with the chronological source transcript. Every decision, including unsupported/not-scored, requires at least one selected exact quote, speaker and turn.
+- Freeze requires complete labels, unchanged source/transcript hashes, the partition minimum, and balanced positive, hard-negative, and unsupported cases. Frozen manifests and labels are immutable.
+- Smoke requires at least 10 examples, development approximately 50, promotion at least 100 genuinely unseen examples, and shadow at least 25. Ten calls never constitute promotion evidence.
+- Candidate comparison reports false positives, false negatives, abstentions, unsupported errors, evidence integrity, critical errors, category results, resource use, thresholds, and stop-rule status.
+- A passing strict test still does not promote. Separate external approval and an explicit capability-register change are mandatory.
+
+## Deterministic Voicemail And Inbound Lane
+
+- Exact voicemail comes from the existing closed literal outcome.
+- A transcript-verifiable callback request requires a salesperson-labelled turn after recognised voicemail prompt wording. Exact approved-message compliance requires the complete approved wording with only the salesperson-name placeholder variable.
+- Later inbound evidence requires valid later chronology and an exact permitted stable-ID field/value match. Multiple candidates or an intervening matching outbound record make event attribution `not_scored`.
+- Original-salesperson/different-salesperson handling is shown only when clean event chronology, the source salesperson field, and a matching CWA speaker turn all exist.
+- The lane may show elapsed time and source linkage. Callback causation, receptiveness, sales and gross profit remain unknown unless future CRM fields prove them.
 
 ## Persistence Requirements
-- Store derived state under `data/`, which must stay ignored by Git.
-- Persist import summary records keyed by input hash.
-- Persist sanitized evaluation artifacts per import.
-- Persist alert events with lifecycle-ready status fields.
-- Persist manager review records, correction entries, and review history keyed by import/call/scope/optional alert.
-- Persist versioned `bad_lead_claim.v1` allegation records and append-only history in the local JSON store. Claim payloads cannot supply authoritative actor/timestamp/decision metadata. Only active `submitted` and `under_review` claims may be selected as read-only local Evaluation Studio allegation context, using exact `call_id` first and then an exact canonical `AllocatedLeadID` lead-only fallback. Claims remain absent from dashboard persistence, prompt-test API task-input responses, reports, drilldowns, normal UI, and dedicated HTTP routes.
-- Persist Evaluation Studio knowledgebase entries, templates, run records, local AI job harvest state, result records, and report-safe rollups under the local ignored store without copying raw imports into Git.
-- Persist generated reports with title, type, summary, content, metadata, timestamps, and source.
-- Automatically create or update an executive-summary report for each imported CSV.
-- Persist parked allocation status metadata when an allocation file is supplied; do not copy the raw allocation workbook into the repository.
-- Allow future Codex-generated reports to be saved through `POST /api/reports`.
-- Allow active saved reports to be opened from the dashboard at `/reports/<report-id>`.
-- Preserve parked/stale report records internally while excluding allocation-related, stable-target, stable lead-day, and lead-day reports from normal report APIs and UI.
+
+- Store local state under ignored `data/` paths.
+- `state.json` stores operational history/pointers and model job references.
+- `intelligence.sqlite` is authoritative for the active deterministic derived import.
+- `evaluation-studio.sqlite` is authoritative for historical Evaluation Studio records.
+- `evaluation-validation-lab.json` stores isolated research benchmark truth; it has no operational authority.
+- Active-import model status is `not_requested` and semantic columns are null.
+- Historical model artifacts never populate active semantic columns.
+- Quarantine preserves records and adds explicit state/history; it does not delete evidence.
+- Generated reports shown normally must use only trusted active inputs. Unsafe historical/parked reports may remain stored but hidden.
+- Both SQLite databases must pass `PRAGMA integrity_check`.
+
+## APIs And Fail-Closed Behavior
+
+- `/health` exposes import health, AI disabled/configured state, and capability summary.
+- `/api/summary`, `/api/alerts`, `/api/manager-reviews`, `/api/imports`, `/api/reports`, and call-proof routes expose active trusted data.
+- `/api/ai/jobs/<id>` may expose a sanitized historical job only with research-only/authority-none warning.
+- Direct transcript-evaluation submission endpoints return `410`.
+- `/api/evaluation-studio/results` mutation returns `410`.
+- Evaluation Studio run/prompt/resume/harvest mutations return `423` under capability quarantine.
+- Benchmark-only manifest creation, direct-quote labels, and irreversible freeze use isolated `/evaluation-studio/validation-lab/...` routes and never call the model service or mutate archive/job counts.
+- `/api/evaluation-studio/validation-lab` exposes the benchmark lab, capability catalog, and deterministic voicemail/inbound report without inference.
+- `/api/lead-harvest` returns `410`.
+- Blocked requests must not change job, run, result, review, alert, or report counts and must not make a model-service network request.
 
 ## Unsupported Metrics
-The current CSV does not contain reliable fields for:
-- confirmed sales conversion
-- revenue
-- order value
-- close date
-- won/lost commercial outcome
-- salesperson revenue performance
 
-Parked allocation data must not be used for campaign/source/salesperson performance, allocated-versus-called comparisons, completion rates, or alerting.
+Do not calculate or claim:
 
-These must remain warning/unsupported states until explicit reliable fields are added.
+- human answer rate;
+- meaningful/actionable conversation rate;
+- decision-maker rate;
+- call/Spiel quality bands or rankings;
+- objection-handling or procedure-adherence performance;
+- offer acceptance or sales opportunity;
+- lead validity/quality based on transcript semantics;
+- callback completion from absence/presence of a later uploaded call;
+- sales conversion, payment, fulfilment, order value, revenue, ROI, close date, or CRM won/lost state;
+- source or salesperson performance based on any unpromoted model output.
 
 ## Acceptance Criteria
-- `node --test tests/*.test.js` passes.
-- `node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"` starts the dashboard.
-- `/health` returns a JSON status.
-- `/api/summary` returns the computed analysis payload.
-- `/api/imports` returns saved import history.
-- `/api/reports` returns active non-parked reports and accepts generated report saves.
-- `/api/reports/:id` and `/reports/<report-id>` do not expose parked or stale report bodies in normal mode.
-- `/api/allocations` returns parked diagnostic metadata only and never returns active totals or reconciliation rows.
-- `/api/manager-reviews` exposes governed manager review records and rejects invalid statuses, scopes, protected fields, and allocation/campaign correction fields.
-- `/api/evaluation-studio` exposes active knowledgebase entries, evaluation templates, run metadata, result records, and review-safe evidence queues; template/result validation blocks parked allocation/campaign performance concepts.
-- `/api/evaluation-studio/results` stores and lists versioned Evaluation Studio result records with confidence, evidence, provenance, and manager-review recommendation.
-- `/api/evaluation-studio/prompt-tests` creates one-call Evaluation Studio prompt test runs and optionally submits them to the local AI Execution Layer.
-- `/api/evaluation-studio/runs/:id/harvest` checks queued local AI jobs for a run, stores completed Evaluation Studio results, marks failed jobs, preserves pending jobs, and appends run history.
-- `/api/evaluation-studio/runs/:id/quarantine` marks a non-completed Evaluation Studio run as quarantined with a reason and history event.
-- `/api/evaluation-studio/runs/:id/resume` returns a non-completed Evaluation Studio run to queued status with a resume history event.
-- `/api/evaluation-studio/report-rollups` exposes report-safe lead utilisation/coaching rollups from labelled Evaluation Studio findings.
-- `/api/evaluation-studio/results/:id/review` creates a governed manager review item from an Evaluation Studio result using server-resolved `local_manager` actor attribution.
-- `/api/lead-harvest` exposes active call-data-only harvest candidates and excludes warm-business rows from the default New Business queue.
-- `/reports/<report-id>` renders full saved report content/data only when the report is active and non-parked.
-- The dashboard lists ignored fields and unsupported sales/revenue metrics.
-- The explorer does not display `dialled_phone_number`, `CustomerCreateDate`, or `CustomerImportDate`.
-- Source/list quality and drill-down tables show `Record Age`, using valid `CustomerImportDate` first and valid `CustomerCreateDate` second.
+
+- All active conclusions have permitted evidence and provenance.
+- Semantic unknowns remain null.
+- Capability register validates and zero promoted means zero live model submission/consumption.
+- Scheduled task is absent/disabled and both controllers fail before network access.
+- No active model jobs or Evaluation Studio runs remain queued/running.
+- Evaluation Studio exposes only deterministic/benchmark controls plus the immutable archive; it contains no model execution control.
+- All six workspaces and call proof pages contain no hidden model controls or semantic scores.
+- Adversarial blocked requests do not mutate stored counts.
+- Full automated tests, browser console checks, SQLite integrity checks, runtime health, and `git diff --check` pass.

@@ -1,98 +1,148 @@
 # Session Handover
 
-## Completed
-- Built the Sales Dashboard MVP as a local Node.js web app.
-- Added CSV parsing, call deduplication, data-confidence checks, local transcript evaluation, stable-ID follow-up linking, alerts, review queue, scorecards, source quality, and sanitized explorer views.
-- Documented that `dialled_phone_number` is ignored for MVP analytics. Valid `CustomerImportDate` and `CustomerCreateDate` now support source-quality Record Age, while malformed fragments remain missing and raw date fields stay out of proof tables.
-- Added automated tests for parser, privacy guardrails, legacy-field invariance/exclusion, and stable-ID follow-up linking.
-- Added local ignored persistence for import history, sanitized evaluation artifacts, alert events, manager review records, and generated reports.
-- Added Reports Library plus report-saving API so future generated reports can be viewed from the dashboard.
-- Added report viewer pages at `/reports/<report-id>` and View links in the Reports Library.
-- Reworked transcript evidence display so tables show proof summaries, call pages show ordered evidence cards and a readable transcript view, and raw transcripts remain available for audit.
-- Previously added optional CSV/XLSX allocation import and Lead Allocation Coverage; this is now superseded by the parked allocation decision.
-- Preserved built-in first-sheet XLSX reading for call/allocation workbooks and `/api/allocations`, but active artifacts now store parked metadata instead of allocation summaries.
-- Parked separate campaign/allocation imports from active dashboard use. `/api/allocations` now returns parked diagnostic metadata only, active analysis no longer builds allocation coverage, active reports/alerts hide parked-data artifacts, and allocation fields are stripped from AI transcript context.
-- Added intelligence provenance and confidence labelling so raw imported fields, deterministic transcript signals, usable LLM-reviewed output, manager review state, unprocessed rows, and missing evidence are visibly separated.
-- Added shared global call/transcript filters. Summary APIs, dashboard cards, alert centre, scorecards, drill-downs, and raw explorer rows now use the same filtered call population with visible counts, denominator notes, low/empty sample warnings, URL state, and missing-value buckets.
-- Added alert lifecycle controls. The Alert Centre and `/api/alerts` now support new, acknowledged, in-progress, resolved, dismissed, likely false-positive, and parked status handling; manager notes; lifecycle history; bulk actions; and active alert counts that exclude closed and parked alerts.
-- Cleaned up Batch 5 follow-ups. Normal `/api/reports`, `/api/reports/:id`, `/reports/<id>`, and dashboard report lists hide parked allocation, stale stable-target, stable lead-day, lead-day, and allocation-like reports by default while preserving raw stored report records. Alert lifecycle actors are fixed to `local_manager` until authentication exists, even when clients submit actor fields.
-- Added governed manager review workflow. `/api/manager-reviews`, `/api/calls/<call-id>/reviews`, `/reviews`, call pages, the review queue, alert-centre linked review forms, global manager-review filters, and raw explorer rows now support review statuses, corrections, correction history, local actor hardening, and manager-reviewed overlays without overwriting raw imported, deterministic, LLM, or alert evidence.
-- Added the internal `bad_lead_claim.v1` service and JSON-store foundation. It records immutable allegations, authoritative service-context submitters, controlled manager decisions, and append-only history. Active claims can now be supplied to the local Evaluation Studio evaluator as read-only allegation context using exact call-first and exact `AllocatedLeadID` fallback matching, while remaining absent from normal API responses, UI, reporting, alerts, metrics, suppression, and CRM integration.
-- Replaced the broad Lead Validity And Utilisation seed with the versioned Lead Record & Disposition Evidence Audit. Existing old seed records are archived, historical v1 results remain compatible, new audit outputs are semantically validated and excluded from report rollups, and no claim/lead workflow mutation is performed.
-- Lead Record & Disposition Evidence Audit template v3 now keeps record assessment independent from allegation availability, verifies evidence quotes against the source transcript, enforces confidence/evidence caps, maps verified wrong numbers to advisory record correction plus manager review, treats normal rejections as usable non-invalidity evidence, and emits separate contact/record/allegation/manager-action findings. The preserved wrong-number and rejection cases completed through the real local Qwen path with zero retries; operational claim and lead state remained unchanged.
-- Updated lead reattempt behaviour so one-dial records are neutral and split into valid one-dial outcomes, risky one-dial no-contact rows, and needs-review rows. Dashboard cards, proof drilldowns, and automatic reports now show the risky subset instead of calling all one-dial records waste.
-- Generated the report-ready July 7 Direct Sales Lead Utilisation data pack. The Markdown output is `outputs/direct_sales_lead_utilisation_data_pack_july7.md`, the structured JSON output is `outputs/direct_sales_lead_utilisation_data_pack_july7.json`, and the dashboard report ID is `direct-sales-lead-utilisation-review-july7`. The pack starts with a full salesperson leaderboard and uses only the strict one-dial no-contact/no-later-matching-call signal.
-- Added the Lead Harvest Queue. `src/leadHarvestAnalytics.js`, `/api/lead-harvest`, dashboard Lead Harvest cards/tables, and harvest drill-down metrics identify New Business calls with deterministic live-human, positive-response, and callback/follow-up evidence. Possible names, callback timing, and handover context are extracted as review context only; later-call labels use stable IDs only, and missing stable IDs are labelled matching unavailable.
-- Expanded Lead Harvest Queue review context. Candidate rows now include deterministic customer objection tags, salesperson handling tags, objection/handling summary tables, newest/oldest/view-all queue links, and sorted/paginated harvest drilldowns. Later matching call observed means a later stable-ID call exists in the active import; it does not prove completion.
-- Reworked call proof pages so the readable Transcript Timeline appears before Detected Signal proof excerpts. Useless speaker-label-only match text is hidden, and 12-month/next-financial-year callback wording is classified as long-term deferral/future nurture instead of active follow-up or Lead Harvest candidate evidence.
-- Completed Batch 7 Evaluation Studio. `src/evaluationStudio.js`, `src/storage.js`, `src/main.js`, and `src/dashboardRenderer.js` now provide seeded Neuron/LatentPulse-derived knowledgebase entries, editable/archivable knowledgebase records, standalone `/evaluation-studio` management workspace with a text-file loader, editable/archivable strict-schema evaluation templates with safe custom evaluation goals, queued evaluation runs with template/knowledgebase snapshots and all-eligible-call selection support, one-call prompt test runs, run quarantine/resume governance with history, batch result harvesting from queued local AI jobs, versioned result records preserving prompt/template and knowledgebase-version context, global-filter-aware result/evidence/rollup views, manager-review handoff from stored result records with safe suggested correction prefill, report-safe Evaluation Studio lead utilisation/coaching rollups, `/api/evaluation-studio`, `/api/evaluation-studio/results`, `/api/evaluation-studio/prompt-tests`, `/api/evaluation-studio/report-rollups`, compact dashboard Evaluation Results bridge, and optional explicit local Execution Layer submission.
-- Local Evaluation Studio prompt testing is enabled for the current July 7 dashboard run. The Execution Layer now has a dedicated `sales_dashboard_evaluation_studio` task type and Sales Dashboard model route for editable Studio prompt/knowledgebase runs, while normal transcript intelligence extraction remains on `sales_transcript_intelligence_extraction`. A one-call callback-opportunity prompt test for call `48541981` completed and was harvested into an Evaluation Studio result.
-- Small queued Evaluation Studio prompt-test runs now auto-harvest completed local AI jobs when `/evaluation-studio` or the Evaluation Studio APIs are opened, so completed prompt tests should not remain displayed as `running` waiting for a manual Harvest click.
-- UI date/time display is standardized to Australian format and AEST. Source call times display as `DD/MM/YYYY HH:mm:ss AEST` without browser timezone conversion; stored timestamps such as imported/updated/reviewed times are converted to fixed AEST through `src/dateTimeFormat.js`.
-- Redesigned the manager UI into seven focused Sales Dashboard workspaces: Overview, Lead Harvest, Follow-Up, Alerts & Review, Team & Sources, Transcript Intelligence, and Data & Records. Global filter state persists between workspaces, Overview starts with a compact attention queue, and Evaluation Studio remains a separate product workspace with internal jump navigation and collapsed creation forms.
-- Expanded Evaluation Studio from five short seed summaries to ten structured historical Neuron entries plus four de-identified LatentPulse calibration/governance entries. The original seed summaries are archived, not deleted. Imported entries are visible but marked pending manager approval, and are excluded from run snapshots/model input until individually changed to approved for current evaluation.
-- Reworked the Evaluation Studio knowledgebase/template management UI: the previous side-by-side data tables with in-row editors were replaced by separate full-width libraries. Each entry now shows readable source/version/tags/summary/status context with an expandable edit action, avoiding clipped columns and horizontal scrolling.
-- The currently verified July 7 server at `http://127.0.0.1:3040/` has local AI execution enabled for Evaluation Studio testing. Its project credential lives only in the user's private environment; do not add it to repository files. A callback-opportunity smoke-test run completed successfully on 2026-07-11.
-- Evaluation Studio active prompt-test runs now poll the local API while the page is open and reload when results arrive. Normal run rows show `Processing automatically` or `Results available`; Harvest, Quarantine, and Resume are still preserved behind Advanced run actions for exceptional recovery/governance cases.
-- The local AI Execution Layer now protects `sales_dashboard_evaluation_studio` with one active `dynamic-schema-v1` worker identity. The lease lasts 30 seconds and heartbeats every 5 seconds; stale/incompatible workers cannot claim protected jobs, claim attempts retain recovery lineage, and `/api/ai/status?health=true` exposes a sanitised active/standby/stale/unavailable view. The canonical Execution Layer is running at `http://127.0.0.1:8080/` with one active compatible owner; do not launch the larger calibration batch unless this health block is active.
-- Lead Record & Disposition Evidence Audit v4 is active. Verified direct do-not-contact and serious threat evidence map to `supported_operational_unusability` plus advisory manager review; explicit permanent closure maps to `supported_invalidity` plus advisory record correction review; hedged closure remains `untestable` with partial evidence and independent verification. These mappings do not mutate claims, leads, reviews, allocation, CRM, alerts, or reports.
-- The local AI Execution Layer SQLite path now initializes WAL, a 5-second busy timeout, `synchronous=NORMAL`, and foreign keys on every connection. Queue/lease/heartbeat/logging/terminal writes use bounded short retries and brief process-local write coordination; model calls remain outside transactions. Successful Evaluation Studio output, terminal job state, claim-attempt completion, and validation metadata commit atomically before best-effort telemetry. The live `dynamic-schema-v1` worker passed a 15-job two-thread synthetic contention run and four real Qwen jobs with zero unhandled lock failures or duplicates.
-- Evaluation Studio is now a direct local workflow. A local user can preview and select calls by filters or exact IDs, run one call or a batch, let terminal results collect automatically, and browse paginated results by classification, reason, operational issue, recommendation, allegation assessment, confidence, and evidence availability. Knowledge entries are presented as Draft or Included; manager identity and approval do not gate ordinary evaluation.
-- Evaluation Studio now includes active editable Offer Acceptance template v3. It returns numeric category 1 no sale signal, category 2 interested/follow-up only, or category 3 customer accepted the offer. Category 3 requires a presented offer, direct unconditional customer commitment or completion of the stated acceptance action, verified offer/customer transcript quotes, and no unresolved approval condition. V3 requires short contiguous excerpts and complete chronological review; the customer's final position controls, and deterministic ingestion downgrades an earlier acceptance after a later withdrawal or condition. Studio reports accepted/follow-up/no-signal counts, accepted divided by classified, latest-run failures, salesperson/source/call-date breakdowns, and the evaluation template/mode/version used for every stored result. Historical semantic quote failures are retried once per validation revision only when the current transcript is available for proof. Historical v1/v2 are preserved archived. These outcomes must not be treated as proof of payment, fulfilment, recognized revenue, or CRM closure.
-- Evaluation Studio now includes active Call Intelligence Foundation template v6 (`call_intelligence_foundation.v3`). It records the transcript-grounded organisation/publication/client represented by the salesperson, or exactly `No product pitched`, alongside contact/stage/outcome/next-step/commercial context, exact callback timing, and independent opportunity, measurement-eligibility, and efficiency lenses. It resolves the final agreed state, stores roughly one-year timing as `long_term_nurture`, blocks that outcome from the active callback route, and can repair an explicit `on behalf of` model miss using exact transcript proof. The latest Foundation represented-party/timing context is shared across specialist rows for the same call. Batch submissions use concurrency 12, three idempotent transient retries, and 100-job harvest passes.
-- Live represented-party audit: ten high-quality customer calls completed with ten usable named results. The main batch is `eval_run_98cb6e1b7babd3ced0fa`; supplemental successful results are in `eval_run_0e596430f09c2ce456d2` and the final proof-repaired call 48552621 is in `eval_run_f12a5630d0cbff24145b`. Failed or superseded attempts remain auditable and were excluded from the ten-success set. The earlier random/terminal sample separately verified `No product pitched` behavior.
-- The Foundation implementation passes the full 169/169 suite, including end-to-end selective routing and a 101-call two-pass harvest test. Foundation v6 is the default evaluator in both Studio run dropdowns. A controlled qualifying-call search stopped at Foundation attempt 12: call 48544948, Foundation run `eval_run_67cf50713f537928c047`, routed to Offer Acceptance run `eval_run_d9ec7a7a4a72afc54af4`, which stored category 3 at 95% confidence. No attempt 13 was submitted. Earlier failures and false-negative category-2 results remain auditable.
-- Evaluation Studio aggregate cards and breakdown values are now read-only drilldowns into the exact filtered stored result rows. Foundation-specific opportunity, measurement, efficiency, represented-party, route, offer, and quoted-amount filters are supported. Offer Acceptance failures expose per-call links and validation reasons. Results use responsive full-width cards rather than the former eight-column table; live Chromium checks at 1256px and 390px report no document or table overflow. The in-app Browser plugin still fails during startup with `Cannot redefine property: process`, so local Chromium CDP was used for the final rendered-width verification.
-- Dashboard-wide drill-down coverage now extends the same rule beyond Studio: every backed result, number, name, source, date, rate, classification, and evidence label opens the exact contributing call or stored result set. Historical imports have safe `/imports/:id` snapshots and saved manager reviews have `/manager-reviews`. New exact filters cover transcript usability, low/unusable evidence, source record age, repeated-short attempts, Studio run ID, report signal, and Foundation callback timing. Configuration metadata, zero-row `Unprocessed`, non-expressible `Records excluded`, and fixed Weekly Lead Intelligence summary cells remain deliberately terminal and are labelled; the weekly cards open the fullest available aggregate tables. Full suite passes 171/171.
-- Call-facing identity and outcome hierarchy are now explicit. Evaluation results inherit the latest authoritative Offer Acceptance context for the same call; Foundation remains visible as its own evaluator but can no longer visually obscure an accepted specialist result. The primary result confidence switches with the authoritative outcome, while the Foundation confidence is retained as secondary context. Result cards and call pages show deterministic summaries built from stored output only. Customer ID or `Not available` is visible on all audited call/result/failure/review/harvest surfaces and included in the Evaluation Studio API. Call 48544948 is the live regression example: Customer ID 16830601, `Customer accepted offer`, 95% Offer Acceptance confidence, and explicit non-proof-of-payment wording. Full suite passes 173/173.
-- Optional calibration reference labels are preserved in `outputs/lead_record_disposition_calibration_v4_reference_labels_20260713.json`; they are not required for normal evaluation. The latest controlled v4 comparison is in `outputs/lead_record_disposition_calibration_v4_local_results_20260713.json` and `outputs/lead_record_disposition_calibration_v4_local_report_20260713.md`. It found zero false invalidity but eight semantic-validation failures across the primary and allegation runs, so do not launch an unattended all-transcript run until the evaluator/model inconsistencies are repaired and the frozen set is rerun.
-- Evaluation Results is now grouped by call instead of rendering one top-level row per evaluator. The API paginates unique call groups and returns every stored evaluation for each selected call; the UI shows authoritative call identity/outcome/summary once and nests Foundation plus specialists underneath without changing their own evidence or confidence. Live call 48544948 appears once with four nested evaluations, Customer ID 16830601, and accepted-offer confidence 95%. Full suite passes 173/173 and desktop/mobile layouts have no horizontal overflow.
-- Evaluation Studio live refresh now reacts to result/count progress, not only run-status transitions. A lightweight `/api/evaluation-studio/progress` endpoint performs bounded five-run/ten-job harvesting; the client prevents overlapping polls, preserves scroll/open calls/form input across reloads, and stops when no genuinely pending jobs remain. The previously stale 63-call/63-evaluation view now settles at 181 calls/509 evaluations, including 80 Offer Acceptance classifications. Full suite passes 173/173; port 3040 is running the updated code.
-- Added an auditable call-level commercial lifecycle. `src/callIntelligenceAggregate.js` projects stored Foundation/specialist results into separate accepted-offer, quoted-value, intended-payment, payment-verification, invoice, fulfilment, revenue, and CRM states; exposes authority conflicts, specialist lifecycle, claim provenance, and strongest exact transcript evidence; and resolves supported relative dates from Australian source dates without discarding raw wording. Later stable-ID matches now mean only `later_attempt_observed`, with completion/payment not established. Callback, Procedure, and Objection seeded templates use strict typed v2 contracts; custom safe templates and historical results remain compatible. Task inputs store full-source transcript length/hash and final-turn policy, while normal UI confidence uses bands and labels numeric model confidence uncalibrated. Future harvested results also retain the actual execution route/model, token counts, duration, and retry count when supplied by the execution layer. Full suite passes 198/198. Live call 48544948 verifies AUD 450 accepted-offer context, 2026-07-08 intended timing, unverified payment, unknown revenue/CRM, and exact offer/acceptance proof. Dashboard runs on port 3040 with `data/source/CallData 07.07.2026.csv`.
-- Accuracy audit baseline: management reports deduplicate per call and prefer the highest template version/latest usable result; Foundation totals use active v6. Historical generic Callback/Procedure/Objection results are labelled untyped and excluded from typed specialist completion. Current typed route coverage is 427/1,394, leaving 967 checks across 551 calls. Store-wide Offer reporting covers 462 usable unique calls; the active import shown in Studio is 6/368 accepted after versioned exact-evidence corrections for calls 48544276 and 48542377. One unavailable-evidence result is excluded. Full suite passes 203/203.
+Date: 2026-07-22
 
-## In Progress
-- Controlled Foundation scale-out is automated and scheduled. The third 500-call boundary remains the latest completed boundary at setup time: 499 parent results plus one successful one-call recovery, 315/315 specialists, 1,127/1,127 exact Foundation excerpts, and 14,228 transcript-bearing calls remaining. Windows task `Sales Dashboard Overnight Evaluations` begins the next parent after 22:00 Melbourne time only when the user has been idle 10 minutes and at least 4 GB RAM is available.
+## Outcome
 
-## Blockers
-- none
+Sales Dashboard now operates inside an enforced zero-promoted local-model boundary. Evaluation Studio is a controlled validation laboratory with a capability catalog, deterministic voicemail/inbound evidence, an isolated human-labelled benchmark store, and a separately marked immutable historical research archive. Historical Qwen work is research-only and cannot submit, route, score, rank, coach, or create operational actions.
 
-## Recommended Next Task
-- Build or invoke a bounded specialist-recovery lane for the 967 active-v6 routed checks that currently have no typed result: 315 Callback, 543 Procedure, 107 Objection, and 2 Offer Acceptance across 551 calls. Use the existing 22:00-06:00 idle/RAM admission gates, one bounded child batch at a time, exact-schema validation, and a stop-on-quality boundary. Do not rerun Foundation merely to replace legacy specialist contracts.
-- Monitor `runtime/evaluation-overnight-state.json`, `runtime/evaluation-overnight.log`, the Studio Overnight evaluations panel, and the Windows task result after the first full night. Do not manually bulk-submit around the controller; investigate and preserve any `halted_on_quality_gate` state before resuming.
-- Capacity work is separate from the completed evaluator: the successful live Foundation execution took 23.6 seconds, so one sequential worker is roughly 3,660 base evaluations/day before specialist routes. Do not schedule or promise 10,000/day until compatible worker concurrency/latency is load-tested against the real route mix.
-- Keep `NoSaleType` and `Baz_DetailedNotes` raw-source-only. Do not use, expose, infer, or reconstruct them in active analytics, alerts, filters, reports, UI/APIs, manager-review prefill, or AI/evaluator context.
-- Keep future filters in `src/globalFilters.js`; do not add separate module-specific allocation/campaign filters.
-- Keep normal report APIs active-only unless an explicit internal/admin diagnostic mode is approved.
-- Treat Lead Harvest Queue rows as manager review/callback prep candidates, not confirmed sales or revenue outcomes. Objection/handling tags are evidence-backed review indicators, not manager-confirmed truth. Do not add phone matching or parked allocation data to this queue.
-- Keep long-term deferrals out of active callback/harvest counts unless a manager explicitly chooses to create a future nurture workflow.
-- Call 48562953 is the regression case for final-state precedence. The live dashboard classifies it as `long_term_deferral`, `followUpStatus=not_required`, shows `Local paramedics / Ambulance Active Journal`, and lists `in a year's time` across its stored specialist rows through exact transcript fallback. Full suite passes 169/169. The Execution Layer on port 8080 and its compatible worker were recovered and processed the controlled Foundation v6 acceptance search.
-- Optional: add browser smoke coverage for Evaluation Studio UI interactions if the workflow grows more complex. Do not let evaluator outputs silently replace deterministic or manager-reviewed values, and do not use them for the hard no-contact utilisation score unless explicitly labelled and governed.
-- Before any large calibration run, sample additional invalidity reasons and ambiguous calls through the same manager-review-only workflow; do not connect audit recommendations to claim decisions or lead suppression.
-- Next evaluator-quality step: fix the v4 semantic/model inconsistencies exposed by the frozen calibration, especially no-answer/voicemail recommendation conflicts, contradicted-allegation handling, and confidence ceilings. Rerun the same frozen set before scaling beyond controlled batches.
-- Later: add diarisation/order correction only through the planned local AI evaluation layer; current UI preserves source transcript order and separates the timeline from signal excerpts.
-- Later: revisit allocation data only after an explicit product decision; do not rebuild allocation dashboards or allocation-derived performance metrics by default.
-- Current verified July 7 UI instance: `http://127.0.0.1:3040/` (listener started from this repository). Canonical default remains port 3000 when no `PORT` override is supplied.
-- Foundation scale-out remains under one-parent-at-a-time controls. Canary `eval_run_26e588aeb7ca51e8b85d`, first parent `eval_run_e6246a02c48d8e8bf7a6`, second parent `eval_run_3eed3f4444eb01c2c264`, and the third 500-call boundary around `eval_run_6264155b63b1720d01e3` have passed their coverage gates. The third parent preserves one historical semantic failure (0.2%) while recovery run `eval_run_c19789006c76a83eff4c` supplies that call's sole successful Foundation result. On resume, submit at most one new 500 parent and require the same failure, routing, evidence, duplicate, queue, and database gates.
-- Port 3040 currently starts from `data/source/CallData 07.07.2026.csv`, which preserves active import `import_41f2f2d8a2f439c7e92f`. The original Downloads workbook path is no longer present. Do not restart without this source argument or the UI will load with no current import.
-- Evaluation Studio history is now authoritative in `data/store/evaluation-studio.sqlite`; `state.json` contains its pointer/counts and hydrates transparently. Live migration preserved 19 knowledgebase entries, 20 templates, 114 runs, and 3,694 results; `PRAGMA integrity_check` returned `ok`. Rollback copy: `data/store/state.pre-evaluation-studio-sqlite-2026-07-18T22-50-15-152Z.json`. Do not restore that copy while the app is running, and preserve the SQLite file plus `-wal`/`-shm` companions during any backup.
-- The nightly controller now drains the 967 typed-specialist gaps before any new Foundation parent: 2 Offer, 315 Callback, 107 Objection, and 543 Procedure across 551 calls. Default recovery batch size is 100 (hard maximum 250), one goal per run. Any failed/partial/errored/count-mismatched recovery run produces `halted_on_specialist_recovery_quality_failure`; investigate it before resuming. The live endpoint `/api/evaluation-studio/specialist-recovery?limit=100` re-derives exact missing calls and currently selects the two Offer gaps first.
-- Full suite passes 207/207, including fail-closed payload-hash corruption coverage. Dashboard PID at handover may change, but port 3040 is healthy with active import `import_41f2f2d8a2f439c7e92f`; Windows task `Sales Dashboard Overnight Evaluations` is Ready for 22:00 Melbourne and its startup script now explicitly sets port 3040.
+## Capability State
 
-## Verification Commands
-- `node --test tests/*.test.js`
-- `node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"`
-- `node src/main.js --csv "C:\Users\User\Downloads\CallData 07.07.2026.xlsx" --allocations "C:\Users\User\Downloads\allocations 07.07.2026.xlsx"`
-- `http://127.0.0.1:3000/health`
-- `http://127.0.0.1:3000/api/summary`
-- `http://127.0.0.1:3000/api/alerts`
-- `http://127.0.0.1:3000/api/manager-reviews`
-- `http://127.0.0.1:3000/evaluation-studio`
-- `http://127.0.0.1:3000/api/evaluation-studio`
-- `http://127.0.0.1:3000/api/lead-harvest`
-- `http://127.0.0.1:3000/api/allocations`
-- `http://127.0.0.1:3000/api/imports`
-- `http://127.0.0.1:3000/api/reports`
-- `http://127.0.0.1:3000/reports/direct-sales-lead-utilisation-review-july7` when the active app is running on port 3000, or use the same path on the currently running July 7 port.
-- The Team & Sources workspace now includes the Self-Sourcing Attribution Audit. It uses only the active CSV/XLSX call export and valid source/import/create dates; Crystal `.rpt` files are not required and never affect dashboard metrics. The audit shows long-held records, confirmed legacy imports, and salesperson-created records separately, and must not be interpreted as proof of online discovery or a reattribution decision.
-- Weekly Lead Intelligence is now visible in Team & Sources. It presents the two supplied weekly `.xls` exports as an explicitly labelled, isolated snapshot: supply mix, weekly trend, workflow field catalogue, and the lead-generator next-week handoff rule. It does not alter call, sales, revenue, allocation, attribution, or CRM metrics; a validated recurring export contract is still needed before it can refresh automatically.
+- Policy: `docs/LOCAL_MODEL_CAPABILITY_POLICY.md`
+- Register: `runtime/LOCAL_MODEL_CAPABILITY_REGISTER_2026-07-22.json`
+- Audit: `runtime/LOCAL_MODEL_COMPREHENSIVE_AUDIT_2026-07-22.md`
+- Program status: `semantic_capability_boundary_rejected`
+- Audited capabilities: 20
+- Promoted capabilities: 0
+- Live submission permitted: false
+- Operational consumption permitted: false
+- Qwen Spiel v3-v6: failed/stopped research; no further Qwen inference or same-model decomposition.
+
+## Remediation Completed
+
+- Added/pinned register validation in `src/localModelCapability.js`.
+- Applied fail-closed assertions to direct AI routes, Evaluation Studio, result ingestion, automatic routing/polling, overnight controller, and ad-hoc controller.
+- Quarantined 167 queued jobs and five queued Evaluation Studio runs without deleting history.
+- Verified the `Sales Dashboard Overnight Evaluations` Windows task is present but disabled; it was not enabled, run, or changed during the rebuild.
+- Retired Lead Harvest and operational model-result ingestion.
+- Made Opportunities explicitly unavailable and rebuilt Evaluation Studio as a fail-closed validation laboratory.
+- Locked Evaluation Studio knowledge/template edits, quarantine/resume/harvest, semantic feedback, and result-to-review handoff so the research archive is genuinely read-only.
+- Added a read-only catalog for all 20 registered capabilities. Every entry shows exact scope, exclusions, provenance, failure evidence, status, authority `none`, and the only permitted next action.
+- Added a deterministic voicemail-recovery evidence lane. It uses closed transcript phrases, strict chronology, exact stable-ID linkage, and explicit ambiguity handling; it never infers callback causation, receptiveness, sale, gross profit, or commercial uplift.
+- Added an isolated Validation Lab store and safe manifest/label/freeze routes. Labels require an exact transcript quote and turn, are entered in batches of at most five, and never create operational work.
+- Added a strict promotion-candidate test requiring a frozen 100-call unseen benchmark, balanced positive/hard-negative/unsupported cases, post-freeze candidate results, exact evidence provenance, declared resource ceilings, and zero critical errors. Passing establishes eligibility for external approval only and never self-promotes.
+- Removed semantic team-performance UI and active model-backed rollups/queues.
+- Reduced transcript evaluation to exact literal states/events only.
+- Set active semantic call, event, and lead projections to null/unknown.
+- Preserved call transcript proof and explicit manager review overlays.
+- Reconciled product, specification, architecture, system map, constraints, plans, quality, project context, decisions, backlog, blockers, and this handoff.
+
+## Live Runtime
+
+- Browser verification used an isolated AI-disabled server at `http://127.0.0.1:3042/`; that server was stopped after verification.
+- Source: `data/source/CallData 07.07.2026.csv`
+- Active import: `import_41f2f2d8a2f439c7e92f`
+- Calls: 19,914
+- Health: `status=ok`, CSV loaded, AI execution disabled/unconfigured.
+- The isolated verification server was started with `SALES_DASHBOARD_AI_ENABLED=false`.
+- A separate service may still listen on port 8080 for another project. Sales Dashboard is disconnected; do not stop that service merely for this project.
+
+Restart safely with:
+
+```powershell
+$env:PORT='3042'
+$env:SALES_DASHBOARD_AI_ENABLED='false'
+node src/main.js --csv "data/source/CallData 07.07.2026.csv"
+```
+
+Do not restart without the CSV argument unless an equivalent configured path exists.
+
+## Database Audit
+
+### `data/store/intelligence.sqlite`
+
+- `PRAGMA integrity_check`: `ok`
+- Active calls: 19,914
+- `llm_status=not_requested`: 19,914
+- Audited semantic call columns non-null: 0
+- Audited semantic event confidence/follow-up columns non-null: 0
+- Audited semantic lead score/quality/human/meaningful/next-step fields non-null: 0
+- Literal outcomes: 1,972 voicemail; 1,149 system audio; 97 wrong number; 14 opt-out; 16,682 unknown
+- Every literal event/risk record has exact evidence.
+
+### `data/store/evaluation-studio.sqlite`
+
+- `PRAGMA integrity_check`: `ok`
+- Runs: 148 total; 108 current-import
+- Current run states: 93 completed, 5 failed, 9 partially completed, 1 quarantined
+- Active runs: 0
+- Results: 4,313 total; 3,894 current-import; 3,835 latest/research-only
+
+### `data/store/state.json`
+
+- Jobs: 4,557 total
+- Done: 4,380
+- Failed: 10
+- Quarantined: 167
+- Active: 0
+
+### `data/store/evaluation-validation-lab.json`
+
+- Separate from both production intelligence and the historical Evaluation Studio archive.
+- Not created during this rebuild because no real benchmark manifest was started.
+- Writes atomically on first use and fails closed on corruption.
+- Current unseen-candidate proof: 19,914 source calls; 2,188 excluded call IDs across 42 evidence files.
+
+## API Boundary Proof
+
+The following live requests were tested and left job/run/result counts unchanged:
+
+- `GET /api/lead-harvest` -> `410`
+- `POST /api/ai/transcript-evaluation` -> `410`
+- `POST /ai/transcript-evaluations` -> `410`
+- `POST /api/evaluation-studio/results` -> `410`
+- `POST /api/evaluation-studio/runs` -> `423`
+- `POST /api/evaluation-studio/prompt-tests` -> `423`
+- `POST /api/evaluation-studio/runs/<id>/harvest` -> `423`
+- `POST /api/evaluation-studio/runs/<id>/resume` -> `423`
+- Evaluation Studio knowledge/template/archive/feedback/review-handoff mutations -> `423`
+
+The only newly permitted Evaluation Studio writes are benchmark-only HTML form routes for manifest creation, exact-evidence labels, and manifest freeze. They write only the isolated Validation Lab store, have no model path, and do not mutate jobs, runs, results, active intelligence, or historical research.
+
+Direct overnight/ad-hoc controller execution also fails before network access because `call_intelligence_foundation_complete` is unpromoted.
+
+## Browser Proof
+
+- Checked Evaluation Studio at desktop and 390-pixel mobile widths, plus call 48542628.
+- No Lead Harvest surface, model-run control, semantic quality score, human-answer rate, meaningful-conversation rate, or hidden team semantic panel was visible.
+- Evaluation Studio presents the no-model boundary first, then capability truth, deterministic evidence, Validation Lab, and only then the historical archive. It exposes no model run/create/submit controls.
+- The voicemail evidence lane showed the exact machine prompt and Dylan's literal callback request for call 48542628.
+- No desktop or mobile horizontal overflow was present.
+- Browser console warnings/errors: none.
+
+## Verification
+
+- Final automated suite: 340/340 passed.
+- Trusted-boundary audit: `ok=true`, zero violations, 20 capabilities, zero promoted, 19,914/19,914 calls `llm_status=not_requested`, zero active jobs, and zero active runs.
+- Sixteen adversarial historical/model mutation requests returned only `410` or `423`; job/run/result counts and the logical historical archive hash were unchanged.
+- Run `npm test`.
+- Run `npm run audit:trusted-boundary` for the reusable read-only capability/database/job/run invariant audit.
+- Run `git diff --check`.
+- Validate `docs/PROJECT_CONTEXT.json` as JSON.
+- Check both SQLite databases with `PRAGMA integrity_check`.
+- Check `/health` for zero promoted capabilities and disabled operational consumption.
+- Re-run the adversarial mutation set after changing any AI/Evaluation Studio route.
+- Browser-check all six workspaces and the archive after changing rendering.
+
+## Non-Negotiable Next-Session Rules
+
+- Do not submit a local-model job.
+- Do not enable the scheduled task or clear controller halts.
+- Human labels are benchmark truth only, never a routine review queue. Quiz with exact call quotes in batches of at most five.
+- Unsupported cases are scored as `not_scored`; do not force an answer outside the declared evidence boundary.
+- Do not treat Validation Lab gate eligibility as promotion. Promotion remains an explicit external approval after all gate evidence exists.
+- Do not call historical Foundation, Offer, Callback, Objection, Procedure, Lead Record, Spiel, or Harvest output authoritative.
+- Do not repopulate active semantic columns from historical model results.
+- Do not use technical success as semantic promotion.
+- Do not rescue Qwen with another decomposition.
+- Preserve unknown when evidence is not covered by an exact trusted rule.

@@ -1,7 +1,7 @@
 {
   "primary_agent": "codex",
-  "local_agent": "ollama",
-  "model": "qwen2.5-coder:32b",
+  "local_agent": "disabled_unpromoted",
+  "model": null,
   "context_files": [
     "AGENTS.md",
     "AI_SYSTEM.md",
@@ -72,7 +72,7 @@
     "allowed_agent": "codex",
     "require_explicit_task_ids": true,
     "verify_commands": [
-      "node --test tests/*.test.js"
+      "npm test"
     ],
     "max_tasks_per_session": 2,
     "max_runtime_minutes": 90,
@@ -82,8 +82,8 @@
   "project": "Sales Dashboard",
   "template": "web-app",
   "stack": "Node.js",
-  "description": "Local call intelligence and sales operations dashboard for scheduled CSV transcript imports",
-  "generatedAt": "2026-07-05T08:05:05.791Z",
+  "description": "Local evidence dashboard for scheduled call exports using source facts, exact stable-ID relationships, literal transcript detections, and manager overlays",
+  "generatedAt": "2026-07-22T00:00:00+10:00",
   "run_command": "node src/main.js",
   "runtime_type": "web",
   "port": 3000,
@@ -95,10 +95,12 @@
   "data_guardrails": {
     "ignored_fields": [
       "dialled_phone_number",
-      "CustomerCreateDate",
-      "CustomerImportDate"
+      "NoSaleType",
+      "Baz_DetailedNotes"
     ],
-    "phone_matching": "disabled_for_mvp",
+    "phone_matching": "disabled; permitted exact stable source IDs only",
+    "semantic_fields": "null/unknown unless manager-authored",
+    "local_model_capabilities": "20 audited, 0 promoted; submission and operational consumption fail closed",
     "unsupported_metrics": [
       "confirmed_sales_conversion",
       "salesperson_revenue_performance",
@@ -109,6 +111,6 @@
   },
   "reports": {
     "save_endpoint": "POST /api/reports",
-    "instruction": "When Codex generates a data extract or report for the user, save it through the report endpoint or saveGeneratedReport so it appears in the dashboard Reports Library."
+    "instruction": "When Codex generates a trusted-boundary data extract or report for the user, save it through the report endpoint or saveGeneratedReport so it appears in the dashboard Reports Library."
   }
 }

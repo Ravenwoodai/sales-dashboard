@@ -28,6 +28,7 @@ const {
   normalizeEvaluationResult,
   normalizeEvaluationStudio,
   quarantineEvaluationRun,
+  reconcileTypedSpecialistOutput,
   resumeEvaluationRun,
   upsertEvaluationResult,
   validateCallIntelligenceFoundationResult,
@@ -771,7 +772,7 @@ test("Foundation repairs the final one-year nurture outcome and explicit represe
   assert.match(saved.foundationAssessment.evidence.find((item) => item.supports === "called_on_behalf_of").quote, /local paramedics/i);
 });
 
-test("specialist result rows inherit represented party and timing from the call's latest Foundation result", () => {
+test("specialist result rows do not inherit context from an unpromoted Foundation result", () => {
   const foundation = normalizeEvaluationResult({
     id: "foundation-result",
     callId: "48562953",
@@ -794,12 +795,10 @@ test("specialist result rows inherit represented party and timing from the call'
   const studio = normalizeEvaluationStudio({ evaluationResults: [specialist, foundation] });
   const enriched = attachFoundationContextToResults(studio, [specialist]);
 
-  assert.equal(enriched[0].foundationContext.calledOnBehalfOf, "Local paramedics / Ambulance Active Journal");
-  assert.equal(enriched[0].foundationContext.followUpTiming, "in a year's time");
-  assert.equal(enriched[0].foundationContext.sourceResultId, "foundation-result");
+  assert.equal(enriched[0].foundationContext, null);
 });
 
-test("every result row inherits the call's authoritative Offer Acceptance outcome", () => {
+test("result rows do not inherit an unpromoted Offer Acceptance outcome", () => {
   const foundation = normalizeEvaluationResult({
     id: "foundation-with-accepted-offer",
     callId: "accepted-call",
@@ -833,9 +832,7 @@ test("every result row inherits the call's authoritative Offer Acceptance outcom
   const studio = normalizeEvaluationStudio({ evaluationResults: [foundation, accepted] });
   const enriched = attachFoundationContextToResults(studio, [foundation]);
 
-  assert.equal(enriched[0].offerAcceptanceContext.sourceResultId, "authoritative-accepted-offer");
-  assert.equal(enriched[0].offerAcceptanceContext.acceptanceAssessment.classification, "customer_accepted_offer");
-  assert.equal(enriched[0].offerAcceptanceContext.confidence, 0.95);
+  assert.equal(enriched[0].offerAcceptanceContext, null);
 });
 
 test("specialist rows use a narrow exact-transcript Foundation fallback when no Foundation result exists", () => {
@@ -863,7 +860,7 @@ test("specialist rows use a narrow exact-transcript Foundation fallback when no 
   assert.equal(enriched[0].foundationContext.contextProvenance, "deterministic_transcript_fallback");
 });
 
-test("Call Intelligence Foundation report keeps opportunity, measurement, efficiency, and quoted context separate", () => {
+test("Call Intelligence Foundation report excludes unpromoted research output", () => {
   const template = createDefaultEvaluationStudio().evaluationTemplates.find((item) => item.evaluationGoal === CALL_INTELLIGENCE_FOUNDATION_GOAL);
   const transcript = "Salesperson: I am calling on behalf of SES Yearbook. Our Community Bronze support is $550 for the year. Customer: I need to speak with my partner, so call me tomorrow afternoon.";
   const saved = upsertEvaluationResult(createDefaultEvaluationStudio(), {
@@ -877,17 +874,18 @@ test("Call Intelligence Foundation report keeps opportunity, measurement, effici
     calls: [{ callId: "call-foundation-1", salesperson: "Alex", source: "GoogleMaps", date: "2026-07-16" }]
   });
 
-  assert.equal(report.totals.evaluated, 1);
-  assert.equal(report.totals.measurementEligible, 1);
-  assert.equal(report.totals.actionableOpportunities, 1);
+  assert.equal(report.totals.evaluated, 0);
+  assert.equal(report.totals.measurementEligible, 0);
+  assert.equal(report.totals.actionableOpportunities, 0);
   assert.equal(report.totals.efficiencyGaps, 0);
-  assert.equal(report.totals.quotedAmountCalls, 1);
+  assert.equal(report.totals.quotedAmountCalls, 0);
   assert.equal(report.totals.implausibleQuotedAmountCalls, 0);
   assert.equal(report.totals.noProductPitched, 0);
-  assert.equal(report.byCalledOnBehalfOf[0].label, "SES Yearbook");
-  assert.equal(report.bySalesperson[0].label, "Alex");
-  assert.equal(report.bySource[0].opportunityRate, 1);
-  assert.match(report.definition, /Specialist evaluators remain authoritative/i);
+  assert.deepEqual(report.byCalledOnBehalfOf, []);
+  assert.deepEqual(report.bySalesperson, []);
+  assert.deepEqual(report.bySource, []);
+  assert.match(report.definition, /promoted/i);
+  assert.equal(report.resultBasis.researchOnlyResultsExcluded, 1);
   assert.equal(listEvaluationResults(saved, { foundationOpportunityStatus: "actionable_or_accepted" }).length, 1);
   assert.equal(listEvaluationResults(saved, { foundationMeasurementEligibility: "eligible" }).length, 1);
   assert.equal(listEvaluationResults(saved, { foundationEfficiencyStatus: "efficient_progression" }).length, 1);
@@ -1182,7 +1180,7 @@ test("Offer Acceptance repairs a close model paraphrase only to an exact transcr
   assert.equal(saved.acceptanceAssessment.semanticAdjustments.some((item) => item.field === "offer_evidence.quote"), true);
 });
 
-test("Offer Acceptance reporting calculates acceptance rate and salesperson, source, and date breakdowns", () => {
+test("Offer Acceptance reporting excludes all unpromoted outcomes", () => {
   const studio = normalizeEvaluationStudio({
     evaluationTemplates: [],
     knowledgebaseEntries: [],
@@ -1225,28 +1223,22 @@ test("Offer Acceptance reporting calculates acceptance rate and salesperson, sou
   });
 
   assert.deepEqual(report.totals, {
-    classified: 3,
-    accepted: 1,
-    followUpOnly: 1,
-    noSaleSignal: 1,
-    acceptanceRate: 1 / 3
-  });
-  assert.deepEqual(report.bySalesperson.find((row) => row.label === "Seller A"), {
-    label: "Seller A",
-    classified: 2,
-    accepted: 1,
-    followUpOnly: 1,
+    classified: 0,
+    accepted: 0,
+    followUpOnly: 0,
     noSaleSignal: 0,
-    acceptanceRate: 0.5
+    acceptanceRate: null
   });
-  assert.equal(report.bySource.find((row) => row.label === "Referral").accepted, 1);
-  assert.equal(report.byDate.find((row) => row.label === "16/07/2026").classified, 2);
+  assert.deepEqual(report.bySalesperson, []);
+  assert.deepEqual(report.bySource, []);
+  assert.deepEqual(report.byDate, []);
+  assert.equal(report.resultBasis.researchOnlyResultsExcluded, 3);
   assert.deepEqual(report.latestRun.failureReasons, [{ label: "Evidence quote exceeded 500 characters", count: 1 }]);
   assert.deepEqual(report.latestRun.failures, [{ callId: "", customerId: "Not available", category: "", reason: "Evidence quote exceeded 500 characters" }]);
   assert.equal(listEvaluationResults(studio, { acceptanceClassification: "customer_accepted_offer" }).length, 1);
 });
 
-test("Offer Acceptance reporting counts one authoritative result per call", () => {
+test("Offer Acceptance reporting counts no unpromoted reruns", () => {
   const studio = normalizeEvaluationStudio({
     evaluationResults: [
       {
@@ -1280,10 +1272,11 @@ test("Offer Acceptance reporting counts one authoritative result per call", () =
     ]
   });
   const report = buildOfferAcceptanceReport(studio, { importId: "report-import" });
-  assert.equal(report.totals.classified, 1);
-  assert.equal(report.totals.accepted, 1);
-  assert.equal(report.resultBasis.duplicateRerunsExcluded, 1);
-  assert.equal(report.resultBasis.nonUsableOrUnclassifiedExcluded, 1);
+  assert.equal(report.totals.classified, 0);
+  assert.equal(report.totals.accepted, 0);
+  assert.equal(report.resultBasis.duplicateRerunsExcluded, 0);
+  assert.equal(report.resultBasis.nonUsableOrUnclassifiedExcluded, 0);
+  assert.equal(report.resultBasis.researchOnlyResultsExcluded, 3);
 });
 
 test("Offer Acceptance results are normalized into visible Studio findings", () => {
@@ -1583,8 +1576,8 @@ test("Evaluation Studio run records preserve template and knowledgebase versions
   assert.equal(result.run.templateVersion, template.version);
   assert.equal(result.run.plannedCallCount, 25);
   assert.equal(result.run.knowledgebaseSnapshot.length, 0);
-  assert.ok(result.run.excludedKnowledgebaseIds.length >= 1);
-  assert.match(result.run.excludedKnowledgebaseReason, /Draft knowledgebase entries/);
+  assert.equal(result.run.excludedKnowledgebaseIds.length, 0);
+  assert.equal(result.run.excludedKnowledgebaseReason, "");
 
   const persistence = dashboardPersistence(result.store, "import-july-7");
   assert.equal(persistence.evaluationStudio.summary.runs, 1);
@@ -2255,14 +2248,15 @@ test("Evaluation Studio includes only manager-approved knowledge in a new run sn
     approvalNote: "Manager approved for the current offer."
   }, { storePath });
 
-  const run = saveEvaluationRun({ templateId: template.id }, {
+  const pendingId = store.evaluationStudio.knowledgebaseEntries[0].id;
+  const run = saveEvaluationRun({ templateId: template.id, knowledgebaseIds: [approved.entry.id, pendingId] }, {
     importId: "import-approval-test",
     plannedCallCount: 1
   }, { storePath }).run;
 
   assert.deepEqual(run.knowledgebaseIds, [approved.entry.id]);
   assert.equal(run.knowledgebaseSnapshot[0].title, "Current Approved Procedure");
-  assert.ok(run.excludedKnowledgebaseIds.length >= 1);
+  assert.deepEqual(run.excludedKnowledgebaseIds, [pendingId]);
 });
 
 test("Evaluation Studio stores versioned evidence-backed model results", () => {
@@ -2350,6 +2344,53 @@ test("typed specialist contracts reject legacy placeholder values and enforce ex
     result: validCallbackResult({ evidence: [{ claim_type: "timing", speaker: "customer", quote: "A fabricated callback quote." }] }),
     validationContext: { call: { transcript, transcriptQuality: "high" } }
   }, "callback_opportunity"), /was not found in the supplied transcript/);
+});
+
+test("typed specialist reconciliation repairs speakers and summaries and downgrades unsupported usable results", () => {
+  const transcript = "Customer: Please call me back tomorrow. Agent: I will call you tomorrow.";
+  const reconciled = reconcileTypedSpecialistOutput({
+    result: validCallbackResult({
+      manager_summary: "",
+      evidence: [
+        { claim_type: "timing", speaker: "salesperson", quote: "Please call me back tomorrow." },
+        { claim_type: "next_action_channel", speaker: "salesperson", quote: "" }
+      ]
+    }),
+    validationContext: { call: { transcript, transcriptQuality: "high" } }
+  }, "callback_opportunity");
+  assert.equal(reconciled.output.evidence[0].speaker, "customer");
+  assert.equal(reconciled.output.evidence.length, 1);
+  assert.equal(reconciled.output.manager_summary, "Customer requested a call tomorrow.");
+  assert.equal(reconciled.adjustments.some((item) => item.field === "evidence[0].speaker"), true);
+
+  const studio = createDefaultEvaluationStudio();
+  const template = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity" && item.isActive);
+  assert.equal(template.id, "template_callback_opportunity_v3");
+  const saved = upsertEvaluationResult(studio, {
+    importId: "import-july-7",
+    runId: "callback-reconcile-run",
+    templateId: template.id,
+    result: validCallbackResult({
+      status: "usable",
+      confidence: 0.85,
+      evidence_availability: "available",
+      callback_state: "not_requested",
+      next_action_channel: "none",
+      timing_raw: "",
+      customer_intent: "none",
+      handover_summary: "",
+      evidence: [],
+      manager_review_recommended: false,
+      manager_summary: ""
+    }),
+    validationContext: { call: { transcript: "Customer: Thank you. Agent: Goodbye.", transcriptQuality: "high" } }
+  });
+  assert.equal(saved.result.status, "insufficient_evidence");
+  assert.equal(saved.result.evidenceAvailability, "unavailable");
+  assert.equal(saved.result.confidence, 0.35);
+  assert.match(saved.result.managerSummary, /did not provide enough exact evidence/i);
+  assert.match(saved.result.specialistAssessment.handoverSummary, /did not provide enough exact evidence/i);
+  assert.equal(saved.result.specialistAssessment.semanticAdjustments.length > 0, true);
 });
 
 test("Evaluation Studio builds safe manager-review correction prefill from allowed findings only", () => {
@@ -2503,13 +2544,13 @@ test("Evaluation Studio result persistence updates run counts and evidence queue
 
   const persistence = dashboardPersistence(persisted, "import-july-7");
   assert.equal(persistence.counts.evaluationResults, 1);
-  assert.equal(persistence.counts.evaluationReviewRecommendedResults, 1);
-  assert.equal(persistence.evaluationStudio.evidenceQueue.length, 1);
-  assert.equal(persistence.evaluationStudio.evidenceQueue[0].callId, "call-1");
-  assert.equal(persistence.evaluationStudio.reportRollups.totals.objectionsDetected, 1);
+  assert.equal(persistence.counts.evaluationReviewRecommendedResults, 0);
+  assert.equal(persistence.evaluationStudio.evidenceQueue.length, 0);
+  assert.equal(persistence.evaluationStudio.reportRollups.totals.objectionsDetected, 0);
+  assert.equal(persistence.evaluationStudio.reportRollups.totals.researchOnlyResultsExcluded, 1);
 });
 
-test("Evaluation Studio report rollups produce report-safe lead utilisation and coaching signals", () => {
+test("Evaluation Studio report rollups exclude unpromoted lead and coaching signals", () => {
   const studio = createDefaultEvaluationStudio();
   const callbackTemplate = studio.evaluationTemplates.find((item) => item.evaluationGoal === "callback_opportunity");
   const coachingTemplate = studio.evaluationTemplates.find((item) => item.evaluationGoal === "coaching_opportunity")
@@ -2541,14 +2582,15 @@ test("Evaluation Studio report rollups produce report-safe lead utilisation and 
   });
 
   const rollups = buildEvaluationStudioReportRollups(second.studio, { importId: "import-july-7" });
-  assert.equal(rollups.totals.evaluatedCalls, 2);
-  assert.equal(rollups.totals.callbackOpportunities, 1);
-  assert.equal(rollups.totals.objectionsDetected, 1);
+  assert.equal(rollups.totals.evaluatedCalls, 0);
+  assert.equal(rollups.totals.callbackOpportunities, 0);
+  assert.equal(rollups.totals.objectionsDetected, 0);
   assert.equal(rollups.totals.possibleWasteIndicators, 0);
-  assert.equal(rollups.totals.coachingOpportunities, 1);
-  assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "callbackOpportunities" }).map((row) => row.callId).join(","), "call-callback");
+  assert.equal(rollups.totals.coachingOpportunities, 0);
+  assert.equal(rollups.totals.researchOnlyResultsExcluded, 2);
+  assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "callbackOpportunities", operationalOnly: true }).length, 0);
   assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "possibleWasteIndicators" }).length, 0);
-  assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "coachingOpportunities" }).map((row) => row.callId).join(","), "call-coaching");
+  assert.equal(listEvaluationResults(second.studio, { importId: "import-july-7", reportSignal: "coachingOpportunities", operationalOnly: true }).length, 0);
   assert.equal(rollups.priorityExamples.some((row) => row.reportLanguage === "possible waste indicator"), false);
   assert.equal(rollups.warnings.some((warning) => /confirmed sales/i.test(warning)), true);
   assert.equal(/QTY ACTIONED|allocation coverage|stable lead-days/i.test(JSON.stringify(rollups)), false);

@@ -161,7 +161,7 @@ test("analysis exposes source-call date range without browser timezone shifting"
   assert.doesNotMatch(analysis.dateRange.display, /2026-06-30|2026-07-02|30\/06\/2026|2\/07\/2026/);
 });
 
-test("analysis reports call-data-only reporting-window warnings", () => {
+test("analysis reports call-data-only warnings without inventing follow-up workload", () => {
   const analysis = analyzeCsvText(csv([
     row({ call_id: "single-day-follow-up", call_date: "1/07/2026", call_time: "09:00:00" })
   ]));
@@ -171,14 +171,14 @@ test("analysis reports call-data-only reporting-window warnings", () => {
   assert.equal(analysis.dataWindow.singleDay, true);
   assert.equal(analysis.dataWindow.partialDay, true);
   assert.equal(analysis.dataWindow.insufficientTrendHistory, true);
-  assert.equal(analysis.dataWindow.followUpFutureDataUnavailable, true);
+  assert.equal(analysis.dataWindow.followUpFutureDataUnavailable, false);
   assert.ok(codes.includes("single_day_dataset"));
   assert.ok(codes.includes("partial_day_dataset"));
   assert.ok(codes.includes("insufficient_trend_history"));
-  assert.ok(codes.includes("follow_up_future_data_unavailable"));
+  assert.equal(codes.includes("follow_up_future_data_unavailable"), false);
 });
 
-test("analysis labels deterministic provenance and confidence without LLM review", () => {
+test("analysis labels restricted literal provenance and withholds semantic confidence", () => {
   const analysis = analyzeCsvText(csv([
     row({ call_id: "deterministic", NoSaleType: "Did Not Answer" }),
     row({
@@ -192,16 +192,18 @@ test("analysis labels deterministic provenance and confidence without LLM review
   const deterministic = analysis.explorerRows.find((item) => item.callId === "deterministic");
   const unusable = analysis.explorerRows.find((item) => item.callId === "unusable");
 
-  assert.equal(deterministic.intelligenceProvenance, "Deterministic");
+  assert.equal(deterministic.intelligenceProvenance, "Restricted literal rule");
   assert.equal(deterministic.llmStatus, "not_requested");
   assert.equal(deterministic.llmProvenance, "Unprocessed");
-  assert.equal(deterministic.localOutcomeProvenance, "Deterministic");
+  assert.equal(deterministic.localOutcomeProvenance, "Restricted literal rule");
   assert.equal(deterministic.rawImportedProvenance, "Raw imported");
   assert.notEqual(deterministic.intelligenceProvenance, "LLM-reviewed");
-  assert.equal(analysis.intelligenceGovernance.processing.deterministicEvaluationsCompleted, 2);
+  assert.equal(analysis.intelligenceGovernance.processing.deterministicEvaluationsCompleted, 0);
+  assert.equal(analysis.intelligenceGovernance.processing.literalTriageRowsCompleted, 2);
+  assert.equal(analysis.intelligenceGovernance.semanticEvaluation.operationallyPermitted, false);
   assert.equal(analysis.intelligenceGovernance.processing.llmNotRequested, 2);
-  assert.equal(analysis.intelligenceGovernance.confidence.unusable >= 1, true);
-  assert.equal(unusable.confidenceLabel, "Unusable transcript");
+  assert.equal(analysis.intelligenceGovernance.confidence.unknown, 2);
+  assert.equal(unusable.confidenceLabel, "Confidence unavailable");
 });
 
 test("allocation inputs are parked and do not affect active metrics", () => {
@@ -361,9 +363,8 @@ test("global filters default to all active calls and update shared denominators"
   assert.equal(missingSource.sourceQuality.totals.calls, 1);
   assert.equal(missingSource.fieldCoverage.CustomerImportSource.missing, 1);
 
-  const unusable = buildFilteredAnalysis(analysis, { confidenceBand: "unusable" });
-  assert.equal(unusable.totals.uniqueCalls, 1);
-  assert.equal(unusable.drilldownRows[0].callId, "filter-b");
+  const unavailable = buildFilteredAnalysis(analysis, { confidenceBand: "unknown" });
+  assert.equal(unavailable.totals.uniqueCalls, 3);
 });
 
 test("global date filters use source call days without browser timezone shifts", () => {
@@ -574,15 +575,15 @@ test("analysis tracks lead reattempt rates and retry patterns by segment source 
   assert.equal(analysis.leadReattempt.totals.personallyRetriedLeads, 1);
   assert.equal(analysis.leadReattempt.totals.oneAndDoneLeads, 3);
   assert.equal(analysis.leadReattempt.totals.validOneDialOutcomeLeads, 1);
-  assert.equal(analysis.leadReattempt.totals.riskyOneDialNoContactLeads, 1);
-  assert.equal(analysis.leadReattempt.totals.oneDialNoContactNoLaterLeads, 1);
+  assert.equal(analysis.leadReattempt.totals.literalOneDialNoContactLeads, 1);
+  assert.equal(analysis.leadReattempt.totals.literalOneDialNoContactNoLaterLeads, 1);
   assert.equal(analysis.leadReattempt.totals.oneDialNeedsReviewLeads, 1);
   assert.equal(analysis.leadReattempt.totals.noLaterCallByAnyoneLeads, 2);
   assert.equal(analysis.leadReattempt.totals.personalRetryRate, 25);
   assert.equal(analysis.leadReattempt.totals.oneAndDoneRate, 75);
   assert.equal(analysis.leadReattempt.totals.validOneDialOutcomeRate, 33.3);
-  assert.equal(analysis.leadReattempt.totals.riskyOneDialNoContactRate, 33.3);
-  assert.equal(analysis.leadReattempt.totals.oneDialNoContactNoLaterRate, 25);
+  assert.equal(analysis.leadReattempt.totals.literalOneDialNoContactRate, 33.3);
+  assert.equal(analysis.leadReattempt.totals.literalOneDialNoContactNoLaterRate, 25);
   assert.equal(analysis.leadReattempt.totals.oneDialNeedsReviewRate, 33.3);
   assert.equal(analysis.leadReattempt.totals.noLaterCallByAnyoneRate, 50);
   assert.equal(analysis.leadReattempt.totals.averageCallsPerLead, 1.25);
@@ -600,9 +601,9 @@ test("analysis tracks lead reattempt rates and retry patterns by segment source 
   assert.equal(sellerB.personalRetryRate, 0);
   assert.equal(sellerB.oneAndDoneRate, 100);
   assert.equal(sellerB.validOneDialOutcomeLeads, 1);
-  assert.equal(sellerB.riskyOneDialNoContactLeads, 1);
-  assert.equal(sellerB.oneDialNoContactNoLaterLeads, 1);
-  assert.equal(sellerB.oneDialNoContactNoLaterRate, 50);
+  assert.equal(sellerB.literalOneDialNoContactLeads, 1);
+  assert.equal(sellerB.literalOneDialNoContactNoLaterLeads, 1);
+  assert.equal(sellerB.literalOneDialNoContactNoLaterRate, 50);
   assert.equal(sellerB.noLaterCallByAnyoneRate, 100);
 
   const newBusiness = analysis.leadReattempt.businessSegmentRows.find((item) => item.businessSegment === "new");
@@ -631,15 +632,15 @@ test("analysis tracks lead reattempt rates and retry patterns by segment source 
   assert.equal(laterRecord.noLaterCallByAnyone, false);
   assert.equal(laterRecord.oneDialBucket, "needs_review");
   const validOneDialRecord = analysis.leadReattempt.records.find((item) => item.firstCallId === "b1");
-  const riskyOneDialRecord = analysis.leadReattempt.records.find((item) => item.firstCallId === "b2");
+  const literalNoContactRecord = analysis.leadReattempt.records.find((item) => item.firstCallId === "b2");
   assert.equal(validOneDialRecord.oneDialBucket, "valid_one_dial_outcome");
   assert.equal("spielDeliveredLikely" in validOneDialRecord, false);
-  assert.equal(riskyOneDialRecord.oneDialBucket, "risky_one_dial_no_contact");
-  assert.equal(riskyOneDialRecord.metricKeys.includes("reattempt.oneDialNoContactNoLater"), true);
-  assert.equal("spielDeliveredLikely" in riskyOneDialRecord, false);
+  assert.equal(literalNoContactRecord.oneDialBucket, "literal_one_dial_no_contact");
+  assert.equal(literalNoContactRecord.metricKeys.includes("reattempt.oneDialLiteralNoContactNoLater"), true);
+  assert.equal("spielDeliveredLikely" in literalNoContactRecord, false);
 });
 
-test("lead harvest model finds positive callback candidates without warm or terminal outcomes", () => {
+test("unvalidated deterministic callback semantics cannot create lead-harvest workload", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "harvest-later",
@@ -722,38 +723,12 @@ test("lead harvest model finds positive callback candidates without warm or term
     })
   ]));
 
-  assert.equal(analysis.leadHarvest.totals.candidateCalls, 4);
-  assert.equal(analysis.leadHarvest.totals.newBusinessCandidateCalls, 3);
-  assert.equal(analysis.leadHarvest.totals.warmBusinessCandidateCalls, 1);
-  assert.equal(analysis.leadHarvest.totals.openNewBusinessCandidates, 1);
-  assert.equal(analysis.leadHarvest.totals.newBusinessMatchingUnavailable, 1);
-  assert.equal(analysis.leadHarvest.totals.newBusinessLaterMatchingCallObserved, 1);
-  assert.equal(analysis.leadHarvest.totals.newBusinessHarvestQueue, 2);
-
-  const later = analysis.leadHarvest.records.find((record) => record.callId === "harvest-later");
-  const open = analysis.leadHarvest.records.find((record) => record.callId === "harvest-open");
-  const noStable = analysis.leadHarvest.records.find((record) => record.callId === "harvest-no-stable");
-  assert.equal(later.status, "later_matching_call_observed");
-  assert.equal(later.laterCallId, "harvest-later-follow");
-  assert.equal(later.possibleContactName, "Morgan");
-  assert.equal(open.status, "open_no_later_matching_call");
-  assert.equal(open.possibleDecisionMakerName, "Serge");
-  assert.equal(open.objectionType, "not_decision_maker");
-  assert.equal(open.objectionLabel, "Not decision maker / decision maker unavailable");
-  assert.match(open.objectionEvidence, /owner Serge is back next week/i);
-  assert.equal(open.salespersonHandlingType, "clear_next_step");
-  assert.match(open.salespersonHandlingEvidence, /call back then/i);
-  assert.equal(noStable.status, "matching_unavailable");
-  assert.equal(noStable.objectionType, "needs_information_or_review");
-  assert.equal(noStable.salespersonHandlingType, "clear_next_step");
-  assert.ok(analysis.leadHarvest.objectionRows.some((row) => row.objectionType === "not_decision_maker" && row.newBusinessOpenCandidates === 1));
-  assert.ok(analysis.leadHarvest.handlingRows.some((row) => row.salespersonHandlingType === "clear_next_step" && row.newBusinessCandidateCalls >= 3));
-  assert.equal(analysis.leadHarvest.records.some((record) => record.callId === "harvest-terminal"), false);
-  assert.equal(analysis.leadHarvest.records.some((record) => record.callId === "harvest-long-term"), false);
-  assert.equal(analysis.leadHarvest.records.every((record) => !/allocation|campaign|QTY ACTIONED/i.test(JSON.stringify(record))), true);
+  assert.equal(analysis.leadHarvest.totals.candidateCalls, 0);
+  assert.equal(analysis.leadHarvest.totals.newBusinessHarvestQueue, 0);
+  assert.deepEqual(analysis.leadHarvest.records, []);
 });
 
-test("one-dial utilisation risk counts only hard no-contact evidence", () => {
+test("one-dial literal activity requires exact no-contact evidence and keeps blanks unknown", () => {
   const base = {
     oneAndDone: true,
     noLaterCallByAnyone: true
@@ -770,7 +745,7 @@ test("one-dial utilisation risk counts only hard no-contact evidence", () => {
       transcriptWordCount: 2
     }]
   });
-  assert.equal(noAnswer.oneDialBucket, "risky_one_dial_no_contact");
+  assert.equal(noAnswer.oneDialBucket, "literal_one_dial_no_contact");
 
   const noUsableSpeech = classifyOneDialRecord({
     ...base,
@@ -783,7 +758,7 @@ test("one-dial utilisation risk counts only hard no-contact evidence", () => {
       transcriptWordCount: 0
     }]
   });
-  assert.equal(noUsableSpeech.oneDialBucket, "risky_one_dial_no_contact");
+  assert.equal(noUsableSpeech.oneDialBucket, "needs_review");
 
   const ambiguousUnknown = classifyOneDialRecord({
     ...base,
@@ -954,15 +929,15 @@ test("blank transcript and OrderCount use business-safe labels without legacy di
   ]));
 
   const proof = analysis.drilldownRows[0];
-  assert.equal(proof.contactClassification, "no_answer");
-  assert.equal(proof.localOutcome, "no_answer");
+  assert.equal(proof.contactClassification, "unknown");
+  assert.equal(proof.localOutcome, "unknown");
   assert.equal(proof.importedNoSale, undefined);
   assert.equal(proof.importedNoSaleRaw, undefined);
   assert.equal(proof.orderHistoryLabel, "No Sales History");
   assert.equal(proof.businessSegment, "new");
 });
 
-test("local evaluator derives follow-up from transcript without legacy disposition context", () => {
+test("restricted local rules do not derive semantic follow-up from keywords", () => {
   const evaluation = evaluateCall({
     call_id: "10",
     CallTotalSeconds: "63",
@@ -971,15 +946,12 @@ test("local evaluator derives follow-up from transcript without legacy dispositi
     transcription_text: "Outbound call Customer: Hello, yes please call me back tomorrow after three and send through the details. Agent: I will do that."
   });
 
-  assert.equal(evaluation.contact.probableLiveHuman, true);
-  assert.equal(evaluation.opportunity.followUpRequired, true);
-  assert.equal(evaluation.outcome.localCategory, "callback_requested");
+  assert.equal(evaluation.contact.probableLiveHuman, null);
+  assert.equal(evaluation.opportunity.followUpRequired, null);
+  assert.equal(evaluation.outcome.localCategory, "unknown");
   assert.equal(evaluation.outcome.mismatch, undefined);
-
-  const followUpEvidence = evaluation.evidence.find((item) => item.signal === "follow_up");
-  assert.equal(followUpEvidence.summary, "Callback requested or promised");
-  assert.match(followUpEvidence.text, /^Customer: Hello/);
-  assert.deepEqual(followUpEvidence.turns.map((turn) => turn.speaker), ["Customer", "Agent"]);
+  assert.equal(evaluation.evidence.some((item) => item.signal === "follow_up"), false);
+  assert.equal(evaluation.authority.decisionUsePermitted, false);
 });
 
 test("local evaluator does not treat sales script later-this-year wording as a callback request", () => {
@@ -991,11 +963,11 @@ test("local evaluator does not treat sales script later-this-year wording as a c
     transcription_text: "Outbound call Customer: Hello. Riley Example (CWA): The reason we are calling later this year is the official journal for the local area."
   });
 
-  assert.equal(evaluation.opportunity.requestedCallback, false);
-  assert.equal(evaluation.opportunity.followUpRequired, false);
+  assert.equal(evaluation.opportunity.requestedCallback, null);
+  assert.equal(evaluation.opportunity.followUpRequired, null);
 });
 
-test("local evaluator treats 12-month callback wording as long-term deferral, not active follow-up", () => {
+test("restricted local rules do not infer long-term deferral", () => {
   const evaluation = evaluateCall({
     call_id: "12",
     CallTotalSeconds: "180",
@@ -1008,19 +980,17 @@ test("local evaluator treats 12-month callback wording as long-term deferral, no
     ].join(" ")
   });
 
-  assert.equal(evaluation.contact.probableLiveHuman, true);
-  assert.equal(evaluation.opportunity.longTermDeferral, true);
-  assert.equal(evaluation.opportunity.requestedCallback, false);
-  assert.equal(evaluation.opportunity.followUpRequired, false);
-  assert.equal(evaluation.opportunity.followUpChannel, "none");
-  assert.equal(evaluation.outcome.localCategory, "long_term_deferral");
+  assert.equal(evaluation.contact.probableLiveHuman, null);
+  assert.equal(evaluation.opportunity.longTermDeferral, null);
+  assert.equal(evaluation.opportunity.requestedCallback, null);
+  assert.equal(evaluation.opportunity.followUpRequired, null);
+  assert.equal(evaluation.opportunity.followUpChannel, "not_evaluated");
+  assert.equal(evaluation.outcome.localCategory, "unknown");
   assert.equal(evaluation.evidence.some((item) => item.signal === "follow_up"), false);
-  const deferralEvidence = evaluation.evidence.find((item) => item.signal === "long_term_deferral");
-  assert.equal(deferralEvidence.summary, "Long-term deferral or future nurture signal");
-  assert.match(deferralEvidence.text, /12 months|next financial year/i);
+  assert.equal(evaluation.evidence.some((item) => item.signal === "long_term_deferral"), false);
 });
 
-test("local evaluator lets a final in-a-year agreement override an earlier callback request", () => {
+test("restricted local rules abstain from chronology-sensitive callback decisions", () => {
   const evaluation = evaluateCall({
     call_id: "48562953",
     CallTotalSeconds: "239",
@@ -1035,13 +1005,12 @@ test("local evaluator lets a final in-a-year agreement override an earlier callb
     ].join(" ")
   });
 
-  assert.equal(evaluation.contact.probableLiveHuman, true);
-  assert.equal(evaluation.opportunity.longTermDeferral, true);
-  assert.equal(evaluation.opportunity.requestedCallback, false);
-  assert.equal(evaluation.opportunity.followUpRequired, false);
-  assert.equal(evaluation.outcome.localCategory, "long_term_deferral");
+  assert.equal(evaluation.contact.probableLiveHuman, null);
+  assert.equal(evaluation.opportunity.longTermDeferral, null);
+  assert.equal(evaluation.opportunity.requestedCallback, null);
+  assert.equal(evaluation.opportunity.followUpRequired, null);
+  assert.equal(evaluation.outcome.localCategory, "unknown");
   assert.equal(evaluation.evidence.some((item) => item.signal === "follow_up"), false);
-  assert.match(evaluation.evidence.find((item) => item.signal === "long_term_deferral").text, /in a year's time/i);
 });
 
 test("local evaluator normalizes human-like Voicemail speaker turns to Customer", () => {
@@ -1068,9 +1037,9 @@ test("local evaluator normalizes human-like Voicemail speaker turns to Customer"
   assert.equal(turns.some((turn) => turn.speaker === "Voicemail"), false);
   assert.equal(turns.filter((turn) => turn.speaker === "Customer").length, 4);
   assert.equal(evaluation.transcript.humanLikeVoicemailDialogue, true);
-  assert.equal(evaluation.contact.probableLiveHuman, true);
-  assert.equal(evaluation.contact.classification, "customer");
-  assert.equal(evaluation.contact.meaningfulConversation, true);
+  assert.equal(evaluation.contact.probableLiveHuman, null);
+  assert.equal(evaluation.contact.classification, "unknown");
+  assert.equal(evaluation.contact.meaningfulConversation, null);
   assert.notEqual(evaluation.outcome.localCategory, "voicemail");
 });
 
@@ -1087,11 +1056,34 @@ test("local evaluator keeps true machine voicemail as voicemail", () => {
 
   assert.equal(turns[0].speaker, "Voicemail");
   assert.equal(evaluation.transcript.humanLikeVoicemailDialogue, false);
-  assert.equal(evaluation.contact.probableLiveHuman, false);
+  assert.equal(evaluation.contact.probableLiveHuman, null);
   assert.equal(evaluation.contact.classification, "voicemail");
 });
 
-test("local evaluator separates AI call assistants from normal voicemail and scores salesperson response", () => {
+test("literal triage requires direct customer wording for wrong-number and opt-out states", () => {
+  const direct = evaluateCall({
+    call_id: "direct-boundary",
+    call_duration_seconds: "30",
+    transcription_text: "Outbound call Agent: Hello. Customer: You have got the wrong number and please do not call me again."
+  });
+  assert.equal(direct.contact.classification, "wrong_number");
+  assert.equal(direct.outcome.localCategory, "opt_out");
+  assert.equal(direct.risk.optOut, true);
+  assert.equal(direct.risk.reviewRequired, true);
+  assert.equal(direct.evidence.some((item) => item.signal === "literal_wrong_number"), true);
+  assert.equal(direct.evidence.some((item) => item.signal === "opt_out"), true);
+
+  const salespersonOnly = evaluateCall({
+    call_id: "salesperson-boundary",
+    call_duration_seconds: "30",
+    transcription_text: "Outbound call Agent: Have I got the wrong number? I will not call again. Customer: Who is this?"
+  });
+  assert.equal(salespersonOnly.contact.classification, "unknown");
+  assert.equal(salespersonOnly.outcome.localCategory, "unknown");
+  assert.equal(salespersonOnly.risk.optOut, false);
+});
+
+test("local evaluator detects AI call assistants but does not score handling", () => {
   const bailEvaluation = evaluateCall({
     call_id: "ai-bail",
     CallTotalSeconds: "33",
@@ -1100,8 +1092,9 @@ test("local evaluator separates AI call assistants from normal voicemail and sco
     transcription_text: "Outbound call Riley Example (CWA): It's Riley. Customer: Hi, I'm a call assistant recording this call for the person you're trying to reach. Please say who you are and why you're calling. The person you're calling is busy now. I'll let them know."
   });
   assert.equal(bailEvaluation.aiVoiceAssistant.detected, true);
-  assert.equal(bailEvaluation.aiVoiceAssistant.bailed, true);
-  assert.equal(bailEvaluation.aiVoiceAssistant.handledSuccessfully, false);
+  assert.equal(bailEvaluation.aiVoiceAssistant.bailed, null);
+  assert.equal(bailEvaluation.aiVoiceAssistant.handledSuccessfully, null);
+  assert.equal(bailEvaluation.aiVoiceAssistant.responseClassification, "detected_unscored");
   assert.equal(bailEvaluation.contact.classification, "system_audio");
   assert.equal(bailEvaluation.evidence.some((item) => item.signal === "ai_voice_assistant"), true);
 
@@ -1113,13 +1106,12 @@ test("local evaluator separates AI call assistants from normal voicemail and sco
     transcription_text: "Outbound call Customer: Hi, I'm a call assistant recording this call. Please say who you are and why you're calling. Riley Example (CWA): Hi, this is Riley from Countrywide Austral. The reason for my call is the official journal for the local area. Please ask them to call me back on my mobile."
   });
   assert.equal(handledEvaluation.aiVoiceAssistant.detected, true);
-  assert.equal(handledEvaluation.aiVoiceAssistant.handledSuccessfully, true);
-  assert.equal(handledEvaluation.aiVoiceAssistant.bailed, false);
-  assert.equal(handledEvaluation.aiVoiceAssistant.tactics.explained_reason, true);
-  assert.equal(handledEvaluation.aiVoiceAssistant.tactics.asked_for_callback, true);
+  assert.equal(handledEvaluation.aiVoiceAssistant.handledSuccessfully, null);
+  assert.equal(handledEvaluation.aiVoiceAssistant.bailed, null);
+  assert.deepEqual(handledEvaluation.aiVoiceAssistant.tactics, {});
 });
 
-test("analysis tracks AI call assistant trend, salesperson bail rate, tactics, and future recovery", () => {
+test("analysis tracks literal AI assistant encounters without handling or recovery judgments", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "ai-bail",
@@ -1151,33 +1143,31 @@ test("analysis tracks AI call assistant trend, salesperson bail rate, tactics, a
   ]));
 
   assert.equal(analysis.aiVoiceAssistant.totals.encounters, 2);
-  assert.equal(analysis.aiVoiceAssistant.totals.bailed, 1);
-  assert.equal(analysis.aiVoiceAssistant.totals.handledSuccessfully, 1);
-  assert.equal(analysis.aiVoiceAssistant.totals.futureHumanContact, 1);
+  assert.equal(analysis.aiVoiceAssistant.totals.bailed, null);
+  assert.equal(analysis.aiVoiceAssistant.totals.handledSuccessfully, null);
+  assert.equal(analysis.aiVoiceAssistant.totals.futureHumanContact, null);
   assert.equal(analysis.aiVoiceAssistant.trendRows[0].encounters, 2);
 
   const bailSeller = analysis.aiVoiceAssistant.salespersonRows.find((item) => item.salesperson === "Bail Seller");
   const strongSeller = analysis.aiVoiceAssistant.salespersonRows.find((item) => item.salesperson === "Strong Seller");
-  assert.equal(bailSeller.bailRate, 100);
-  assert.equal(strongSeller.handledRate, 100);
-  assert.equal(strongSeller.futureHumanContactRate, 100);
+  assert.equal(bailSeller.bailRate, null);
+  assert.equal(strongSeller.handledRate, null);
+  assert.equal(strongSeller.futureHumanContactRate, null);
 
-  const reasonTactic = analysis.aiVoiceAssistant.tacticRows.find((item) => item.key === "explained_reason");
-  assert.equal(reasonTactic.encounters, 1);
-  assert.equal(reasonTactic.handledRate, 100);
+  assert.deepEqual(analysis.aiVoiceAssistant.tacticRows, []);
 
   const handledRow = analysis.drilldownRows.find((item) => item.callId === "ai-handled");
   assert.equal(handledRow.aiVoiceAssistantDetected, true);
-  assert.equal(handledRow.aiVoiceAssistantHandledSuccessfully, true);
-  assert.equal(handledRow.aiVoiceAssistantFutureCallId, "future-human");
-  assert.ok(handledRow.metricKeys.includes("calls.aiVoiceAssistantFutureHuman"));
+  assert.equal(handledRow.aiVoiceAssistantHandledSuccessfully, null);
+  assert.equal(handledRow.aiVoiceAssistantFutureCallId, null);
+  assert.equal(handledRow.metricKeys.includes("calls.aiVoiceAssistantFutureHuman"), false);
 
   const intelligence = buildCallIntelligence(handledRow);
   assert.equal(intelligence.events.some((event) => event.eventType === "ai_call_assistant_encountered"), true);
-  assert.equal(intelligence.events.some((event) => event.eventType === "ai_assistant_handled_well"), true);
+  assert.equal(intelligence.events.some((event) => event.eventType === "ai_assistant_handled_well"), false);
 });
 
-test("analysis tracks system audio subtypes and later human recovery", () => {
+test("analysis tracks literal system-audio subtypes without recovery or handling judgments", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "screening",
@@ -1204,7 +1194,7 @@ test("analysis tracks system audio subtypes and later human recovery", () => {
       AllocatedLeadID: "lead-carrier",
       Salesperson: "Carrier Seller",
       CustomerImportSource: "Facebook",
-      transcription_text: "Outbound call Customer: The number is busy."
+      transcription_text: "Outbound call Voicemail: The number you have called is busy."
     }),
     row({
       call_id: "machine-voicemail-audit",
@@ -1221,20 +1211,20 @@ test("analysis tracks system audio subtypes and later human recovery", () => {
   assert.equal(analysis.systemAudio.totals.callScreening, 1);
   assert.equal(analysis.systemAudio.totals.carrierPhoneSystem, 1);
   assert.equal(analysis.systemAudio.totals.machineVoicemail, 1);
-  assert.equal(analysis.systemAudio.totals.futureHumanContact, 1);
+  assert.equal(analysis.systemAudio.totals.futureHumanContact, null);
 
   const screening = analysis.systemAudio.records.find((item) => item.callId === "screening");
   const carrier = analysis.systemAudio.records.find((item) => item.callId === "carrier");
   const voicemail = analysis.systemAudio.records.find((item) => item.callId === "machine-voicemail-audit");
   assert.equal(screening.subtype, "call_screening");
-  assert.equal(screening.handledSuccessfully, true);
-  assert.equal(screening.futureCallId, "screening-future");
+  assert.equal(screening.handledSuccessfully, null);
+  assert.equal(screening.futureCallId, "");
   assert.equal(carrier.subtype, "carrier_phone_system");
   assert.equal(voicemail.subtype, "machine_voicemail");
   assert.equal(analysis.drilldownRows.find((item) => item.callId === "screening").systemAudioSubtypeLabel, "Call Screening / AI Assistant");
 });
 
-test("follow-up completion links through stable IDs, not partial phone", () => {
+test("unvalidated callback wording cannot create follow-up linkage", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "1",
@@ -1265,17 +1255,15 @@ test("follow-up completion links through stable IDs, not partial phone", () => {
     })
   ]));
 
-  const followUpCall = analysis.reviewQueue.find((item) => item.callId === "1");
-  assert.equal(followUpCall.followUpStatus, "later_attempt_observed");
-  assert.equal(followUpCall.followUpMatch.relationStatus, "confirmed_related_call");
-  assert.equal(followUpCall.followUpMatch.matchMethod, "exact_stable_identifier");
-  assert.equal(followUpCall.followUpMatch.completionState, "not_established");
-  assert.equal(followUpCall.followUpMatch.paymentState, "not_established");
+  const followUpCall = analysis.drilldownRows.find((item) => item.callId === "1");
+  assert.equal(followUpCall.followUpStatus, "not_evaluated");
+  assert.equal(followUpCall.followUpMatch, null);
+  assert.equal(analysis.reviewQueue.some((item) => item.callId === "1"), false);
   const wrongNumberCall = analysis.drilldownRows.find((item) => item.callId === "2");
-  assert.equal(wrongNumberCall.followUpStatus, "not_required");
+  assert.equal(wrongNumberCall.followUpStatus, "not_evaluated");
 });
 
-test("follow-up remains indeterminate when upload has no future matching ID data", () => {
+test("unvalidated callback wording does not create indeterminate follow-up alerts", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "1",
@@ -1286,8 +1274,8 @@ test("follow-up remains indeterminate when upload has no future matching ID data
     })
   ]));
 
-  assert.equal(analysis.reviewQueue[0].followUpStatus, "indeterminate_insufficient_future_data");
-  assert.equal(analysis.alerts[0].category, "Follow-up needs review");
+  assert.equal(analysis.reviewQueue.length, 0);
+  assert.equal(analysis.alerts.length, 0);
 });
 
 test("untrusted legacy fields cannot change active analysis and are optional", () => {
@@ -1341,7 +1329,7 @@ test("untrusted legacy fields cannot change active analysis and are optional", (
   assert.doesNotMatch(JSON.stringify(aliases), /ALIAS_DISPOSITION_SENTINEL|ALIAS_NOTE_SENTINEL/);
 });
 
-test("lead utilization report tracks strict callback leakage and future callback pending status", () => {
+test("literal activity model excludes unvalidated callback semantics", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "1",
@@ -1366,10 +1354,9 @@ test("lead utilization report tracks strict callback leakage and future callback
     })
   ]));
 
-  assert.equal(analysis.leadUtilization.totals.callbackRequests, 2);
-  assert.equal(analysis.leadUtilization.totals.callbackSameDayRequired, 1);
-  assert.equal(analysis.leadUtilization.totals.callbackMissedSameDay, 1);
-  assert.equal(analysis.leadUtilization.totals.callbackFutureNeedsUpload, 1);
+  assert.equal(analysis.leadUtilization.totals.semanticCallbackMetrics, null);
+  assert.equal("callbackRequests" in analysis.leadUtilization.totals, false);
+  assert.equal("callbackMissedSameDay" in analysis.leadUtilization.totals, false);
 });
 
 test("lead utilization report counts one-attempt no-contact lead-days", () => {
@@ -1400,7 +1387,7 @@ test("lead utilization report counts one-attempt no-contact lead-days", () => {
       call_time: "11:00:00",
       call_duration_seconds: "8",
       CallTotalSeconds: "10",
-      transcription_text: "Outbound call Voicemail: The person is not available."
+      transcription_text: "Outbound call Voicemail: You have reached the office. Please leave a message."
     })
   ]));
 
@@ -1423,7 +1410,7 @@ test("call intelligence does not treat unrelated pay wording as payment intent",
   assert.notEqual(intelligence.call.customerSentiment, "interested");
 });
 
-test("call intelligence keeps genuine offer payment and order intent", () => {
+test("call intelligence cannot promote payment intent from deterministic wording", () => {
   const analysis = analyzeCsvText(csv([
     row({
       call_id: "send-invoice",
@@ -1432,8 +1419,7 @@ test("call intelligence keeps genuine offer payment and order intent", () => {
   ]));
 
   const intelligence = buildCallIntelligence(analysis.drilldownRows[0]);
-  const paymentEvent = intelligence.events.find((event) => event.eventType === "payment_or_order_intent");
-  assert.ok(paymentEvent);
-  assert.equal(paymentEvent.followUpRequired, 1);
-  assert.equal(intelligence.call.leadUtilizationScore, 5);
+  assert.equal(intelligence.events.some((event) => event.eventType === "payment_or_order_intent"), false);
+  assert.equal(intelligence.call.nextStepExists, null);
+  assert.equal(intelligence.call.leadUtilizationScore, null);
 });

@@ -8,7 +8,7 @@ const { buildParkedAllocationDiagnostic } = require("./allocationParking");
 const { buildLeadUtilizationModel } = require("./leadUtilizationReport");
 const { buildCallProofRow } = require("./drilldown");
 const { SOURCE_AGE_THRESHOLDS, ageBucketSort, sourceAttributionFor } = require("./sourceQuality");
-const { buildAiVoiceAssistantModel, linkAiVoiceAssistantOutcomes } = require("./aiVoiceAssistantAnalytics");
+const { buildAiVoiceAssistantModel } = require("./aiVoiceAssistantAnalytics");
 const { buildLeadReattemptModel } = require("./leadReattemptAnalytics");
 const { buildLeadHarvestModel } = require("./leadHarvestAnalytics");
 const { buildSystemAudioModel } = require("./systemAudioAnalytics");
@@ -151,7 +151,6 @@ function buildDataWindow(items, totals = {}) {
     (end && end.secondsOfDay < 22 * 60 * 60)
   ));
   const insufficientTrendHistory = Boolean(dayCount > 0 && dayCount < 7);
-  const followUpFutureDataUnavailable = Number(totals.followUpIndeterminate || 0) > 0;
   const warnings = [];
 
   if (singleDay) {
@@ -175,14 +174,6 @@ function buildDataWindow(items, totals = {}) {
       message: `Trend alerts and comparisons need more history. The active call data contains ${dayCount} source call ${dayCount === 1 ? "date" : "dates"}.`
     });
   }
-  if (followUpFutureDataUnavailable) {
-    warnings.push({
-      code: "follow_up_future_data_unavailable",
-      severity: "notice",
-      message: `Follow-up overdue status may be indeterminate because the active data ends at ${end?.label || "the latest loaded call"} and later calls are not available in this dataset.`
-    });
-  }
-
   return {
     sourceTimezoneLabel: SOURCE_TIMEZONE_LABEL,
     sourceStart: start?.label || null,
@@ -193,7 +184,7 @@ function buildDataWindow(items, totals = {}) {
     singleDay,
     partialDay,
     insufficientTrendHistory,
-    followUpFutureDataUnavailable,
+    followUpFutureDataUnavailable: false,
     callDataOnly: true,
     warnings
   };
@@ -213,13 +204,8 @@ function internalItemsFor(analysis) {
 }
 
 function confidenceBandForItem(item) {
-  const quality = item?.evaluation?.transcript?.qualityBand || "";
-  if (["high", "medium", "low", "unusable"].includes(quality)) return quality;
-  const confidence = Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence);
-  if (!Number.isFinite(confidence) || confidence <= 0) return "unknown";
-  if (confidence >= 0.75) return "high";
-  if (confidence >= 0.55) return "medium";
-  return "low";
+  void item;
+  return "unknown";
 }
 
 function confidenceLabelForBand(band) {
@@ -240,17 +226,26 @@ function buildIntelligenceGovernance(items, totals = {}) {
   const rate = (value) => percent(value, total);
   return {
     schemaVersion: "sales_dashboard_intelligence_governance.v1",
+    semanticEvaluation: {
+      status: "restricted_not_authoritative",
+      operationallyPermitted: false,
+      permittedUse: "Literal terminal, machine-audio, direct-customer wrong-number, and direct-customer opt-out triage only.",
+      prohibitedUse: "Outcome, follow-up, complaint, interest, callback, quality, coaching, ranking, or performance decisions.",
+      auditReference: "runtime/ALL_EVALUATORS_ACCURACY_AUDIT_2026-07-20.md"
+    },
     processing: {
       totalCalls: total,
       transcriptsAvailable: Number(totals.transcriptAvailable || 0),
-      deterministicEvaluationsCompleted: items.length,
+      deterministicEvaluationsCompleted: 0,
+      literalTriageRowsCompleted: items.length,
       llmEvaluationsCompleted: 0,
       llmNotRequested: items.length,
       llmFailed: 0,
       managerReviewedCalls: 0,
       unprocessedCalls: Math.max(0, total - items.length),
-      transcriptDerivedMetricsCoverageRate: percent(totals.transcriptUsableForCoaching || 0, total),
-      lowOrUnusableTranscriptCount: counts.low + counts.unusable
+      transcriptDerivedMetricsCoverageRate: 0,
+      lowOrUnusableTranscriptCount: 0,
+      transcriptQualityNotEvaluated: total
     },
     confidence: {
       high: counts.high,
@@ -266,8 +261,9 @@ function buildIntelligenceGovernance(items, totals = {}) {
     },
     provenance: {
       rawImportedFields: ["transcription_text"],
-      deterministicFields: ["contactClassification", "localOutcome", "followUpRequired", "alerts", "scorecards"],
-      llmReviewedOnlyWhen: "llm_status is completed and a usable LLM result is stored.",
+      deterministicFields: ["literalTerminalTriage", "machineAudioTriage", "directCustomerWrongNumberTriage", "directCustomerOptOutTriage"],
+      unavailableFields: ["semanticOutcome", "followUpRequired", "complaint", "interest", "callback", "quality", "coaching", "rankings", "scorecards"],
+      llmReviewedOnlyWhen: "Never operational unless the exact capability and immutable inference contract are promoted; historical outputs remain research-only.",
       managerReviewedOnlyWhen: "a saved manager review exists for the call."
     }
   };
@@ -275,18 +271,17 @@ function buildIntelligenceGovernance(items, totals = {}) {
 
 function rowGovernance(item) {
   const band = confidenceBandForItem(item);
-  const deterministicConfidence = Number(item?.evaluation?.outcome?.confidence ?? item?.evaluation?.contact?.confidence ?? 0);
   return {
-    intelligenceProvenance: "Deterministic",
+    intelligenceProvenance: "Restricted literal rule",
     llmStatus: "not_requested",
     llmProvenance: "Unprocessed",
     managerReviewProvenance: "Unprocessed",
     rawImportedProvenance: "Raw imported",
-    contactClassificationProvenance: "Deterministic",
-    localOutcomeProvenance: "Deterministic",
-    followUpProvenance: "Deterministic",
-    alertProvenance: "Deterministic",
-    deterministicConfidence,
+    contactClassificationProvenance: "Restricted literal rule",
+    localOutcomeProvenance: "Restricted literal rule",
+    followUpProvenance: "Unavailable",
+    alertProvenance: "Restricted literal rule",
+    deterministicConfidence: null,
     confidenceBand: band,
     confidenceLabel: confidenceLabelForBand(band),
     evidenceAvailable: Boolean(item?.evaluation?.evidence?.length)
@@ -322,23 +317,6 @@ function orderHistoryLabel(row) {
   return orderCount(row) > 0 ? "Previous Sales History" : "No Sales History";
 }
 
-function entityKeys(row) {
-  return ENTITY_FIELDS
-    .map((field) => {
-      const value = clean(row[field]);
-      return isMissing(value) ? null : `${field}:${value}`;
-    })
-    .filter(Boolean);
-}
-
-function matchingEntityIdentifiers(left = {}, right = {}) {
-  return ENTITY_FIELDS.map((field) => {
-    const leftValue = clean(left[field]);
-    const rightValue = clean(right[field]);
-    return !isMissing(leftValue) && leftValue === rightValue ? { field, value: leftValue } : null;
-  }).filter(Boolean);
-}
-
 function buildDurationStats(rows, field) {
   const values = rows.map((row) => toInt(row[field])).filter((value) => value !== null).sort((a, b) => a - b);
   if (!values.length) {
@@ -366,10 +344,6 @@ function summarizeBy(items, keyFn, seedFn) {
     group.calls += 1;
     if (item.evaluation.transcript.available) group.transcriptAvailable += 1;
     if (item.evaluation.contact.telephonyConnected) group.telephonyConnected += 1;
-    if (item.evaluation.contact.probableLiveHuman) group.probableLiveHuman += 1;
-    if (item.evaluation.contact.meaningfulConversation) group.meaningfulConversation += 1;
-    if (item.evaluation.contact.actionableConversation) group.actionableConversation += 1;
-    if (item.evaluation.opportunity.followUpRequired) group.followUpRequired += 1;
     if (item.evaluation.risk.reviewRequired) group.riskReviews += 1;
     const confidenceBand = confidenceBandForItem(item);
     if (confidenceBand === "high") group.highConfidence = (group.highConfidence || 0) + 1;
@@ -379,9 +353,6 @@ function summarizeBy(items, keyFn, seedFn) {
     else group.unknownConfidence = (group.unknownConfidence || 0) + 1;
     if (item.evaluation.aiVoiceAssistant?.detected) {
       group.aiVoiceAssistantEncounters = (group.aiVoiceAssistantEncounters || 0) + 1;
-      if (item.evaluation.aiVoiceAssistant.handledSuccessfully) group.aiVoiceAssistantHandled = (group.aiVoiceAssistantHandled || 0) + 1;
-      if (item.evaluation.aiVoiceAssistant.bailed) group.aiVoiceAssistantBailed = (group.aiVoiceAssistantBailed || 0) + 1;
-      if (item.evaluation.aiVoiceAssistant.followThrough?.futureHumanContact) group.aiVoiceAssistantFutureHuman = (group.aiVoiceAssistantFutureHuman || 0) + 1;
     }
     group.totalDuration += item.evaluation.durationSeconds;
   });
@@ -391,20 +362,27 @@ function summarizeBy(items, keyFn, seedFn) {
       ...group,
       transcriptCoverageRate: percent(group.transcriptAvailable, group.calls),
       telephonyConnectedRate: percent(group.telephonyConnected, group.calls),
-      probableLiveHumanRate: percent(group.probableLiveHuman, group.calls),
-      meaningfulConversationRate: percent(group.meaningfulConversation, group.calls),
-      actionableConversationRate: percent(group.actionableConversation, group.calls),
-      followUpRequiredRate: percent(group.followUpRequired, group.calls),
+      probableLiveHuman: null,
+      meaningfulConversation: null,
+      actionableConversation: null,
+      followUpRequired: null,
+      probableLiveHumanRate: null,
+      meaningfulConversationRate: null,
+      actionableConversationRate: null,
+      followUpRequiredRate: null,
       highConfidence: group.highConfidence || 0,
       mediumConfidence: group.mediumConfidence || 0,
       lowConfidence: group.lowConfidence || 0,
       unusableTranscript: group.unusableTranscript || 0,
       unknownConfidence: group.unknownConfidence || 0,
-      reviewOnlySignals: (group.lowConfidence || 0) + (group.unusableTranscript || 0),
+      reviewOnlySignals: null,
       aiVoiceAssistantEncounterRate: percent(group.aiVoiceAssistantEncounters || 0, group.calls),
-      aiVoiceAssistantBailRate: percent(group.aiVoiceAssistantBailed || 0, group.aiVoiceAssistantEncounters || 0),
-      aiVoiceAssistantHandledRate: percent(group.aiVoiceAssistantHandled || 0, group.aiVoiceAssistantEncounters || 0),
-      aiVoiceAssistantFutureHumanRate: percent(group.aiVoiceAssistantFutureHuman || 0, group.aiVoiceAssistantEncounters || 0),
+      aiVoiceAssistantBailed: null,
+      aiVoiceAssistantHandled: null,
+      aiVoiceAssistantFutureHuman: null,
+      aiVoiceAssistantBailRate: null,
+      aiVoiceAssistantHandledRate: null,
+      aiVoiceAssistantFutureHumanRate: null,
       averageDurationSeconds: group.calls ? Math.round(group.totalDuration / group.calls) : 0
     }))
     .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
@@ -429,12 +407,8 @@ function seedSourceQualityGroup(name, extras = {}) {
     salespersonCreatedCalls: 0,
     transcriptAvailable: 0,
     telephonyConnected: 0,
-    probableLiveHuman: 0,
-    meaningfulConversation: 0,
-    actionableConversation: 0,
-    followUpRequired: 0,
     riskReviews: 0,
-    noHumanAnswerCalls: 0,
+    literalNoContactCalls: 0,
     ...extras
   };
   SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
@@ -469,12 +443,8 @@ function addSourceQualityCounts(group, item) {
   if (attribution.customerCreatedByType === "SP") group.salespersonCreatedCalls += 1;
   if (item.evaluation.transcript.available) group.transcriptAvailable += 1;
   if (item.evaluation.contact.telephonyConnected) group.telephonyConnected += 1;
-  if (item.evaluation.contact.probableLiveHuman) group.probableLiveHuman += 1;
-  if (item.evaluation.contact.meaningfulConversation) group.meaningfulConversation += 1;
-  if (item.evaluation.contact.actionableConversation) group.actionableConversation += 1;
-  if (item.evaluation.opportunity.followUpRequired) group.followUpRequired += 1;
   if (item.evaluation.risk.reviewRequired) group.riskReviews += 1;
-  if (!item.evaluation.contact.probableLiveHuman) group.noHumanAnswerCalls += 1;
+  if (["no_answer", "voicemail", "system_audio"].includes(item.evaluation.contact.classification)) group.literalNoContactCalls += 1;
   if (segment === "new" && attribution.daysSinceImport !== null) {
     SOURCE_AGE_THRESHOLDS.forEach((threshold) => {
       if (attribution.daysSinceImport > threshold) {
@@ -496,11 +466,15 @@ function finalizeSourceQualityGroup(group) {
     ...group,
     transcriptCoverageRate: percent(group.transcriptAvailable, group.calls),
     telephonyConnectedRate: percent(group.telephonyConnected, group.calls),
-    probableLiveHumanRate: percent(group.probableLiveHuman, group.calls),
-    noHumanAnswerRate: percent(group.noHumanAnswerCalls, group.calls),
-    meaningfulConversationRate: percent(group.meaningfulConversation, group.calls),
-    actionableConversationRate: percent(group.actionableConversation, group.calls),
-    followUpRequiredRate: percent(group.followUpRequired, group.calls),
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    followUpRequired: null,
+    probableLiveHumanRate: null,
+    literalNoContactRate: percent(group.literalNoContactCalls, group.calls),
+    meaningfulConversationRate: null,
+    actionableConversationRate: null,
+    followUpRequiredRate: null,
     riskReviewRate: percent(group.riskReviews, group.calls),
     bulkSourceCoverageRate: percent(group.callsWithBulkSource, group.calls),
     importDateCoverageRate: percent(group.callsWithImportDate, group.calls),
@@ -602,10 +576,6 @@ function buildSourceQualityModel(items) {
     metric: "source.newBusinessRecordOlderThan"
   }));
 
-  const rankedSources = sourceRows
-    .filter((row) => row.calls >= 25 && row.name !== "Unknown source")
-    .sort((a, b) => a.probableLiveHumanRate - b.probableLiveHumanRate || b.calls - a.calls || a.name.localeCompare(b.name));
-
   return {
     schemaVersion: "sales_dashboard_source_quality.v1",
     thresholds: SOURCE_AGE_THRESHOLDS,
@@ -613,7 +583,7 @@ function buildSourceQualityModel(items) {
       bulkSource: "CustomerImportDate and CustomerImportSource from bulk lead sourcing operations.",
       manualCreator: "CustomerCreatedBy, CustomerCreatedByType, and CustomerCreateDate from manual LG/SP entry.",
       missingSourceAttribution: "Records missing both bulk import evidence and manual creator evidence.",
-      humanAnswerRate: "Probable live-human calls divided by total calls for that source or creator.",
+      humanAnswerRate: "Unavailable. Live-human meaning is outside the validated literal-rule boundary.",
       recordAge: "Record Age uses CustomerImportDate where valid, otherwise CustomerCreateDate where valid.",
       newBusinessRecordAge: "New Business calls where Record Age is more than X days before the call date."
     },
@@ -626,66 +596,9 @@ function buildSourceQualityModel(items) {
     creatorAgeBuckets,
     newBusinessRecordAgeThresholds,
     newBusinessImportAgeThresholds,
-    lowestHumanAnswerSource: rankedSources[0] || null,
-    lowestHumanAnswerSources: rankedSources.slice(0, 5)
+    lowestHumanAnswerSource: null,
+    lowestHumanAnswerSources: []
   };
-}
-
-function linkFollowUps(items, maxDateTime) {
-  const keyToLaterItems = new Map();
-  [...items].reverse().forEach((item) => {
-    const keys = entityKeys(item.row);
-    const laterMatches = keys.flatMap((key) => keyToLaterItems.get(key) || []);
-    const uniqueLaterMatches = Array.from(new Map(laterMatches.map((match) => [match.row.call_id, match])).values())
-      .map((match) => ({ match, matchingIdentifiers: matchingEntityIdentifiers(item.row, match.row) }))
-      .filter((candidate) => candidate.matchingIdentifiers.length)
-      .sort((left, right) => {
-        const leftTime = left.match.dateTime instanceof Date ? left.match.dateTime.getTime() : Number.MAX_SAFE_INTEGER;
-        const rightTime = right.match.dateTime instanceof Date ? right.match.dateTime.getTime() : Number.MAX_SAFE_INTEGER;
-        return leftTime - rightTime;
-      });
-
-    if (item.evaluation.opportunity.followUpRequired) {
-      if (uniqueLaterMatches.length > 0) {
-        const selected = uniqueLaterMatches[0];
-        const later = selected.match;
-        const laterCallId = clean(later.row.call_id);
-        const laterLiveContact = Boolean(later.evaluation.contact.probableLiveHuman);
-        item.followUpStatus = "later_attempt_observed";
-        item.followUpMatchedCallId = laterCallId;
-        item.followUpMatch = {
-          status: "later_attempt_observed",
-          relationStatus: "confirmed_related_call",
-          matchMethod: "exact_stable_identifier",
-          matchingIdentifiers: selected.matchingIdentifiers,
-          conflictingIdentifiers: [],
-          matchedCallId: laterCallId,
-          laterCallDate: clean(later.row.call_date),
-          laterCallTime: clean(later.row.call_time),
-          laterCallOutcome: clean(later.evaluation.outcome.localCategory) || "unknown",
-          laterCallContactState: laterLiveContact ? "live_contact_observed" : "no_live_contact_observed",
-          laterCallDurationSeconds: Number(later.evaluation.durationSeconds || 0),
-          completionState: "not_established",
-          paymentState: "not_established",
-          verificationStatus: laterLiveContact
-            ? "related_live_call_observed_completion_not_verified"
-            : "related_attempt_observed_completion_not_verified"
-        };
-      } else if (!item.dateTime || !maxDateTime || maxDateTime.getTime() - item.dateTime.getTime() < 48 * 60 * 60 * 1000) {
-        item.followUpStatus = "indeterminate_insufficient_future_data";
-      } else {
-        item.followUpStatus = "overdue";
-      }
-    } else {
-      item.followUpStatus = "not_required";
-    }
-
-    keys.forEach((key) => {
-      const existing = keyToLaterItems.get(key) || [];
-      existing.push(item);
-      keyToLaterItems.set(key, existing);
-    });
-  });
 }
 
 function buildAlerts(items) {
@@ -702,37 +615,20 @@ function buildAlerts(items) {
       businessSegmentLabel: businessSegmentLabel(businessSegment)
     };
 
-    if (item.evaluation.risk.reviewRequired) {
-      const evidence = item.evaluation.evidence.find((entry) => ["complaint", "opt_out"].includes(entry.signal));
+    if (item.evaluation.risk.optOut && item.evaluation.risk.reviewRequired) {
+      const evidence = item.evaluation.evidence.find((entry) => entry.signal === "opt_out");
       alerts.push({
         ...baseAlert,
         severity: "critical",
-        category: item.evaluation.risk.optOut ? "Opt-out detected" : "Complaint or risk signal",
+        category: "Direct opt-out phrase",
         callId,
         owner,
-        message: "A risk signal needs manager review.",
+        message: "An exact customer opt-out phrase needs manager verification.",
         evidence: evidence?.text || "",
-        evidenceSummary: evidence?.summary || "Risk signal needs manager review"
+        evidenceSummary: evidence?.summary || "Exact customer opt-out wording matched"
       });
     }
 
-    if (item.evaluation.opportunity.followUpRequired) {
-      const evidence = item.evaluation.evidence.find((entry) => entry.signal === "follow_up");
-      alerts.push({
-        ...baseAlert,
-        severity: item.followUpStatus === "overdue" ? "critical" : "notice",
-        category: "Follow-up needs review",
-        callId,
-        owner,
-        message: item.followUpStatus === "indeterminate_insufficient_future_data"
-          ? "Follow-up signal found, but the upload does not contain enough future data to prove completion."
-          : item.followUpStatus === "later_attempt_observed"
-            ? "A later matching call attempt exists, but its presence does not prove follow-up completion."
-            : "Follow-up signal found with no later matching action in the available data.",
-        evidence: evidence?.text || item.evaluation.preview,
-        evidenceSummary: evidence?.summary || "Follow-up signal found"
-      });
-    }
   });
 
   return alerts.sort((a, b) => {
@@ -772,10 +668,6 @@ function buildBusinessSegmentMetrics(items) {
       calls: 0,
       transcriptAvailable: 0,
       telephonyConnected: 0,
-      probableLiveHuman: 0,
-      meaningfulConversation: 0,
-      actionableConversation: 0,
-      followUpRequired: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -791,20 +683,20 @@ function buildDashboardView(items, options = {}) {
     duplicateCallIds: 0,
     salespeople: new Set(canonicalRows.map((row) => clean(row.Salesperson)).filter(Boolean)).size,
     transcriptAvailable: items.filter((item) => item.evaluation.transcript.available).length,
-    transcriptUsableForCoaching: items.filter((item) => item.evaluation.transcript.usableForCoaching).length,
+    transcriptUsableForCoaching: null,
     telephonyConnected: items.filter((item) => item.evaluation.contact.telephonyConnected).length,
-    probableLiveHuman: items.filter((item) => item.evaluation.contact.probableLiveHuman).length,
-    meaningfulConversation: items.filter((item) => item.evaluation.contact.meaningfulConversation).length,
-    actionableConversation: items.filter((item) => item.evaluation.contact.actionableConversation).length,
-    followUpRequired: items.filter((item) => item.evaluation.opportunity.followUpRequired).length,
-    followUpCompleted: 0,
-    followUpLaterAttemptObserved: items.filter((item) => item.followUpStatus === "later_attempt_observed").length,
-    followUpIndeterminate: items.filter((item) => item.followUpStatus === "indeterminate_insufficient_future_data").length,
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    followUpRequired: null,
+    followUpCompleted: null,
+    followUpLaterAttemptObserved: null,
+    followUpIndeterminate: null,
     aiVoiceAssistantEncounters: items.filter((item) => item.evaluation.aiVoiceAssistant?.detected).length,
-    aiVoiceAssistantHandled: items.filter((item) => item.evaluation.aiVoiceAssistant?.handledSuccessfully).length,
-    aiVoiceAssistantBailed: items.filter((item) => item.evaluation.aiVoiceAssistant?.bailed).length,
-    aiVoiceAssistantFutureHuman: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureHumanContact).length,
-    aiVoiceAssistantFutureMeaningful: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureMeaningfulConversation).length,
+    aiVoiceAssistantHandled: null,
+    aiVoiceAssistantBailed: null,
+    aiVoiceAssistantFutureHuman: null,
+    aiVoiceAssistantFutureMeaningful: null,
     newBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "new").length,
     warmBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "warm").length,
     riskReviews: items.filter((item) => item.evaluation.risk.reviewRequired).length,
@@ -813,19 +705,19 @@ function buildDashboardView(items, options = {}) {
 
   const rates = {
     transcriptCoverage: percent(totals.transcriptAvailable, totals.uniqueCalls),
-    transcriptUsableForCoaching: percent(totals.transcriptUsableForCoaching, totals.uniqueCalls),
+    transcriptUsableForCoaching: null,
     telephonyConnected: percent(totals.telephonyConnected, totals.uniqueCalls),
-    probableLiveHuman: percent(totals.probableLiveHuman, totals.uniqueCalls),
-    meaningfulConversation: percent(totals.meaningfulConversation, totals.uniqueCalls),
-    actionableConversation: percent(totals.actionableConversation, totals.uniqueCalls),
-    followUpRequired: percent(totals.followUpRequired, totals.uniqueCalls),
-    followUpCompleted: percent(totals.followUpCompleted, totals.followUpRequired),
-    followUpLaterAttemptObserved: percent(totals.followUpLaterAttemptObserved, totals.followUpRequired),
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    followUpRequired: null,
+    followUpCompleted: null,
+    followUpLaterAttemptObserved: null,
     aiVoiceAssistantEncounter: percent(totals.aiVoiceAssistantEncounters, totals.uniqueCalls),
-    aiVoiceAssistantHandled: percent(totals.aiVoiceAssistantHandled, totals.aiVoiceAssistantEncounters),
-    aiVoiceAssistantBail: percent(totals.aiVoiceAssistantBailed, totals.aiVoiceAssistantEncounters),
-    aiVoiceAssistantFutureHuman: percent(totals.aiVoiceAssistantFutureHuman, totals.aiVoiceAssistantEncounters),
-    aiVoiceAssistantFutureMeaningful: percent(totals.aiVoiceAssistantFutureMeaningful, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantHandled: null,
+    aiVoiceAssistantBail: null,
+    aiVoiceAssistantFutureHuman: null,
+    aiVoiceAssistantFutureMeaningful: null,
     newBusiness: percent(totals.newBusinessCalls, totals.uniqueCalls),
     warmBusiness: percent(totals.warmBusinessCalls, totals.uniqueCalls),
     sourceCoverage: percent(totals.sourceCoverage, totals.uniqueCalls),
@@ -840,10 +732,6 @@ function buildDashboardView(items, options = {}) {
       calls: 0,
       transcriptAvailable: 0,
       telephonyConnected: 0,
-      probableLiveHuman: 0,
-      meaningfulConversation: 0,
-      actionableConversation: 0,
-      followUpRequired: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -857,10 +745,6 @@ function buildDashboardView(items, options = {}) {
       calls: 0,
       transcriptAvailable: 0,
       telephonyConnected: 0,
-      probableLiveHuman: 0,
-      meaningfulConversation: 0,
-      actionableConversation: 0,
-      followUpRequired: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -875,7 +759,7 @@ function buildDashboardView(items, options = {}) {
   const weeklyLeadIntelligence = buildWeeklyLeadIntelligenceModel();
   const alerts = buildAlerts(items);
   const reviewQueue = items
-    .filter((item) => item.evaluation.risk.reviewRequired || item.evaluation.opportunity.followUpRequired)
+    .filter((item) => item.evaluation.risk.reviewRequired)
     .map((item) => buildExplorerRow(item))
     .slice(0, 250);
   const dateTimes = items.map((item) => item.dateTime).filter(Boolean);
@@ -1293,8 +1177,6 @@ function analyzeCsvText(csvText, options = {}) {
   const dateTimes = items.map((item) => item.dateTime).filter(Boolean);
   const minDateTime = dateTimes.length ? new Date(Math.min(...dateTimes.map((date) => date.getTime()))) : null;
   const maxDateTime = dateTimes.length ? new Date(Math.max(...dateTimes.map((date) => date.getTime()))) : null;
-  linkFollowUps(items, maxDateTime);
-  linkAiVoiceAssistantOutcomes(items, maxDateTime);
   const leadUtilization = buildLeadUtilizationModel(items);
 
   const activeColumns = parsed.columns.filter((column) => !isUntrustedLegacyField(column));
@@ -1308,20 +1190,20 @@ function analyzeCsvText(csvText, options = {}) {
     duplicateCallIds: duplicateCallIds.length,
     salespeople: new Set(canonicalRows.map((row) => clean(row.Salesperson)).filter(Boolean)).size,
     transcriptAvailable: items.filter((item) => item.evaluation.transcript.available).length,
-    transcriptUsableForCoaching: items.filter((item) => item.evaluation.transcript.usableForCoaching).length,
+    transcriptUsableForCoaching: null,
     telephonyConnected: items.filter((item) => item.evaluation.contact.telephonyConnected).length,
-    probableLiveHuman: items.filter((item) => item.evaluation.contact.probableLiveHuman).length,
-    meaningfulConversation: items.filter((item) => item.evaluation.contact.meaningfulConversation).length,
-    actionableConversation: items.filter((item) => item.evaluation.contact.actionableConversation).length,
-    followUpRequired: items.filter((item) => item.evaluation.opportunity.followUpRequired).length,
-    followUpCompleted: 0,
-    followUpLaterAttemptObserved: items.filter((item) => item.followUpStatus === "later_attempt_observed").length,
-    followUpIndeterminate: items.filter((item) => item.followUpStatus === "indeterminate_insufficient_future_data").length,
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    followUpRequired: null,
+    followUpCompleted: null,
+    followUpLaterAttemptObserved: null,
+    followUpIndeterminate: null,
     aiVoiceAssistantEncounters: items.filter((item) => item.evaluation.aiVoiceAssistant?.detected).length,
-    aiVoiceAssistantHandled: items.filter((item) => item.evaluation.aiVoiceAssistant?.handledSuccessfully).length,
-    aiVoiceAssistantBailed: items.filter((item) => item.evaluation.aiVoiceAssistant?.bailed).length,
-    aiVoiceAssistantFutureHuman: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureHumanContact).length,
-    aiVoiceAssistantFutureMeaningful: items.filter((item) => item.evaluation.aiVoiceAssistant?.followThrough?.futureMeaningfulConversation).length,
+    aiVoiceAssistantHandled: null,
+    aiVoiceAssistantBailed: null,
+    aiVoiceAssistantFutureHuman: null,
+    aiVoiceAssistantFutureMeaningful: null,
     newBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "new").length,
     warmBusinessCalls: items.filter((item) => businessSegmentFor(item.row) === "warm").length,
     riskReviews: items.filter((item) => item.evaluation.risk.reviewRequired).length,
@@ -1330,19 +1212,19 @@ function analyzeCsvText(csvText, options = {}) {
 
   const rates = {
     transcriptCoverage: percent(totals.transcriptAvailable, totals.uniqueCalls),
-    transcriptUsableForCoaching: percent(totals.transcriptUsableForCoaching, totals.uniqueCalls),
+    transcriptUsableForCoaching: null,
     telephonyConnected: percent(totals.telephonyConnected, totals.uniqueCalls),
-    probableLiveHuman: percent(totals.probableLiveHuman, totals.uniqueCalls),
-    meaningfulConversation: percent(totals.meaningfulConversation, totals.uniqueCalls),
-    actionableConversation: percent(totals.actionableConversation, totals.uniqueCalls),
-    followUpRequired: percent(totals.followUpRequired, totals.uniqueCalls),
-    followUpCompleted: percent(totals.followUpCompleted, totals.followUpRequired),
-    followUpLaterAttemptObserved: percent(totals.followUpLaterAttemptObserved, totals.followUpRequired),
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    followUpRequired: null,
+    followUpCompleted: null,
+    followUpLaterAttemptObserved: null,
     aiVoiceAssistantEncounter: percent(totals.aiVoiceAssistantEncounters, totals.uniqueCalls),
-    aiVoiceAssistantHandled: percent(totals.aiVoiceAssistantHandled, totals.aiVoiceAssistantEncounters),
-    aiVoiceAssistantBail: percent(totals.aiVoiceAssistantBailed, totals.aiVoiceAssistantEncounters),
-    aiVoiceAssistantFutureHuman: percent(totals.aiVoiceAssistantFutureHuman, totals.aiVoiceAssistantEncounters),
-    aiVoiceAssistantFutureMeaningful: percent(totals.aiVoiceAssistantFutureMeaningful, totals.aiVoiceAssistantEncounters),
+    aiVoiceAssistantHandled: null,
+    aiVoiceAssistantBail: null,
+    aiVoiceAssistantFutureHuman: null,
+    aiVoiceAssistantFutureMeaningful: null,
     newBusiness: percent(totals.newBusinessCalls, totals.uniqueCalls),
     warmBusiness: percent(totals.warmBusinessCalls, totals.uniqueCalls),
     sourceCoverage: percent(totals.sourceCoverage, totals.uniqueCalls),
@@ -1357,10 +1239,6 @@ function analyzeCsvText(csvText, options = {}) {
       calls: 0,
       transcriptAvailable: 0,
       telephonyConnected: 0,
-      probableLiveHuman: 0,
-      meaningfulConversation: 0,
-      actionableConversation: 0,
-      followUpRequired: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -1374,10 +1252,6 @@ function analyzeCsvText(csvText, options = {}) {
       calls: 0,
       transcriptAvailable: 0,
       telephonyConnected: 0,
-      probableLiveHuman: 0,
-      meaningfulConversation: 0,
-      actionableConversation: 0,
-      followUpRequired: 0,
       riskReviews: 0,
       totalDuration: 0
     })
@@ -1415,7 +1289,7 @@ function analyzeCsvText(csvText, options = {}) {
 
   const alerts = buildAlerts(items);
   const reviewQueue = items
-    .filter((item) => item.evaluation.risk.reviewRequired || item.evaluation.opportunity.followUpRequired)
+    .filter((item) => item.evaluation.risk.reviewRequired)
     .map((item) => buildExplorerRow(item))
     .slice(0, 250);
   const dateRange = buildDateRange(items, minDateTime, maxDateTime);
@@ -1523,29 +1397,29 @@ function buildEvaluationRow(item) {
     durationSeconds: item.evaluation.durationSeconds,
     totalSeconds: item.evaluation.totalSeconds,
     localOutcome: item.evaluation.outcome.localCategory,
-    localOutcomeConfidence: item.evaluation.outcome.confidence,
+    localOutcomeConfidence: null,
     contactClassification: item.evaluation.contact.classification,
-    probableLiveHuman: item.evaluation.contact.probableLiveHuman,
-    meaningfulConversation: item.evaluation.contact.meaningfulConversation,
-    actionableConversation: item.evaluation.contact.actionableConversation,
-    transcriptQuality: item.evaluation.transcript.qualityBand,
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    transcriptQuality: "not_evaluated",
     transcriptWordCount: item.evaluation.transcript.wordCount,
     aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
-    aiVoiceAssistantConfidence: item.evaluation.aiVoiceAssistant?.confidence || 0,
-    aiVoiceAssistantResponse: item.evaluation.aiVoiceAssistant?.responseClassification || "not_encountered",
-    aiVoiceAssistantHandledSuccessfully: Boolean(item.evaluation.aiVoiceAssistant?.handledSuccessfully),
-    aiVoiceAssistantBailed: Boolean(item.evaluation.aiVoiceAssistant?.bailed),
-    aiVoiceAssistantTactics: item.evaluation.aiVoiceAssistant?.tacticLabels || [],
-    aiVoiceAssistantFutureStatus: item.evaluation.aiVoiceAssistant?.followThrough?.status || "not_applicable",
-    aiVoiceAssistantFutureCallId: item.evaluation.aiVoiceAssistant?.followThrough?.futureCallId || "",
+    aiVoiceAssistantConfidence: null,
+    aiVoiceAssistantResponse: "not_evaluated",
+    aiVoiceAssistantHandledSuccessfully: null,
+    aiVoiceAssistantBailed: null,
+    aiVoiceAssistantTactics: [],
+    aiVoiceAssistantFutureStatus: "not_evaluated",
+    aiVoiceAssistantFutureCallId: null,
     systemAudioDetected: Boolean(item.evaluation.systemAudio?.detected),
     systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
     systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
-    followUpRequired: item.evaluation.opportunity.followUpRequired,
-    followUpStatus: item.followUpStatus,
-    followUpMatchedCallId: item.followUpMatchedCallId || "",
-    followUpMatch: item.followUpMatch || null,
-    followUpChannel: item.evaluation.opportunity.followUpChannel,
+    followUpRequired: null,
+    followUpStatus: "not_evaluated",
+    followUpMatchedCallId: null,
+    followUpMatch: null,
+    followUpChannel: "not_evaluated",
     riskReviewRequired: item.evaluation.risk.reviewRequired,
     reviewRequired: item.evaluation.outcome.reviewRequired,
     ...governance,
@@ -1606,21 +1480,21 @@ function buildExplorerRow(item) {
     durationSeconds: item.evaluation.durationSeconds,
     localOutcome: item.evaluation.outcome.localCategory,
     contactClassification: item.evaluation.contact.classification,
-    transcriptQuality: item.evaluation.transcript.qualityBand,
+    transcriptQuality: "not_evaluated",
     aiVoiceAssistantDetected: Boolean(item.evaluation.aiVoiceAssistant?.detected),
-    aiVoiceAssistantResponse: item.evaluation.aiVoiceAssistant?.responseClassification || "not_encountered",
-    aiVoiceAssistantHandledSuccessfully: Boolean(item.evaluation.aiVoiceAssistant?.handledSuccessfully),
-    aiVoiceAssistantBailed: Boolean(item.evaluation.aiVoiceAssistant?.bailed),
-    aiVoiceAssistantTactics: item.evaluation.aiVoiceAssistant?.tacticLabels || [],
-    aiVoiceAssistantFutureStatus: item.evaluation.aiVoiceAssistant?.followThrough?.status || "not_applicable",
-    aiVoiceAssistantFutureCallId: item.evaluation.aiVoiceAssistant?.followThrough?.futureCallId || "",
+    aiVoiceAssistantResponse: "not_evaluated",
+    aiVoiceAssistantHandledSuccessfully: null,
+    aiVoiceAssistantBailed: null,
+    aiVoiceAssistantTactics: [],
+    aiVoiceAssistantFutureStatus: "not_evaluated",
+    aiVoiceAssistantFutureCallId: null,
     systemAudioDetected: Boolean(item.evaluation.systemAudio?.detected),
     systemAudioSubtype: item.evaluation.systemAudio?.subtype || "none",
     systemAudioSubtypeLabel: item.evaluation.systemAudio?.label || "None",
-    followUpStatus: item.followUpStatus,
-    followUpMatchedCallId: item.followUpMatchedCallId || "",
-    followUpMatch: item.followUpMatch || null,
-    followUpChannel: item.evaluation.opportunity.followUpChannel,
+    followUpStatus: "not_evaluated",
+    followUpMatchedCallId: null,
+    followUpMatch: null,
+    followUpChannel: "not_evaluated",
     reviewRequired: item.evaluation.outcome.reviewRequired,
     ...governance,
     evidence: item.evaluation.evidence.map((evidence) => evidence.summary || evidence.text).filter(Boolean).slice(0, 2),

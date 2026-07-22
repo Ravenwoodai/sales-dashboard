@@ -21,6 +21,16 @@ const {
 
 const FOUNDATION_GOAL = CALL_INTELLIGENCE_FOUNDATION_GOAL;
 const SPECIALIST_RECOVERY_SOURCE_TYPE = "overnight_specialist_recovery";
+const ADHOC_FOUNDATION_SOURCE_TYPE = "adhoc_foundation_backlog";
+const ADHOC_SPECIALIST_RECOVERY_SOURCE_TYPE = "adhoc_specialist_recovery";
+const AUTOMATED_FOUNDATION_SOURCE_TYPES = new Set([
+  "overnight_foundation_backlog",
+  ADHOC_FOUNDATION_SOURCE_TYPE
+]);
+const AUTOMATED_SPECIALIST_RECOVERY_SOURCE_TYPES = new Set([
+  SPECIALIST_RECOVERY_SOURCE_TYPE,
+  ADHOC_SPECIALIST_RECOVERY_SOURCE_TYPE
+]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
 const TERMINAL_RUN_STATUSES = new Set(["completed", "partially_completed", "failed"]);
 
@@ -63,8 +73,20 @@ function currentRuns(studio = {}, importId = "") {
   return (studio.evaluationRuns || []).filter((run) => !importId || run.importId === importId);
 }
 
+function orphanedQueuedRun(run = {}) {
+  const status = String(run.status || "").toLowerCase();
+  return ["queued", "running"].includes(status)
+    && Array.isArray(run.queuedJobs)
+    && run.queuedJobs.length === 0
+    && Number(run.queuedJobCount || 0) === 0
+    && Number(run.completedCallCount || 0) === 0
+    && Number(run.failedCallCount || 0) === 0;
+}
+
 function activeRuns(studio = {}, importId = "") {
-  return currentRuns(studio, importId).filter((run) => ACTIVE_RUN_STATUSES.has(String(run.status || "").toLowerCase()));
+  return currentRuns(studio, importId).filter((run) =>
+    ACTIVE_RUN_STATUSES.has(String(run.status || "").toLowerCase()) && !orphanedQueuedRun(run)
+  );
 }
 
 function isCurrentTypedSpecialistResult(result = {}, goal = "") {
@@ -131,7 +153,7 @@ function selectTypedSpecialistRecoveryBatch(backlog = {}, limit = 100) {
 
 function latestSpecialistRecoveryBoundary(studio = {}, importId = "") {
   const run = currentRuns(studio, importId)
-    .filter((item) => item.callSelection?.sourceType === SPECIALIST_RECOVERY_SOURCE_TYPE)
+    .filter((item) => AUTOMATED_SPECIALIST_RECOVERY_SOURCE_TYPES.has(item.callSelection?.sourceType))
     .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")))[0] || null;
   if (!run) return { safe: true, reason: "no_previous_specialist_recovery_run", run: null };
   const status = String(run.status || "").toLowerCase();
@@ -160,16 +182,18 @@ function latestFoundationBoundary(studio = {}, importId = "") {
   const foundations = currentRuns(studio, importId)
     .filter((run) => run.runType === "batch" && runGoal(run) === FOUNDATION_GOAL)
     .sort((left, right) => String(right.createdAt || "").localeCompare(String(left.createdAt || "")));
-  const automated = foundations.filter((run) => run.callSelection?.sourceType === "overnight_foundation_backlog");
+  const automated = foundations.filter((run) => AUTOMATED_FOUNDATION_SOURCE_TYPES.has(run.callSelection?.sourceType));
   const parent = (automated.length ? automated : foundations)[0] || null;
   if (!parent) return { safe: true, reason: "no_previous_foundation_run", parent: null, children: [] };
   const children = currentRuns(studio, importId).filter((run) => run.callSelection?.parentFoundationRunId === parent.id);
+  const orphanedChildren = children.filter(orphanedQueuedRun);
+  const actionableChildren = children.filter((run) => !orphanedQueuedRun(run));
   const parentStatus = String(parent.status || "").toLowerCase();
   if (!TERMINAL_RUN_STATUSES.has(parentStatus)) {
-    return { safe: false, waiting: true, reason: "foundation_run_not_terminal", parent, children };
+    return { safe: false, waiting: true, reason: "foundation_run_not_terminal", parent, children, orphanedChildren };
   }
-  if (children.some((run) => !TERMINAL_RUN_STATUSES.has(String(run.status || "").toLowerCase()))) {
-    return { safe: false, waiting: true, reason: "specialist_runs_not_terminal", parent, children };
+  if (actionableChildren.some((run) => !TERMINAL_RUN_STATUSES.has(String(run.status || "").toLowerCase()))) {
+    return { safe: false, waiting: true, reason: "specialist_runs_not_terminal", parent, children, orphanedChildren };
   }
   const planned = Math.max(1, Number(parent.plannedCallCount || 0));
   const failed = Number(parent.failedCallCount || 0);
@@ -185,11 +209,11 @@ function latestFoundationBoundary(studio = {}, importId = "") {
   if (routingErrors.length) {
     return { safe: false, reason: "specialist_routing_errors", failureRate, routingErrors, parent, children };
   }
-  if (children.some((run) => String(run.status || "").toLowerCase() === "failed")) {
-    return { safe: false, reason: "specialist_run_failed", failureRate, parent, children };
+  if (actionableChildren.some((run) => String(run.status || "").toLowerCase() === "failed")) {
+    return { safe: false, reason: "specialist_run_failed", failureRate, parent, children, orphanedChildren };
   }
-  const specialistPlanned = children.reduce((total, run) => total + Number(run.plannedCallCount || 0), 0);
-  const specialistFailed = children.reduce((total, run) => total + Number(run.failedCallCount || 0), 0);
+  const specialistPlanned = actionableChildren.reduce((total, run) => total + Number(run.plannedCallCount || 0), 0);
+  const specialistFailed = actionableChildren.reduce((total, run) => total + Number(run.failedCallCount || 0), 0);
   const specialistFailureRate = specialistPlanned ? specialistFailed / specialistPlanned : 0;
   if (specialistFailureRate >= 0.02) {
     return {
@@ -198,10 +222,11 @@ function latestFoundationBoundary(studio = {}, importId = "") {
       failureRate,
       specialistFailureRate,
       parent,
-      children
+      children,
+      orphanedChildren
     };
   }
-  return { safe: true, reason: "boundary_passed", failureRate, specialistFailureRate, parent, children };
+  return { safe: true, reason: "boundary_passed", failureRate, specialistFailureRate, parent, children, orphanedChildren };
 }
 
 function writeJsonAtomic(filePath, value) {
@@ -217,6 +242,8 @@ function appendJsonLine(filePath, value) {
 }
 
 module.exports = {
+  ADHOC_FOUNDATION_SOURCE_TYPE,
+  ADHOC_SPECIALIST_RECOVERY_SOURCE_TYPE,
   FOUNDATION_GOAL,
   SPECIALIST_RECOVERY_SOURCE_TYPE,
   activeRuns,

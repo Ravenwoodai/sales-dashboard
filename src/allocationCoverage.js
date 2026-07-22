@@ -16,7 +16,7 @@ const REQUIRED_ALLOCATION_COLUMNS = [
 ];
 
 const STABLE_LEAD_FIELDS = ["customer_id", "AllocatedLeadID", "ContactId", "FoundContactID", "FoundCustomerID"];
-const NO_CONTACT_CLASSIFICATIONS = new Set(["no_answer", "system_audio", "voicemail", "unknown"]);
+const NO_CONTACT_CLASSIFICATIONS = new Set(["no_answer", "system_audio", "voicemail"]);
 
 function percent(numerator, denominator) {
   if (!denominator) return 0;
@@ -125,8 +125,7 @@ function salespersonForItem(item) {
 }
 
 function isNoContact(item) {
-  return !item.evaluation.contact.probableLiveHuman ||
-    NO_CONTACT_CLASSIFICATIONS.has(item.evaluation.contact.classification);
+  return NO_CONTACT_CLASSIFICATIONS.has(item.evaluation.contact.classification);
 }
 
 function seedAllocationStats(key, extras = {}) {
@@ -191,10 +190,14 @@ function finalizeCallStats(stats) {
   return {
     ...stats,
     transcriptCoverageRate: percent(stats.transcriptAvailable, stats.callRows),
-    probableLiveHumanRate: percent(stats.probableLiveHuman, stats.callRows),
-    meaningfulConversationRate: percent(stats.meaningfulConversation, stats.callRows),
-    actionableConversationRate: percent(stats.actionableConversation, stats.callRows),
-    followUpRequiredRate: percent(stats.followUpRequired, stats.callRows),
+    probableLiveHuman: null,
+    meaningfulConversation: null,
+    actionableConversation: null,
+    followUpRequired: null,
+    probableLiveHumanRate: null,
+    meaningfulConversationRate: null,
+    actionableConversationRate: null,
+    followUpRequiredRate: null,
     singleAttemptNoContactRate: percent(stats.singleAttemptNoContact, stats.stableLeadDaysWorked),
     averageDurationSeconds: stats.callRows ? Math.round(stats.totalDurationSeconds / stats.callRows) : 0
   };

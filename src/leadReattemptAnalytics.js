@@ -12,21 +12,19 @@ function percent(numerator, denominator) {
 const ONE_DIAL_BUCKETS = {
   notOneDial: "not_one_dial",
   validOutcome: "valid_one_dial_outcome",
-  riskyNoContact: "risky_one_dial_no_contact",
+  literalNoContact: "literal_one_dial_no_contact",
   needsReview: "needs_review"
 };
 
 const ONE_DIAL_BUCKET_LABELS = {
   [ONE_DIAL_BUCKETS.notOneDial]: "Not one-dial",
-  [ONE_DIAL_BUCKETS.validOutcome]: "Valid one-dial outcome",
-  [ONE_DIAL_BUCKETS.riskyNoContact]: "One-dial no-contact",
+  [ONE_DIAL_BUCKETS.validOutcome]: "Literal terminal one-dial state",
+  [ONE_DIAL_BUCKETS.literalNoContact]: "Literal one-dial no-contact",
   [ONE_DIAL_BUCKETS.needsReview]: "Ambiguous one-dial excluded"
 };
 
 const VALID_ONE_DIAL_OUTCOMES = new Set([
   "wrong_number",
-  "not_interested",
-  "complaint",
   "opt_out"
 ]);
 
@@ -113,10 +111,6 @@ function itemCall(item) {
     businessSegmentLabel: businessSegmentLabel(segment),
     contactClassification: evaluation.contact?.classification || "unknown",
     localOutcome: evaluation.outcome?.localCategory || "unknown",
-    probableLiveHuman: Boolean(evaluation.contact?.probableLiveHuman),
-    meaningfulConversation: Boolean(evaluation.contact?.meaningfulConversation),
-    actionableConversation: Boolean(evaluation.contact?.actionableConversation),
-    followUpRequired: Boolean(evaluation.opportunity?.followUpRequired),
     transcriptAvailable: Boolean(evaluation.transcript?.available),
     transcriptQualityBand: evaluation.transcript?.qualityBand || "unknown",
     transcriptWordCount: Number(evaluation.transcript?.wordCount || 0),
@@ -129,19 +123,13 @@ function itemCall(item) {
 
 function oneDialBucketMetricKey(bucket) {
   if (bucket === ONE_DIAL_BUCKETS.validOutcome) return "reattempt.oneDialValidOutcome";
-  if (bucket === ONE_DIAL_BUCKETS.riskyNoContact) return "reattempt.oneDialRiskyNoContact";
+  if (bucket === ONE_DIAL_BUCKETS.literalNoContact) return "reattempt.oneDialLiteralNoContact";
   if (bucket === ONE_DIAL_BUCKETS.needsReview) return "reattempt.oneDialNeedsReview";
   return "";
 }
 
 function isOneDialNoContactNoLater(record) {
-  return record?.oneDialBucket === ONE_DIAL_BUCKETS.riskyNoContact && Boolean(record.noLaterCallByAnyone);
-}
-
-function hasNoUsableSpeechEvidence(call = {}) {
-  return !call.transcriptAvailable ||
-    call.transcriptQualityBand === "unusable" ||
-    Number(call.transcriptWordCount || 0) === 0;
+  return record?.oneDialBucket === ONE_DIAL_BUCKETS.literalNoContact && Boolean(record.noLaterCallByAnyone);
 }
 
 function classifyOneDialRecord(record) {
@@ -159,43 +147,33 @@ function classifyOneDialRecord(record) {
   const outcome = firstCall.localOutcome || "unknown";
   const hasExplicitNoContact = EXPLICIT_NO_CONTACT_CLASSIFICATIONS.has(contact) || EXPLICIT_NO_CONTACT_CLASSIFICATIONS.has(outcome);
   const validTerminalOutcome = VALID_ONE_DIAL_OUTCOMES.has(outcome) || contact === "wrong_number";
-  const liveHuman = Boolean(firstCall.probableLiveHuman);
-  const meaningful = Boolean(firstCall.meaningfulConversation);
-  const followUpRequired = Boolean(firstCall.followUpRequired);
-  const noUsableSpeechEvidence = hasNoUsableSpeechEvidence(firstCall);
   const evidenceSummary = firstCall.evidenceSummary || `${contact} / ${outcome}`;
 
   if (validTerminalOutcome) {
     return {
       oneDialBucket: ONE_DIAL_BUCKETS.validOutcome,
       oneDialBucketLabel: ONE_DIAL_BUCKET_LABELS[ONE_DIAL_BUCKETS.validOutcome],
-      oneDialReason: "Single dial has deterministic evidence of a clear terminal outcome.",
-      oneDialConfidence: firstCall.confidence >= 0.75 ? "high" : "medium",
+      oneDialReason: "Single dial has exact literal evidence of a direct wrong-number or opt-out terminal state.",
+      oneDialConfidence: "restricted_literal",
       oneDialEvidenceSummary: evidenceSummary
     };
   }
 
-  if (!liveHuman) {
-    if (hasExplicitNoContact || noUsableSpeechEvidence) {
-      return {
-        oneDialBucket: ONE_DIAL_BUCKETS.riskyNoContact,
-        oneDialBucketLabel: ONE_DIAL_BUCKET_LABELS[ONE_DIAL_BUCKETS.riskyNoContact],
-        oneDialReason: "Single dial has clear no-contact evidence or no usable speech evidence in the active call data.",
-        oneDialConfidence: hasExplicitNoContact ? "medium" : "low",
-        oneDialEvidenceSummary: evidenceSummary
-      };
-    }
+  if (hasExplicitNoContact) {
+    return {
+      oneDialBucket: ONE_DIAL_BUCKETS.literalNoContact,
+      oneDialBucketLabel: ONE_DIAL_BUCKET_LABELS[ONE_DIAL_BUCKETS.literalNoContact],
+      oneDialReason: "Single dial has exact literal no-answer, machine-voicemail, or carrier-system evidence.",
+      oneDialConfidence: "restricted_literal",
+      oneDialEvidenceSummary: evidenceSummary
+    };
   }
 
   return {
     oneDialBucket: ONE_DIAL_BUCKETS.needsReview,
     oneDialBucketLabel: ONE_DIAL_BUCKET_LABELS[ONE_DIAL_BUCKETS.needsReview],
-    oneDialReason: followUpRequired
-      ? "Single dial contains a follow-up or interest signal, so a manager should verify what happened next."
-      : meaningful
-        ? "Single dial reached a possible customer but does not clearly prove a closed outcome."
-        : "Single dial is ambiguous and is excluded from the no-contact utilisation-risk score.",
-    oneDialConfidence: "low",
+    oneDialReason: "No validated literal terminal or no-contact fact is available; semantic meaning is not evaluated.",
+    oneDialConfidence: "unavailable",
     oneDialEvidenceSummary: evidenceSummary
   };
 }
@@ -310,7 +288,7 @@ function buildRecords(items) {
         personallyRetried ? "reattempt.personalRetried" : "",
         oneAndDone ? "reattempt.oneAndDone" : "",
         oneDialMetricKey,
-        isOneDialNoContactNoLater({ ...record, ...oneDialClassification }) ? "reattempt.oneDialNoContactNoLater" : "",
+        isOneDialNoContactNoLater({ ...record, ...oneDialClassification }) ? "reattempt.oneDialLiteralNoContactNoLater" : "",
         noLaterCallByAnyone ? "reattempt.noLaterCallByAnyone" : ""
       ].filter(Boolean)
     };
@@ -333,8 +311,8 @@ function seedGroup(name, extras = {}) {
     personallyRetriedLeads: 0,
     oneAndDoneLeads: 0,
     validOneDialOutcomeLeads: 0,
-    riskyOneDialNoContactLeads: 0,
-    oneDialNoContactNoLaterLeads: 0,
+    literalOneDialNoContactLeads: 0,
+    literalOneDialNoContactNoLaterLeads: 0,
     oneDialNeedsReviewLeads: 0,
     noLaterCallByAnyoneLeads: 0,
     laterCallByAnyoneLeads: 0,
@@ -349,8 +327,8 @@ function addRecord(group, record) {
   if (record.personallyRetried) group.personallyRetriedLeads += 1;
   if (record.oneAndDone) group.oneAndDoneLeads += 1;
   if (record.oneDialBucket === ONE_DIAL_BUCKETS.validOutcome) group.validOneDialOutcomeLeads += 1;
-  if (record.oneDialBucket === ONE_DIAL_BUCKETS.riskyNoContact) group.riskyOneDialNoContactLeads += 1;
-  if (isOneDialNoContactNoLater(record)) group.oneDialNoContactNoLaterLeads += 1;
+  if (record.oneDialBucket === ONE_DIAL_BUCKETS.literalNoContact) group.literalOneDialNoContactLeads += 1;
+  if (isOneDialNoContactNoLater(record)) group.literalOneDialNoContactNoLaterLeads += 1;
   if (record.oneDialBucket === ONE_DIAL_BUCKETS.needsReview) group.oneDialNeedsReviewLeads += 1;
   if (record.noLaterCallByAnyone) group.noLaterCallByAnyoneLeads += 1;
   if (record.laterCallByAnyone) group.laterCallByAnyoneLeads += 1;
@@ -364,8 +342,8 @@ function finalizeGroup(group) {
     personalRetryRate: percent(group.personallyRetriedLeads, group.leadsTouched),
     oneAndDoneRate: percent(group.oneAndDoneLeads, group.leadsTouched),
     validOneDialOutcomeRate: percent(group.validOneDialOutcomeLeads, group.oneAndDoneLeads),
-    riskyOneDialNoContactRate: percent(group.riskyOneDialNoContactLeads, group.oneAndDoneLeads),
-    oneDialNoContactNoLaterRate: percent(group.oneDialNoContactNoLaterLeads, group.leadsTouched),
+    literalOneDialNoContactRate: percent(group.literalOneDialNoContactLeads, group.oneAndDoneLeads),
+    literalOneDialNoContactNoLaterRate: percent(group.literalOneDialNoContactNoLaterLeads, group.leadsTouched),
     oneDialNeedsReviewRate: percent(group.oneDialNeedsReviewLeads, group.oneAndDoneLeads),
     noLaterCallByAnyoneRate: percent(group.noLaterCallByAnyoneLeads, group.leadsTouched),
     laterCallByAnyoneRate: percent(group.laterCallByAnyoneLeads, group.leadsTouched),
@@ -437,17 +415,15 @@ function summarizeLeadReattemptRecords(records, options = {}) {
     .filter((row) => row.leadsTouched >= 25)
     .sort((a, b) => a.personalRetryRate - b.personalRetryRate || b.leadsTouched - a.leadsTouched)
     .slice(0, 12);
-  const highestOneDialRiskSalespeople = salespersonRows
+  const highestLiteralNoContactSalespeople = salespersonRows
     .filter((row) => row.leadsTouched >= 25)
     .sort((a, b) => (
-      b.oneDialNoContactNoLaterLeads - a.oneDialNoContactNoLaterLeads ||
-      b.oneDialNoContactNoLaterRate - a.oneDialNoContactNoLaterRate ||
+      b.literalOneDialNoContactNoLaterLeads - a.literalOneDialNoContactNoLaterLeads ||
+      b.literalOneDialNoContactNoLaterRate - a.literalOneDialNoContactNoLaterRate ||
       a.personalRetryRate - b.personalRetryRate ||
       b.leadsTouched - a.leadsTouched
     ))
     .slice(0, 12);
-  const highestUnderUtilizationSalespeople = highestOneDialRiskSalespeople;
-
   return {
     totals,
     salespersonRows,
@@ -456,8 +432,7 @@ function summarizeLeadReattemptRecords(records, options = {}) {
     businessSegmentRows,
     highestRetrySalespeople,
     lowestRetrySalespeople,
-    highestOneDialRiskSalespeople,
-    highestUnderUtilizationSalespeople,
+    highestLiteralNoContactSalespeople,
     records: rows
   };
 }
@@ -470,11 +445,11 @@ function buildLeadReattemptModel(items) {
     definitions: {
       lead: "A matched customer/contact anchor using customer_id first, then AllocatedLeadID, ContactId, FoundContactID, and FoundCustomerID.",
       personalRetryRate: "Matched records a salesperson called more than once divided by matched records they dialed.",
-      oneDialRecordRate: "Matched records a salesperson called exactly once divided by matched records they dialed. This is neutral until split into valid, risky, and review buckets.",
-      validOneDialOutcome: "One-dial records with deterministic evidence of a clear terminal outcome such as wrong number, not interested, complaint, or opt-out.",
-      riskyOneDialNoContact: "One-dial records with clear no-contact evidence: no answer, voicemail, system audio, or no usable speech evidence.",
-      oneDialNoContactNoLater: "Potential lead under-utilisation: one-dial no-contact records with no later matching call observed for the same stable customer/contact/lead ID.",
-      oneDialNeedsReview: "One-dial records that are ambiguous or contain follow-up/interest signals. These are excluded from the no-contact utilisation-risk score.",
+      oneDialRecordRate: "Matched records a salesperson called exactly once divided by matched records they dialed. This is a neutral activity count.",
+      validOneDialOutcome: "One-dial records with exact direct-customer wrong-number or opt-out evidence.",
+      literalOneDialNoContact: "One-dial records with exact no-answer, machine-voicemail, or carrier-system evidence. A blank transcript is not no-contact evidence.",
+      literalOneDialNoContactNoLater: "Literal one-dial no-contact records with no later matching call observed for the same stable customer/contact/lead ID. This is activity triage, not under-utilisation or performance evidence.",
+      oneDialNeedsReview: "One-dial records without a validated literal state. Semantic meaning is unavailable, so these records are excluded from automated decisions.",
       noLaterCallByAnyoneRate: "Matched records where no later call to the same anchor appears after that salesperson's first dial in the current upload.",
       patternRows: "Business segment, source, and region rows show what types of matched records are retried versus left as one-dial records."
     },

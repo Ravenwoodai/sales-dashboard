@@ -4,6 +4,10 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
+const {
+  assertLocalModelSubmissionAllowed,
+  localModelCapabilitySummary
+} = require("./localModelCapability");
 
 const DEFAULT_LAYER_PATH = "C:\\Users\\User\\Desktop\\ai-execution-layer";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
@@ -44,6 +48,17 @@ function publicAiExecutionStatus(config = resolveAiExecutionConfig()) {
   if (config.enabled && !config.projectApiKey) missing.push("project_api_key");
   if (config.enabled && !config.baseUrl) missing.push("base_url");
 
+  let capabilityPolicy;
+  try {
+    capabilityPolicy = localModelCapabilitySummary();
+  } catch (error) {
+    capabilityPolicy = {
+      programStatus: "register_unavailable",
+      liveSubmissionPermitted: false,
+      operationalConsumptionPermitted: false,
+      error: error.message
+    };
+  }
   return {
     enabled: Boolean(config.enabled),
     configured: Boolean(config.enabled && config.projectApiKey && config.baseUrl && config.layerPathExists),
@@ -54,7 +69,8 @@ function publicAiExecutionStatus(config = resolveAiExecutionConfig()) {
     model: config.model,
     priority: config.priority,
     responseMode: config.responseMode,
-    missing
+    missing,
+    capabilityPolicy
   };
 }
 
@@ -302,15 +318,61 @@ async function submitAiTask(input, options = {}) {
   const config = options.config || resolveAiExecutionConfig(options.env);
   requireConfigured(config);
   const taskType = options.taskType || config.taskType;
+  const model = options.model || config.model || "auto";
+  const metadata = options.metadata || {};
+  const capability = assertLocalModelSubmissionAllowed({
+    capabilityId: options.capabilityId,
+    taskType,
+    evaluationGoal: options.evaluationGoal,
+    model,
+    providerModel: options.providerModel,
+    modelDigest: options.modelDigest,
+    promptHash: options.promptHash,
+    schemaVersion: options.schemaVersion,
+    schemaHash: options.schemaHash,
+    inferenceSettingsHash: options.inferenceSettingsHash,
+    inferenceSettings: options.inferenceSettings,
+    executionContractRevision: options.executionContractRevision,
+    populationId: options.populationId,
+    populationDefinitionHash: options.populationDefinitionHash,
+    metadata,
+    input
+  }, {
+    register: options.capabilityRegister,
+    registerPath: options.capabilityRegisterPath
+  });
+  const contract = capability.promotionContract || {};
+  const pinnedInput = {
+    ...input,
+    execution_constraints: {
+      ...(input?.execution_constraints || {}),
+      max_completion_tokens: Number(contract.inference_settings.maximum_completion_tokens)
+    }
+  };
   const body = {
     task_type: taskType,
-    input,
-    model: options.model || config.model || "auto",
+    input: pinnedInput,
+    model: contract.model_key,
     priority: options.priority || config.priority || "normal",
     response_mode: options.responseMode || config.responseMode || "async",
-    metadata: options.metadata || {}
+    metadata: {
+      ...metadata,
+      capability_id: capability.capabilityId,
+      capability_register_hash: capability.registerHash,
+      provider_model: contract.provider_model,
+      model_digest: contract.model_digest,
+      prompt_hash: contract.prompt_hash,
+      schema_version: contract.schema_version,
+      schema_hash: contract.schema_hash,
+      inference_settings_hash: contract.inference_settings_hash,
+      inference_settings: contract.inference_settings,
+      execution_contract_revision: contract.execution_contract_revision,
+      population_id: contract.supported_population.population_id,
+      population_definition_hash: contract.supported_population.definition_hash,
+      promotion_contract_hash: capability.promotionContractHash
+    }
   };
-  const idempotencyKey = options.idempotencyKey || `sales-dashboard:${taskType}:${hash(JSON.stringify(input)).slice(0, 32)}`;
+  const idempotencyKey = options.idempotencyKey || `sales-dashboard:${taskType}:${hash(JSON.stringify(pinnedInput)).slice(0, 32)}`;
   return requestJson(`${config.baseUrl}/run-task`, {
     method: "POST",
     headers: {
@@ -331,6 +393,132 @@ async function getAiJob(jobId, options = {}) {
     headers: {
       "Authorization": `Bearer ${config.projectApiKey}`
     }
+  }, options.fetchImpl);
+}
+
+async function submitAiBatch(items, options = {}) {
+  const config = options.config || resolveAiExecutionConfig(options.env);
+  requireConfigured(config);
+  if (!Array.isArray(items) || !items.length) throw new Error("AI execution batch requires at least one item.");
+  const taskType = options.taskType || config.taskType;
+  const model = options.model || config.model || "auto";
+  const priority = options.priority || config.priority || "normal";
+  const capabilityOptions = {
+    register: options.capabilityRegister,
+    registerPath: options.capabilityRegisterPath
+  };
+  const itemDecisions = items.map((item) => assertLocalModelSubmissionAllowed({
+    capabilityId: item.capabilityId || options.capabilityId,
+    taskType: item.taskType || item.task_type || taskType,
+    evaluationGoal: item.evaluationGoal || options.evaluationGoal,
+    model: item.model || model,
+    providerModel: item.providerModel || options.providerModel,
+    modelDigest: item.modelDigest || options.modelDigest,
+    promptHash: item.promptHash || options.promptHash,
+    schemaVersion: item.schemaVersion || options.schemaVersion,
+    schemaHash: item.schemaHash || options.schemaHash,
+    inferenceSettingsHash: item.inferenceSettingsHash || options.inferenceSettingsHash,
+    inferenceSettings: item.inferenceSettings || options.inferenceSettings,
+    executionContractRevision: item.executionContractRevision || options.executionContractRevision,
+    populationId: item.populationId || options.populationId,
+    populationDefinitionHash: item.populationDefinitionHash || options.populationDefinitionHash,
+    metadata: { ...(options.metadata || {}), ...(item.metadata || {}) },
+    input: item.input
+  }, capabilityOptions));
+  const body = {
+    batch_name: clean(options.batchName) || "Sales Dashboard controlled batch",
+    metadata: options.metadata || {},
+    defaults: {
+      task_type: taskType,
+      model,
+      priority,
+      response_mode: "async"
+    },
+    items: items.map((item, index) => {
+      const capability = itemDecisions[index];
+      const contract = capability.promotionContract || {};
+      return {
+        item_id: clean(item.itemId || item.item_id) || `item-${index + 1}`,
+        task_type: item.taskType || item.task_type || taskType,
+        input: {
+          ...item.input,
+          execution_constraints: {
+            ...(item.input?.execution_constraints || {}),
+            max_completion_tokens: Number(contract.inference_settings.maximum_completion_tokens)
+          }
+        },
+        model: contract.model_key,
+        priority: item.priority || priority,
+        response_mode: "async",
+        metadata: {
+          ...(item.metadata || {}),
+          capability_id: capability.capabilityId,
+          capability_register_hash: capability.registerHash,
+          provider_model: contract.provider_model,
+          model_digest: contract.model_digest,
+          prompt_hash: contract.prompt_hash,
+          schema_version: contract.schema_version,
+          schema_hash: contract.schema_hash,
+          inference_settings_hash: contract.inference_settings_hash,
+          inference_settings: contract.inference_settings,
+          execution_contract_revision: contract.execution_contract_revision,
+          population_id: contract.supported_population.population_id,
+          population_definition_hash: contract.supported_population.definition_hash,
+          promotion_contract_hash: capability.promotionContractHash
+        },
+        ...(clean(item.idempotencyKey || item.idempotency_key)
+          ? { idempotency_key: clean(item.idempotencyKey || item.idempotency_key) }
+          : {})
+      };
+    })
+  };
+  const idempotencyKey = clean(options.idempotencyKey)
+    || `sales-dashboard:batch:${taskType}:${hash(JSON.stringify(body)).slice(0, 32)}`;
+  return requestJson(`${config.baseUrl}/run-batch`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${config.projectApiKey}`,
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+      ...(options.correlationId ? { "X-Correlation-ID": options.correlationId } : {})
+    },
+    body: JSON.stringify(body)
+  }, options.fetchImpl);
+}
+
+async function getAiBatch(batchId, options = {}) {
+  const config = options.config || resolveAiExecutionConfig(options.env);
+  requireConfigured(config);
+  return requestJson(`${config.baseUrl}/batches/${encodeURIComponent(batchId)}`, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${config.projectApiKey}`
+    }
+  }, options.fetchImpl);
+}
+
+async function recordAiJobFeedback(jobId, feedback = {}, options = {}) {
+  const config = options.config || resolveAiExecutionConfig(options.env);
+  requireConfigured(config);
+  const label = clean(feedback.label).toLowerCase();
+  if (!["accepted", "rejected", "fallback_grade"].includes(label)) {
+    const error = new Error("AI job feedback label must be accepted, rejected, or fallback_grade.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return requestJson(`${config.baseUrl}/jobs/${encodeURIComponent(jobId)}/feedback`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${config.projectApiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      label,
+      notes: clean(feedback.notes).slice(0, 4000) || null,
+      metadata: feedback.metadata && typeof feedback.metadata === "object" && !Array.isArray(feedback.metadata)
+        ? feedback.metadata
+        : {}
+    })
   }, options.fetchImpl);
 }
 
@@ -377,10 +565,13 @@ module.exports = {
   buildTranscriptIntelligenceInput,
   buildTranscriptEvaluationInput,
   checkAiExecutionHealth,
+  getAiBatch,
   getAiJob,
   publicAiExecutionStatus,
+  recordAiJobFeedback,
   resolveAiExecutionConfig,
   safeRawFieldsForAi,
+  submitAiBatch,
   submitAiTask,
   submitTranscriptIntelligenceExtraction,
   submitTranscriptEvaluation

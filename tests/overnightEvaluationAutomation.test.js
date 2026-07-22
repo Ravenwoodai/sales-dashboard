@@ -3,6 +3,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
+  ADHOC_FOUNDATION_SOURCE_TYPE,
+  ADHOC_SPECIALIST_RECOVERY_SOURCE_TYPE,
   activeRuns,
   beforeSubmissionCutoff,
   buildTypedSpecialistRecoveryBacklog,
@@ -84,6 +86,17 @@ test("active run detection is scoped to the active import", () => {
   assert.deepEqual(activeRuns(studio, "import-1").map((run) => run.id), ["foundation-1"]);
 });
 
+test("empty queued run records do not block a controller when they contain no execution jobs", () => {
+  const orphan = parent({
+    status: "queued",
+    queuedJobCount: 0,
+    queuedJobs: [],
+    completedCallCount: 0,
+    failedCallCount: 0
+  });
+  assert.deepEqual(activeRuns({ evaluationRuns: [orphan] }, "import-1"), []);
+});
+
 test("once automation starts, a newer manual Foundation run cannot replace its quality boundary", () => {
   const automated = parent({
     id: "automated",
@@ -95,6 +108,23 @@ test("once automation starts, a newer manual Foundation run cannot replace its q
   const boundary = latestFoundationBoundary({ evaluationRuns: [automated, manual] }, "import-1");
   assert.equal(boundary.parent.id, "automated");
   assert.equal(boundary.reason, "specialist_routing_errors");
+});
+
+test("a newer ad hoc Foundation run becomes the shared automated quality boundary", () => {
+  const overnight = parent({
+    id: "overnight",
+    createdAt: "2026-07-18T12:00:00Z",
+    callSelection: { sourceType: "overnight_foundation_backlog" }
+  });
+  const adhoc = parent({
+    id: "adhoc",
+    createdAt: "2026-07-18T13:00:00Z",
+    failedCallCount: 10,
+    callSelection: { sourceType: ADHOC_FOUNDATION_SOURCE_TYPE }
+  });
+  const boundary = latestFoundationBoundary({ evaluationRuns: [overnight, adhoc] }, "import-1");
+  assert.equal(boundary.parent.id, "adhoc");
+  assert.equal(boundary.reason, "foundation_failure_rate_at_or_above_2_percent");
 });
 
 test("typed specialist recovery derives missing checks from Foundation routes and ignores legacy placeholders", () => {
@@ -177,4 +207,10 @@ test("specialist recovery boundary stops on any failed or incomplete call", () =
   assert.equal(failed.reason, "specialist_recovery_quality_failure");
   const partial = latestSpecialistRecoveryBoundary({ evaluationRuns: [{ ...clean, status: "partially_completed" }] }, "import-1");
   assert.equal(partial.reason, "specialist_recovery_quality_failure");
+
+  const adhoc = latestSpecialistRecoveryBoundary({
+    evaluationRuns: [{ ...clean, id: "recovery-adhoc", callSelection: { sourceType: ADHOC_SPECIALIST_RECOVERY_SOURCE_TYPE } }]
+  }, "import-1");
+  assert.equal(adhoc.safe, true);
+  assert.equal(adhoc.run.id, "recovery-adhoc");
 });

@@ -1,124 +1,95 @@
 # Project Context
 
-## 1. System Overview
-Sales Dashboard is a local Node.js web app for scheduled CSV/XLSX sales-call transcript exports. It profiles import quality, deduplicates calls, runs deterministic local transcript evaluation, parks optional campaign/allocation imports outside active analytics, optionally submits local model jobs through the AI Execution Layer, persists derived local history, and renders a manager-facing dashboard without using unsupported phone/date, sales, or revenue assumptions.
+## System Overview
 
-## 2. Core Objective
-Make the current call export useful and safe: surface contact quality, meaningful conversations, follow-up signals, lead reattempt behaviour, lead harvest candidates, call-CSV source/list quality, manager review queues, import history, and generated reports while preserving privacy and data-confidence boundaries. Preserve separate campaign/allocation data only as parked diagnostics, and preserve untrusted legacy disposition/note fields only in raw source storage outside active product use.
+Sales Dashboard is a local Node.js web application for scheduled CSV/XLSX sales-call exports. It profiles the import, deduplicates calls, derives supported source/stable-ID facts, applies conservative literal transcript rules, persists local evidence, and renders manager-facing workspaces.
 
-## 3. Key Entities
-- CSV/XLSX import
-- Canonical call
-- Local call evaluation
-- Evidence snippet
-- Lead reattempt bucket
-- Lead harvest candidate
-- Self-sourcing attribution audit
-- Weekly lead intelligence snapshot
-- Alert event
-- Alert lifecycle action
-- Manager review queue item
-- Manager review record
-- Manager review correction
-- Manager review history event
-- Evaluation Studio knowledgebase entry
-- Evaluation Studio template
-- Evaluation Studio run
-- Evaluation Studio result
-- Generated report
-- Global filter state
-- Parked allocation import diagnostic
-- Local AI job reference
-- Salesperson scorecard
-- Source/list quality row
-- Ignored field guardrail
+The current system has no promoted semantic local-model capability. Historical Qwen jobs/results are retained as a read-only research archive with authority `none`.
 
-## 4. System Flow
-1. Start with `node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"` or set `SALES_DASHBOARD_CSV_PATH`.
-2. Optionally provide `--allocations <path>` or `SALES_DASHBOARD_ALLOCATIONS_PATH` for a parked allocation CSV/XLSX diagnostic.
-3. Parse CSV/XLSX first-sheet tabular inputs with `src/sourceFile.js`, `src/csvParser.js`, and `src/xlsxReader.js`.
-4. Deduplicate calls by `call_id`, ignore privacy-reduced fields for analytics, and parse valid customer import/create dates only for source-quality Record Age.
-5. Evaluate each transcript locally with deterministic rules in `src/transcriptEvaluator.js`.
-6. Link follow-up signals through stable source IDs only.
-7. Build active call/transcript metrics, deterministic one-dial lead reattempt buckets, lead harvest candidates, an isolated long-held-record/import attribution audit, a separate weekly-report supply snapshot, parked allocation status, alerts, sanitized evaluation rows, and explorer rows in `src/analysis.js`.
-8. Format all UI-facing dates and times through `src/dateTimeFormat.js` using Australian `DD/MM/YYYY HH:mm:ss AEST` display. Source call times are labelled as source call time in AEST without browser timezone conversion; system timestamps are converted to fixed AEST.
-9. Apply shared global call/transcript filters with `src/globalFilters.js` for summary APIs, dashboard cards, alerts, drill-downs, and explorer rows.
-10. Merge alert lifecycle state with generated call-data alerts using `src/alertLifecycle.js`.
-11. Apply governed manager review overlays from `src/managerReview.js` and `src/storage.js` so review status, corrections, and history remain separate from raw/deterministic/LLM/alert evidence.
-12. Manage Evaluation Studio knowledgebase entries, strict-schema templates with safe custom evaluation goals, Call Intelligence Foundation v6/schema v3, typed Callback/Procedure/Objection specialist contracts, authoritative Offer Acceptance, complete-source transcript audit metadata, selective routing, bounded automatic harvest, versioned results with provenance, report-safe rollups, and result-to-manager-review handoffs through `src/evaluationStudio.js`, `src/storage.js`, the standalone `/evaluation-studio` page, and the `/api/evaluation-studio` routes.
-13. Project each call's stored results through `src/callIntelligenceAggregate.js`, keeping offer acceptance, quoted context, intended payment, payment verification, invoice, fulfilment, revenue, and CRM state independent while exposing exact evidence, authority conflicts, specialist lifecycle, provenance, and source-date relative-date policy.
-14. Persist derived import history, parked allocation metadata, evaluation artifacts, alert lifecycle history, manager review correction/history state, Evaluation Studio artifacts/results, and reports through `src/storage.js`.
-15. Classify stored reports so normal report APIs and dashboard report lists expose active reports only while preserving parked/stale records internally.
-16. Submit optional local model transcript jobs and explicit Evaluation Studio runs through `src/aiExecutionLayer.js` and `C:\Users\User\Desktop\ai-execution-layer`. Evaluation Studio jobs require the Execution Layer's `dynamic-schema-v1` contract and one active leased worker; the existing `/api/ai/status?health=true` proxy exposes the sanitised worker state before a large batch is launched.
-17. Render shared-filter manager workspaces selected by `view=overview|harvest|follow_up|reviews|team|intelligence|records` through `src/dashboardRenderer.js`, while keeping Evaluation Studio at `/evaluation-studio`.
-18. Keep historical Evaluation Studio knowledge visible for governance but exclude entries marked `pending_manager_approval` from new run snapshots and local model input until a manager explicitly marks them `approved_current`.
+## Product Objective
 
-## 5. Architecture Snapshot
-- `src/main.js`: local HTTP server, `/health`, `/api/summary`, and optional reload route.
-- `src/csvParser.js`: CSV parser.
-- `src/sourceFile.js`: CSV/XLSX source-file adapter.
-- `src/xlsxReader.js`: minimal XLSX first-sheet reader using built-in Node modules.
-- `src/allocationCoverage.js`: preserved allocation workbook parser, parked from active analytics.
-- `src/allocationParking.js`: parked allocation diagnostic, stale report classification, and historical parked-data filtering helpers.
-- `src/globalFilters.js`: shared active call/transcript filter state, option generation, missing-value buckets, and denominator summaries.
-- `src/alertLifecycle.js`: alert status, active/closed count, server-resolved local actor, manager note, and lifecycle-history helpers.
-- `src/managerReview.js`: manager review status/scope/correction allowlist, local actor resolution, correction overlay, and review-history helpers.
-- `src/evaluationStudio.js`: Evaluation Studio knowledgebase/template/run/result model, Call Intelligence Foundation v3 schema/validation/reporting including represented-party proof/repair, final-state and long-term-nurture reconciliation, shared Foundation call context, independent opportunity/measurement/efficiency lenses, deterministic specialist routing, safe custom goals, Lead Record and Offer Acceptance validation, run governance, bounded batch harvesting, provenance, evidence normalization, and guarded local-model input construction.
-- `src/callIntelligenceAggregate.js`: versioned call commercial lifecycle, authority conflict, specialist state, exact-evidence, provenance, and Australian relative-date projection.
-- `src/dateTimeFormat.js`: Australian/AEST UI date/time formatter for source call times, filters, reports, and stored system timestamps.
-- `src/transcriptEvaluator.js`: local transcript-quality, contact, outcome, follow-up, and risk classifier.
-- `src/analysis.js`: import profiling, deduplication, active/filtered call-transcript metrics, parked allocation status, deterministic lead reattempt buckets, lead harvest candidates, alerts, follow-up status, manager-review governance overlays, and sanitized rows.
-- `src/leadHarvestAnalytics.js`: positive-response callback candidate queue with possible name/timing extraction and stable-ID later-call labels.
-- `src/selfSourcingAttribution.js`: New Business long-held-record, historical-import, and salesperson-created attribution-review model; Crystal Reports are not an input dependency.
-- `src/weeklyLeadIntelligence.js`: supplied weekly-report snapshot for lead supply, trend, and workflow catalogue; it remains separate from active call metrics and commercial attribution.
-- `src/storage.js`: ignored local JSON store, import artifact writer, generated report saver, active report visibility view, alert lifecycle persistence, and manager review correction/history persistence.
-- `src/aiExecutionLayer.js`: optional local AI Execution Layer client for transcript jobs and sanitised worker-health proxying.
-- `src/dashboardRenderer.js`: HTML renderer, escaping layer, focused manager workspace navigation, and standalone Evaluation Studio presentation with separate readable knowledgebase/template libraries and expandable per-item editors.
-- `tests/analysis.test.js`: parser and evaluator checks.
-- `tests/storage.test.js`: persistence and report-library checks.
+Give managers a system they can use confidently by making every active conclusion traceable to one of four sources:
 
-## 6. Agent Orchestration Model
-- Startup map: `AGENTS.md`
-- Operating rules: `AI_SYSTEM.md`
-- Instructions: `agent/INSTRUCTIONS.md`
-- Backlog: `runtime/AUTONOMOUS_BACKLOG.md`
-- UI standard: `docs/UI_DESIGN_STANDARD.md`
-- Plans and quality: `docs/PLANS.md` and `docs/QUALITY_SCORE.md`
+1. a permitted source field;
+2. an exact stable-ID relationship;
+3. an exact literal transcript excerpt covered by a closed rule;
+4. an explicit manager-authored review overlay.
 
-## 7. Current State
-- Template: web-app
-- Stack: Node.js
-- Runtime type: web
-- Run command: `node src/main.js`
-- Sample-data run command: `node src/main.js --csv "C:\Users\User\Downloads\July 1 Data.csv"`
-- Parked allocation run command: `node src/main.js --csv "C:\Users\User\Downloads\CallData 07.07.2026.xlsx" --allocations "C:\Users\User\Downloads\allocations 07.07.2026.xlsx"`
-- Test command: `node --test tests/*.test.js`
-- Open URL: `http://127.0.0.1:3000`
-- Healthcheck URL: `http://127.0.0.1:3000/health`
-- Alerts API: `http://127.0.0.1:3000/api/alerts`
-- Imports API: `http://127.0.0.1:3000/api/imports`
-- Reports API: `http://127.0.0.1:3000/api/reports`
-- Allocations API: `http://127.0.0.1:3000/api/allocations`
-- Manager Reviews API: `http://127.0.0.1:3000/api/manager-reviews`
-- Lead Harvest API: `http://127.0.0.1:3000/api/lead-harvest`
-- AI status API: `http://127.0.0.1:3000/api/ai/status`
-- Evaluation Studio UI: `http://127.0.0.1:3000/evaluation-studio`
-- Evaluation Studio API: `http://127.0.0.1:3000/api/evaluation-studio`
-- Evaluation Studio Prompt Tests API: `POST http://127.0.0.1:3000/api/evaluation-studio/prompt-tests`
-- Evaluation Studio Report Rollups API: `http://127.0.0.1:3000/api/evaluation-studio/report-rollups`
-- Evaluation Studio Results API: `http://127.0.0.1:3000/api/evaluation-studio/results`
-- Evaluation Studio Result Review API: `POST http://127.0.0.1:3000/api/evaluation-studio/results/<result-id>/review`
-- Local store: `data/store/state.json`, ignored by Git.
+Anything else remains unknown.
 
-## 8. Source Map
-- `/docs/PROJECT.md`
-- `/docs/SPEC.md`
-- `/docs/ARCHITECTURE.md`
-- `/docs/SYSTEM_MAP.md`
-- `/docs/UI_DESIGN_STANDARD.md`
-- `/docs/AGENT_CONTEXT.md`
-- `/runtime/AUTONOMOUS_BACKLOG.md`
+## Current Flow
 
-## 9. Metadata
-- Last Generated: 2026-07-18T10:30:00.000Z
-- Confidence Level: high
+1. `src/main.js` resolves local source paths and starts the server.
+2. `src/sourceFile.js`, `src/csvParser.js`, and `src/xlsxReader.js` normalise input.
+3. `src/analysis.js` deduplicates calls, profiles source coverage, applies filters, and derives exact reattempt facts.
+4. `src/transcriptEvaluator.js` and `src/transcriptIntelligence.js` detect only approved literal states/events and retain exact evidence.
+5. `src/intelligenceDatabase.js` writes the active deterministic projection with all semantic fields null.
+6. `src/storage.js` merges alert lifecycle, manager review, reports, and research-archive pointers.
+7. `src/dashboardRenderer.js` renders the active UI and proof pages.
+8. `src/localModelCapability.js` validates/pins the current register and blocks any unpromoted submission or consumption.
+9. `src/evaluationValidationLab.js` builds isolated genuinely-unseen manifests, validates exact-quote human truth, freezes benchmarks, and compares future candidates without promotion side effects.
+10. `src/voicemailRecovery.js` computes the closed voicemail/message/chronology/later-inbound evidence lane without semantic, causal, or commercial inference.
+
+## Active Product Surfaces
+
+- Overview: dataset, filters, provenance, activity, literal coverage, reattempt, and record/source facts.
+- Opportunities: unavailable until a relevant capability is promoted.
+- Follow-Up: literal reattempt activity only.
+- Alerts & Reviews: literal alerts and manager-authored workflow.
+- Intelligence: literal transcript triage with evidence/provenance.
+- Records & Reports: source facts and safe reports.
+- Evaluation Studio: capability catalog, deterministic voicemail/inbound evidence, isolated benchmark Validation Lab, and a separate read-only historical research archive.
+- Call proof: transcript timeline, exact evidence, research warnings, and manager review.
+
+Lead Harvest and model-backed action queues are retired.
+
+## Capability Boundary
+
+- Read `docs/LOCAL_MODEL_CAPABILITY_POLICY.md` and `runtime/LOCAL_MODEL_CAPABILITY_REGISTER_2026-07-22.json` before any model work.
+- Current register: 20 audited capabilities, zero promoted.
+- Model submission, polling for operational use, result ingestion, automatic routing, Studio run/prompt/resume/harvest, overnight execution, and ad-hoc execution all fail closed.
+- Valid JSON, exact quote copying, completed jobs, passing tests, and a healthy model service are technical evidence only.
+- Qwen Spiel v3-v6 is stopped. Repeated failure on narrower facts prohibits another same-model rescue.
+
+## Data Boundaries
+
+- Raw source stays local and out of Git.
+- `dialled_phone_number`/partial phones are never used for matching or display.
+- `NoSaleType` and `Baz_DetailedNotes` are excluded untrusted legacy fields.
+- Allocation imports are parked.
+- Stable-ID later attempts prove only another related record exists in the uploaded window.
+- Semantic fields remain null/unknown unless manager-authored.
+- No sales, payment, fulfilment, revenue, ROI, order value, or CRM outcome claims.
+
+## Storage
+
+- `data/store/state.json`: import/report/alert/review history and research job references.
+- `data/store/intelligence.sqlite`: active deterministic call/event/risk/lead projection.
+- `data/store/evaluation-studio.sqlite`: historical knowledge/templates/runs/results.
+- `data/store/evaluation-validation-lab.json`: isolated benchmark manifests, exact-evidence human labels, freeze fingerprints, and candidate comparison records.
+
+## Runtime
+
+- Start: `node src/main.js`
+- Current-data example: `node src/main.js --csv "data/source/CallData 07.07.2026.csv"`
+- Tests: `npm test`
+- Default URL: `http://127.0.0.1:3000`
+- Health: `http://127.0.0.1:3000/health`
+- Verified 2026-07-22 runtime used port 3040 with `SALES_DASHBOARD_AI_ENABLED=false`.
+- The Windows task `Sales Dashboard Overnight Evaluations` is present but disabled. Its trigger remains recorded for audit; it cannot run while disabled, and controller capability preflight must still reject unpromoted work.
+- A separate Execution Layer may remain running for other work; it does not enable this application.
+
+## Verified Current State (2026-07-22)
+
+- 19,914 active calls.
+- Every active call has `llm_status=not_requested`.
+- All audited semantic call/lead/event fields are null.
+- Literal outcomes only: voicemail, system audio, wrong number, opt-out, or unknown.
+- No active Evaluation Studio runs or model jobs.
+- Deterministic voicemail/inbound lane: 1,972 exact voicemail encounters, 22 literal callback requests, 0 exact approved-template messages, 135 later-inbound relationships, and 113 clean chronology links.
+- Blocked write endpoints leave stored counts unchanged.
+- Browser verification passed across all workspaces, Evaluation Studio, and a call page with no console errors/warnings.
+
+## Future Work Boundary
+
+Improve deterministic reporting, literal evidence, usability, performance, and manager review. The isolated Validation Lab supports 10-call smoke, 50-call development, at least 100-call promotion, and 25-call shadow partitions. A future semantic evaluator requires a materially different candidate or deterministic rule, a genuinely unseen balanced frozen promotion set, predeclared evidence/accuracy/critical-error/resource thresholds, and separate external operational approval.
