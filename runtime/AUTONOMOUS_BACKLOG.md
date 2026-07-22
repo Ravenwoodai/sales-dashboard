@@ -26,6 +26,7 @@ Allowed statuses: `TODO`, `IN_PROGRESS`, `BLOCKED`, `DONE`.
 | 20 | P0 | Isolate genuinely unseen benchmark truth | DONE | - | - | Manifests exclude prior/current use, labels require exact quotes in batches of at most five, freezes are immutable, and no benchmark route calls a model |
 | 21 | P1 | Add deterministic voicemail and inbound evidence | DONE | - | - | Exact prompt/message/chronology/linkage/handler facts are visible without causal, receptiveness, or commercial inference |
 | 22 | P0 | Validate a materially different semantic candidate | BLOCKED | No approved candidate; Qwen family hard-stopped | Use the existing strict promotion partition only after a materially different candidate and explicit authorisation exist | At least 100 frozen balanced calls pass predeclared thresholds/budgets, then receive separate external approval |
+| 23 | P1 | Add optional voicemail-pilot attribution import | IN_PROGRESS | Financial/attribution implementation requires explicit GPT-5.6 Sol high confirmation | Implement `docs/VOICEMAIL_CALLBACK_ATTRIBUTION.md` without model use or phone matching | Invalid/ambiguous records fail closed; explicit callback/sale/profit facts retain provenance; tests, browser checks and trusted-boundary audit pass |
 
 ## Governing Rule
 

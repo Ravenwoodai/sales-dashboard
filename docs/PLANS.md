@@ -2,6 +2,14 @@
 
 ## Active Plan
 
+### Voicemail Pilot Attribution
+
+- Goal: add an optional source-system pilot export that can prove message completion, explicit callback linkage, handler, CRM sale and gross profit without inference.
+- Design: `docs/VOICEMAIL_CALLBACK_ATTRIBUTION.md`.
+- Current source finding: the call export has no voicemail-event, callback-attribution, sale-ID/date/status, revenue, gross-profit or currency fields. `OrderCount` is prior-history context only and cannot be attributed to a call.
+- Safety: keep phone matching, transcript sale inference, model output and observational causation out of the implementation.
+- Status: source audit and contract complete; high-risk implementation is paused until the active development model is explicitly confirmed as GPT-5.6 Sol with high reasoning.
+
 ### Trusted Local Product Boundary
 
 - Goal: keep Sales Dashboard useful without exposing any decision that the current Qwen model cannot make accurately.
