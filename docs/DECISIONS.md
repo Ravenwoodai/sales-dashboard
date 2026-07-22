@@ -442,3 +442,18 @@ Consequences:
 - the deterministic voicemail lane may state exact prompt, wording, chronology, stable-ID linkage, later inbound observation, elapsed time, and source-proven handler facts
 - corrupt chronology, missing stable IDs, multiple plausible inbound records, intervening matching outbound attempts, and missing handler proof become unknown/not-scored
 - callback causation, receptiveness, sale, conversion, gross profit, and ROI remain unknown unless an authoritative source such as CRM supplies them
+
+## ADR-036 - Keep Voicemail Pilot Attribution Optional, Read Only, And Fail Closed
+Date: 2026-07-23
+Status: Accepted
+Decision: Accept an optional source-system voicemail-pilot CSV/XLSX as a separate in-memory validation input. Join only by exact active-import call IDs and permitted stable IDs, preserve attribution provenance, validate commercial facts independently, and expose only a sanitized read-only report in Evaluation Studio. Do not persist raw pilot rows or create any operational action.
+Context: The active call export can prove call direction, timestamps, literal voicemail, salesperson/user and stable IDs, but it has no voicemail-event, callback-attribution, sale, gross-profit or currency fields. `OrderCount` is prior sales history and cannot prove a call outcome. A commercially useful pilot therefore needs new authoritative source fields without weakening the zero-promoted model boundary or inventing outcomes from transcripts.
+Consequences:
+- preassignment needs an immutable record ID, arm and timestamp no later than the outbound voicemail call
+- invalid assignment identity/chronology stays out of denominators; invalid message, callback, handler, sale or profit evidence becomes measure-level `not_scored`
+- phone matching, `OrderCount`, transcript sale language, model output and mixed-currency aggregation are prohibited
+- telephony, CRM and manager-verified callback provenance remains separate; manager verification requires shared stable IDs
+- a no-callback outcome requires a closed observation timestamp, and treatment/control callback lift requires both arms plus complete equal-duration windows
+- a no-sale/zero-profit denominator requires a separately closed commercial observation timestamp; per-assignment gross profit is withheld unless same-currency commercial coverage is complete across equal-duration windows
+- even a measured comparison is not a causal claim without documented random assignment and pilot controls
+- the pilot path is configured only by CLI/environment, the full path is not exposed, and no raw pilot row enters `state.json`, SQLite, Validation Lab, model input, reviews, queues or CRM

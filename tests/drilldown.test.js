@@ -7,10 +7,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { analyzeCsvText } = require("../src/analysis");
 const { buildDrilldownResult } = require("../src/drilldown");
-const { createServer } = require("../src/main");
+const { createServer, resolveVoicemailPilotPath } = require("../src/main");
 const { readStore, saveBadLeadClaim } = require("../src/storage");
 const { saveLlmIntelligenceResult } = require("../src/intelligenceDatabase");
 const { renderEvaluationStudioPage, renderReportPage } = require("../src/dashboardRenderer");
+const { rowsToCsv } = require("../src/sourceFile");
+const { REQUIRED_COLUMNS: VOICEMAIL_PILOT_COLUMNS } = require("../src/voicemailPilotAttribution");
 
 const header = [
   "dialled_phone_number",
@@ -555,6 +557,93 @@ test("dashboard parks configured allocation data outside active summary and navi
     assert.match(literalActivityHtml, /do not measure[\s\S]*under-utilisation/i);
     assert.doesNotMatch(literalActivityHtml, /Potential lead under-utilisation/i);
   }, { allocationPath });
+});
+
+test("voicemail pilot path resolution supports the explicit CLI flag and environment fallback", () => {
+  assert.equal(
+    resolveVoicemailPilotPath(["--voicemail-pilot", "pilot/source.csv"], {}),
+    path.resolve("pilot/source.csv")
+  );
+  assert.equal(
+    resolveVoicemailPilotPath([], { SALES_DASHBOARD_VOICEMAIL_PILOT_PATH: "pilot/from-env.xlsx" }),
+    path.resolve("pilot/from-env.xlsx")
+  );
+  assert.equal(resolveVoicemailPilotPath([], {}), null);
+});
+
+test("Evaluation Studio loads a strict read-only voicemail pilot without creating model work", async () => {
+  const pilotDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "sales-dashboard-voicemail-pilot-"));
+  const voicemailPilotPath = path.join(pilotDirectory, "pilot.csv");
+  fs.writeFileSync(voicemailPilotPath, rowsToCsv(VOICEMAIL_PILOT_COLUMNS, [{
+    pilot_record_id: "pilot-route-1",
+    pilot_arm: "treatment",
+    pilot_assigned_at: "2026-07-20T08:00:00Z",
+    pilot_currency: "AUD",
+    voicemail_event_id: "vm-route-1",
+    outbound_call_id: "pilot-outbound",
+    message_status: "approved_left",
+    message_template_version: "approved_v1",
+    message_completed_at: "2026-07-20T09:01:00Z",
+    callback_call_id: "pilot-inbound",
+    callback_attribution_source: "telephony_event_link",
+    handler_user_id: "10",
+    crm_lead_id: "customer-pilot",
+    crm_sale_id: "",
+    sale_status: "",
+    sale_recorded_at: "",
+    gross_profit_minor_units: "",
+    currency: "",
+    outcome_observation_completed_at: "2026-07-20T23:00:00Z",
+    commercial_observation_completed_at: "2026-07-20T23:00:00Z"
+  }]), "utf8");
+
+  await withServer(csv([
+    row({
+      call_id: "pilot-outbound",
+      call_date: "20/07/2026",
+      call_time: "09:00:00",
+      customer_id: "customer-pilot",
+      AllocatedLeadID: "lead-pilot",
+      transcription_text: "Outbound call Voicemail: You have reached the mailbox. Please leave a message after the tone. Dylan (CWA): Hi, this is Dylan. If you could give me a call back when you get a chance, that would be great. Thanks."
+    }),
+    row({
+      call_id: "pilot-inbound",
+      call_direction: "in",
+      CallType: "Inbound",
+      call_date: "20/07/2026",
+      call_time: "10:00:00",
+      customer_id: "customer-pilot",
+      AllocatedLeadID: "lead-pilot",
+      transcription_text: "Inbound call Customer: Hi Dylan, I am returning your call. Dylan (CWA): Thanks for calling back."
+    })
+  ]), async ({ baseUrl, storePath }) => {
+    const before = readStore({ storePath });
+    const api = await fetch(`${baseUrl}/api/evaluation-studio`).then((response) => response.json());
+    assert.equal(api.voicemailPilot.status, "ready");
+    assert.equal(api.voicemailPilot.totals.acceptedAssignments, 1);
+    assert.equal(api.voicemailPilot.totals.callbacksObserved, 1);
+    assert.equal(api.voicemailPilot.acceptedRecords[0].callback.handlerClass, "original_salesperson");
+    assert.equal(JSON.stringify(api).includes(voicemailPilotPath), false);
+
+    const health = await fetch(`${baseUrl}/health`).then((response) => response.json());
+    assert.equal(health.voicemail_pilot_path_configured, true);
+    assert.equal(health.voicemail_pilot_status, "ready");
+    assert.equal(health.voicemail_pilot_accepted_assignments, 1);
+    assert.equal(JSON.stringify(health).includes(voicemailPilotPath), false);
+
+    const html = await fetch(`${baseUrl}/evaluation-studio`).then((response) => response.text());
+    assert.match(html, /Voicemail recovery pilot/);
+    assert.match(html, /pilot-route-1/);
+    assert.match(html, /telephony event link/i);
+    assert.match(html, /Callback-lift result withheld/);
+    assert.equal(html.includes(voicemailPilotPath), false);
+    assert.doesNotMatch(html, /Start evaluation|Submit.*model/i);
+
+    const after = readStore({ storePath });
+    assert.equal(after.aiJobs.length, before.aiJobs.length);
+    assert.equal(after.evaluationStudio.evaluationRuns.length, before.evaluationStudio.evaluationRuns.length);
+    assert.equal(after.evaluationStudio.evaluationResults.length, before.evaluationStudio.evaluationResults.length);
+  }, { voicemailPilotPath });
 });
 
 test("dashboard renders active dataset banner and call-data window warnings", async () => {

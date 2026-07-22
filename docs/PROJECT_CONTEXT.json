@@ -15,7 +15,8 @@
     "capability register",
     "benchmark manifest",
     "frozen exact-evidence human label",
-    "deterministic voicemail/inbound evidence relationship"
+    "deterministic voicemail/inbound evidence relationship",
+    "validated read-only voicemail-pilot source fact"
   ],
   "research_only_entities": [
     "local AI job",
@@ -39,6 +40,7 @@
       "Expose every registered capability's exact scope, provenance, exclusions, failure evidence, authority, and permitted next action.",
       "Build isolated genuinely-unseen benchmark manifests and freeze exact-quote human truth separately from manager review and the historical archive.",
       "Compute exact voicemail prompts, literal callback requests, stable-ID chronology, later inbound relationships, and observed handling without causal or commercial inference.",
+      "Optionally validate a local voicemail-pilot export against exact call IDs, source timestamps, stable IDs, event provenance and CRM proof without persisting raw pilot rows.",
       "Reject every model submission or operational consumption while the exact capability is unpromoted."
     ],
     "run_command": "node src/main.js",
@@ -50,6 +52,7 @@
     "src/localModelCapability.js: pinned register validation and submission/consumption assertions",
     "src/evaluationValidationLab.js: isolated unseen manifests, exact-quote labels, immutable freezes, and strict candidate comparisons",
     "src/voicemailRecovery.js: deterministic voicemail/message/chronology/later-inbound/handler evidence",
+    "src/voicemailPilotAttribution.js: optional read-only pilot attribution, commercial proof and equal-window experiment gating",
     "src/analysis.js: source profiling, filters, stable-ID facts, literal alerts, and manager overlays",
     "src/transcriptEvaluator.js: closed literal classification only",
     "src/transcriptIntelligence.js: literal events/outcomes and exact evidence with semantic attributes null",
@@ -81,7 +84,8 @@
     "local_store": "data/store/state.json",
     "active_intelligence_store": "data/store/intelligence.sqlite",
     "research_archive_store": "data/store/evaluation-studio.sqlite",
-    "validation_lab_store": "data/store/evaluation-validation-lab.json"
+    "validation_lab_store": "data/store/evaluation-validation-lab.json",
+    "voicemail_pilot_store": "none; raw rows and the sanitized report are in-memory only"
   },
   "guardrails": {
     "active_semantics": "unknown/null unless manager-authored",
@@ -94,7 +98,9 @@
     "commercial_claims": "sales, payment, fulfilment, revenue, ROI, and CRM outcomes are unsupported",
     "qwen_spiel": "v3-v6 stopped; no same-model rescue or further inference",
     "benchmark_authority": "human calibration truth only; a passing comparison requires external approval and never self-promotes",
-    "voicemail_inbound_claims": "exact deterministic evidence only; callback causation, receptiveness, conversion, sale, revenue, profit, and ROI remain unknown"
+    "voicemail_inbound_claims": "exact deterministic evidence only; callback causation, receptiveness, conversion, sale, revenue, profit, and ROI remain unknown",
+    "voicemail_pilot_claims": "exact source-contract facts only; invalid assignments are excluded, invalid measures are not_scored, incomplete or unequal windows withhold lift, and currencies remain separate",
+    "fixture_uat_store": "must set an isolated SALES_DASHBOARD_STORE_PATH; never use the default active store"
   },
   "sources": [
     "AGENTS.md",
@@ -107,6 +113,6 @@
     "runtime/LOCAL_MODEL_COMPREHENSIVE_AUDIT_2026-07-22.md",
     "runtime/SESSION_HANDOVER.md"
   ],
-  "generated_at": "2026-07-22T22:22:23+10:00",
+  "generated_at": "2026-07-23T09:16:18+10:00",
   "confidence": "high"
 }

@@ -481,6 +481,7 @@ function buildCallProofRow(item) {
     time: clean(row.call_time),
     sourceTime: formatSourceDateTimeValue(row.call_date, row.call_time),
     dateTime: item.dateTime ? item.dateTime.toISOString() : null,
+    userId: clean(row.UserID),
     salesperson: clean(row.Salesperson) || "Unknown",
     source: sourceAttribution.customerImportSource,
     region: regionNameFor(row),

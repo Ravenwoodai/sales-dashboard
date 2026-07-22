@@ -19,6 +19,7 @@ The current product deliberately has no automated semantic evaluator. The audite
 ## MVP Scope
 
 - Load a call CSV/XLSX from `--csv <path>` or `SALES_DASHBOARD_CSV_PATH`.
+- Optionally load a separate voicemail-pilot CSV/XLSX from `--voicemail-pilot <path>` or `SALES_DASHBOARD_VOICEMAIL_PILOT_PATH`; validate it read-only and never persist its raw rows into the active stores.
 - Optionally parse an allocation file from `--allocations <path>` or `SALES_DASHBOARD_ALLOCATIONS_PATH`, but park it outside active analytics.
 - Deduplicate calls by `call_id`.
 - Use source facts such as timestamps, direction, method, salesperson, source, region, record dates, and transcript availability.
@@ -32,6 +33,7 @@ The current product deliberately has no automated semantic evaluator. The audite
 - Make Evaluation Studio a controlled validation laboratory: capability truth, deterministic evidence, benchmark-only human labels, and an unmistakable read-only historical research archive with authority `none`.
 - Build research benchmark manifests from genuinely unseen calls only, show no more than five direct-quote questions at once, and freeze exact evidence-backed labels before any future candidate inference.
 - Measure the deterministic voicemail/inbound lane from exact source/literal facts without claiming callback causation, receptiveness, sale, or conversion.
+- Measure a controlled voicemail pilot only from exact preassignment, event-link, call-ID, source-handler, CRM-sale and currency facts. Withhold treatment/control lift until both arms have complete equal-duration observation windows.
 - Retire Lead Harvest and every model-backed operational route, queue, rollup, ranking, or action.
 - Persist local history under the ignored `data/` directory.
 - Keep reports based on trusted source/literal evidence; preserve unsafe historical reports without exposing them as active truth.
@@ -71,6 +73,7 @@ The current product deliberately has no automated semantic evaluator. The audite
 - Evaluation Studio has no model submission controls. Its only writes are isolated benchmark-truth drafts/labels/freeze records; these cannot mutate the archive or create operational work.
 - Every registered capability shows exact scope, status, provenance, authority, exclusions, evidence, failure reason, and permitted next action.
 - The voicemail/inbound lane recomputes counts from the active import and keeps ambiguous chronology/linkage `unknown`/`not_scored`.
+- The optional pilot import rejects invalid assignments before denominators, keeps invalid downstream measures `not_scored`, separates attribution provenance and currencies, and creates no job, run, result, queue, review or CRM action.
 - Call pages show readable transcript proof, provenance, historical research warnings, and manager review without exposing unsupported raw fields.
 - `NoSaleType` and `Baz_DetailedNotes` remain excluded from active computation and display.
 - Phone values and malformed date fragments are not used for matching or analytics.

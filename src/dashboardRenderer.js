@@ -2614,6 +2614,98 @@ function renderVoicemailInboundLane(report = {}) {
   </section>`;
 }
 
+function formatMinorCurrency(minorUnits, currency) {
+  if (!Number.isFinite(Number(minorUnits)) || !currency) return "n/a";
+  return `${currency} ${(Number(minorUnits) / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function pilotMeasureMarkup(measure = {}, value = "") {
+  const tone = measure.status === "observed"
+    ? "success"
+    : measure.status === "not_scored"
+      ? "danger"
+      : measure.status === "unknown_incomplete_window"
+        ? "warning"
+        : "neutral";
+  const reasons = (measure.reasons || []).map(humanizeSlug).join("; ");
+  return `${badge(humanizeSlug(measure.status || "unknown"), tone)}${value ? `<br /><span class="small">${escapeHtml(value)}</span>` : ""}${reasons ? `<br /><span class="muted small">${escapeHtml(reasons)}</span>` : ""}`;
+}
+
+function renderVoicemailPilotAttribution(report = {}) {
+  const totals = report.totals || {};
+  const configured = report.configured === true;
+  const invalidSource = ["load_error", "invalid_source"].includes(report.status);
+  const statusTone = !configured ? "neutral" : invalidSource ? "danger" : report.status === "ready" ? "success" : "warning";
+  const itt = report.intentionToTreat || {};
+  const armRows = report.arms || [];
+  const acceptedExamples = (report.acceptedRecords || []).slice(0, 20);
+  const rejectedExamples = (report.rejectedRecords || []).slice(0, 20);
+  const sourceLabel = [report.source?.sourceName, report.source?.sheetName].filter(Boolean).join(" / ");
+
+  return `<section class="studio-library" id="voicemail-pilot" aria-labelledby="voicemail-pilot-heading">
+    <div class="studio-section-heading">
+      <div><p class="page-kicker">Controlled source attribution</p><h3 id="voicemail-pilot-heading">Voicemail recovery pilot</h3><p class="muted small">Optional source-system proof for preassignment, message completion, explicit callback links, handlers and CRM outcomes. This import is read-only and creates no model job, evaluation result or operational queue.</p></div>
+      ${badge(humanizeSlug(report.status || "not_configured"), statusTone)}
+    </div>
+    ${renderAuthorityLegend()}
+    ${!configured ? `<div class="callout"><strong>No pilot export is configured.</strong> Start with <span class="mono">--voicemail-pilot &lt;path&gt;</span> or set <span class="mono">SALES_DASHBOARD_VOICEMAIL_PILOT_PATH</span>. Until an export passes the contract, callback lift, sales and gross profit remain unavailable.</div>` : ""}
+    ${configured && sourceLabel ? `<p class="muted small">Source file: <span class="mono">${escapeHtml(sourceLabel)}</span>. The full local path is deliberately not exposed.</p>` : ""}
+    ${invalidSource ? `<div class="callout danger"><strong>Pilot source rejected.</strong> Nothing from this file is scored or joined to an operational record.<ul>${(report.fileErrors || []).map((item) => `<li>${escapeHtml(humanizeSlug(item))}</li>`).join("")}</ul></div>` : ""}
+    ${configured && !invalidSource ? `
+      <div class="metrics">
+        ${metricCard("Pilot rows", formatNumber(totals.inputRows), "One row per preassigned voicemail opportunity", "info")}
+        ${metricCard("Accepted assignments", formatNumber(totals.acceptedAssignments), `${formatNumber(totals.rejectedAssignments)} rejected before denominators`, totals.rejectedAssignments ? "warning" : "success")}
+        ${metricCard("Measure exclusions", formatNumber(totals.measureNotScored), "Invalid downstream facts remain not scored", totals.measureNotScored ? "warning" : "neutral")}
+        ${metricCard("Explicit callbacks", formatNumber(totals.callbacksObserved), "Exact inbound call ID plus allowed provenance", "notice")}
+        ${metricCard("CRM outcomes", formatNumber(totals.salesObserved), "Explicit sale ID, state and timestamp", "info")}
+        ${metricCard("ITT callback lift", itt.status === "measured_comparison" ? `${(Number(itt.absoluteDifference || 0) * 100).toFixed(1)} pp` : "Unavailable", humanizeSlug(itt.reason || "not_available"), itt.status === "measured_comparison" ? "notice" : "neutral")}
+      </div>
+      <div class="callout ${itt.status === "measured_comparison" ? "warning" : "danger"}"><strong>${itt.status === "measured_comparison" ? "Measured comparison only." : "Callback-lift result withheld."}</strong> ${escapeHtml(itt.interpretation || humanizeSlug(itt.reason || "Required proof is incomplete."))}</div>
+      ${table([
+        { label: "Pilot arm", render: (row) => `<strong>${escapeHtml(humanizeSlug(row.arm))}</strong>` },
+        { label: "Assigned", render: (row) => formatNumber(row.assigned) },
+        { label: "Approved message", render: (row) => `${formatNumber(row.approvedMessages)}<br /><span class="muted small">${formatRatioPercent(row.arm === "treatment" ? (row.assigned ? row.approvedMessages / row.assigned : null) : null)} treatment compliance</span>` },
+        { label: "Callback outcome", render: (row) => `${formatNumber(row.callbacksObserved)} observed / ${formatNumber(row.callbacksNotObservedInCompletedWindow)} not observed<br /><span class="muted small">${formatNumber(row.callbacksUnknownIncompleteWindow)} incomplete window; ${formatNumber(row.callbacksNotScored)} not scored</span>` },
+        { label: "Callback rate", render: (row) => `${escapeHtml(formatRatioPercent(row.resolvedCallbackRate))}<br /><span class="muted small">${escapeHtml(humanizeSlug(row.callbackRateStatus))}</span>` },
+        { label: "Handling", render: (row) => `${formatNumber(row.originalSalespersonHandling)} original / ${formatNumber(row.differentSalespersonHandling)} different<br /><span class="muted small">${formatNumber(row.handlerUnknown)} unknown</span>` },
+        { label: "CRM outcomes", render: (row) => `${formatNumber(row.salesWon)} won / ${formatNumber(row.salesLost)} lost<br /><span class="muted small">${formatNumber(row.salesPending)} pending; ${formatNumber(row.salesReversed)} reversed; ${formatNumber(row.commercialObservationIncomplete)} incomplete windows; ${formatNumber(row.saleNotScored + row.financialScopeNotScored + row.commercialScopeNotScored)} not scored facts</span>` }
+      ], armRows, "No accepted pilot assignments are available.")}
+      <details class="compact-details"><summary>Attribution provenance and gross profit</summary>
+        <dl class="result-answer-list">
+          ${(report.attributionSources || []).map((row) => `<div><dt>${escapeHtml(humanizeSlug(row.source))}</dt><dd>${formatNumber(row.callbacks)} explicit callback link${row.callbacks === 1 ? "" : "s"}</dd></div>`).join("")}
+        </dl>
+        ${table([
+          { label: "Currency", render: (row) => `<strong>${escapeHtml(row.currency)}</strong>` },
+          { label: "Gross profit", render: (row) => formatMinorCurrency(row.totalMinorUnits, row.currency) },
+          { label: "Assigned opportunities", render: (row) => formatNumber(row.assignedOpportunities) },
+          { label: "Evidence coverage", render: (row) => `${badge(humanizeSlug(row.grossProfitStatus), row.grossProfitStatus === "available_complete_equal_window" ? "success" : "warning")}<br /><span class="muted small">${formatNumber(row.profitCompleteAssignments)} / ${formatNumber(row.assignedOpportunities)} complete</span>` },
+          { label: "Per assigned", render: (row) => formatMinorCurrency(row.grossProfitPerAssignedMinorUnits, row.currency) },
+          { label: "Per won sale", render: (row) => `${formatMinorCurrency(row.grossProfitPerWonSaleMinorUnits, row.currency)}<br /><span class="muted small">${formatNumber(row.wonSalesWithProfit)} won with profit</span>` }
+        ], report.grossProfitByCurrency || [], "No valid gross-profit records are available. Currencies are never combined or converted.")}
+      </details>
+      <details class="compact-details"><summary>Inspect accepted source records (${formatNumber(acceptedExamples.length)} shown)</summary>
+        ${table([
+          { label: "Pilot record", render: (row) => `<span class="mono">${escapeHtml(row.pilotRecordId)}</span><br />${badge(humanizeSlug(row.pilotArm), "notice")}` },
+          { label: "Outbound proof", render: (row) => `<a class="data-link mono" href="/calls/${encodeURIComponent(row.outboundCall?.callId || "")}">${escapeHtml(row.outboundCall?.callId || "unknown")}</a><br /><span class="muted small">${escapeHtml(row.outboundCall?.sourceTime || "time unavailable")} · event ${escapeHtml(row.voicemailEventId)}</span>` },
+          { label: "Message", render: (row) => pilotMeasureMarkup(row.message, row.message?.value ? humanizeSlug(row.message.value) : "") },
+          { label: "Callback", render: (row) => `${pilotMeasureMarkup(row.callback, row.callback?.attributionSource ? humanizeSlug(row.callback.attributionSource) : "")}${row.callback?.callId ? `<br /><a class="data-link mono" href="/calls/${encodeURIComponent(row.callback.callId)}">${escapeHtml(row.callback.callId)}</a>` : ""}` },
+          { label: "Sale / profit", render: (row) => `${pilotMeasureMarkup(row.financialScope, row.financialScope?.currency || "")}${pilotMeasureMarkup(row.commercialScope, row.commercialScope?.completedAt || "")}${pilotMeasureMarkup(row.sale, row.sale?.value ? humanizeSlug(row.sale.value) : "")}${row.profit?.status === "observed" ? `<br /><strong>${escapeHtml(formatMinorCurrency(row.profit.minorUnits, row.profit.currency))}</strong>` : row.profit?.status === "not_scored" ? `<br />${pilotMeasureMarkup(row.profit)}` : ""}` }
+        ], acceptedExamples, "No accepted source records are available.")}
+      </details>
+      ${rejectedExamples.length ? `<details class="compact-details"><summary>Inspect rejected assignments (${formatNumber(rejectedExamples.length)} shown)</summary>${table([
+        { label: "Source row", render: (row) => formatNumber(row.rowNumber) },
+        { label: "Pilot record", render: (row) => `<span class="mono">${escapeHtml(row.pilotRecordId || "missing")}</span>` },
+        { label: "Outbound call", render: (row) => row.outboundCallId ? `<a class="data-link mono" href="/calls/${encodeURIComponent(row.outboundCallId)}">${escapeHtml(row.outboundCallId)}</a>` : `<span class="muted small">missing</span>` },
+        { label: "Controlling reasons", render: (row) => (row.reasons || []).map((item) => `<span class="evidence">${escapeHtml(humanizeSlug(item))}</span>`).join("") }
+      ], rejectedExamples, "No rejected assignments.")}</details>` : ""}
+    ` : ""}
+    <details class="compact-details"><summary>Required source contract and safety boundary</summary>
+      <p class="muted small">Required columns: ${(report.contract?.requiredColumns || []).map((column) => `<span class="mono">${escapeHtml(column)}</span>`).join(", ") || "Load the repository contract for the complete field list."}</p>
+      <ul class="muted small">${(report.provenance?.rules || []).map((rule) => `<li>${escapeHtml(rule)}</li>`).join("")}</ul>
+    </details>
+  </section>`;
+}
+
 function renderValidationLabelQuestion(manifest = {}, example = {}) {
   const context = example.context || {};
   const turns = context.transcriptTurns || [];
@@ -2884,6 +2976,8 @@ function renderEvaluationStudio(persistence = {}, data = {}, options = {}) {
       ${renderCapabilityCatalog(options.capabilityCatalog || {})}
 
       ${renderVoicemailInboundLane(options.voicemailInbound || {})}
+
+      ${renderVoicemailPilotAttribution(options.voicemailPilot || {})}
 
       ${renderValidationLab(options.validationLab || {}, { selectedManifestId: options.selectedManifestId || "" })}
 
@@ -4045,6 +4139,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       <nav class="studio-jump-nav" aria-label="Evaluation Studio sections">
         <a href="#capability-register">Capabilities</a>
         <a href="#voicemail-inbound">Voicemail & inbound</a>
+        <a href="#voicemail-pilot">Pilot attribution</a>
         <a href="#validation-lab">Benchmark lab</a>
         <a href="#historical-research">Historical research</a>
         <a href="#run-controls">${operationalModelUsePermitted ? "Evaluate" : "AI unavailable"}</a>

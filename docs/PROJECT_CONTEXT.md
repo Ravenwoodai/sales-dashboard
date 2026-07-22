@@ -29,6 +29,7 @@ Anything else remains unknown.
 8. `src/localModelCapability.js` validates/pins the current register and blocks any unpromoted submission or consumption.
 9. `src/evaluationValidationLab.js` builds isolated genuinely-unseen manifests, validates exact-quote human truth, freezes benchmarks, and compares future candidates without promotion side effects.
 10. `src/voicemailRecovery.js` computes the closed voicemail/message/chronology/later-inbound evidence lane without semantic, causal, or commercial inference.
+11. `src/voicemailPilotAttribution.js` validates an optional local pilot export against exact active call proof and exposes a sanitized read-only experiment report without persistence or model use.
 
 ## Active Product Surfaces
 
@@ -38,7 +39,7 @@ Anything else remains unknown.
 - Alerts & Reviews: literal alerts and manager-authored workflow.
 - Intelligence: literal transcript triage with evidence/provenance.
 - Records & Reports: source facts and safe reports.
-- Evaluation Studio: capability catalog, deterministic voicemail/inbound evidence, isolated benchmark Validation Lab, and a separate read-only historical research archive.
+- Evaluation Studio: capability catalog, deterministic voicemail/inbound evidence, optional fail-closed pilot attribution, isolated benchmark Validation Lab, and a separate read-only historical research archive.
 - Call proof: transcript timeline, exact evidence, research warnings, and manager review.
 
 Lead Harvest and model-backed action queues are retired.
@@ -54,12 +55,15 @@ Lead Harvest and model-backed action queues are retired.
 ## Data Boundaries
 
 - Raw source stays local and out of Git.
+- Raw voicemail-pilot exports also stay local and out of Git; the application retains no raw pilot rows.
+- Fixture/UAT call data always uses an isolated `SALES_DASHBOARD_STORE_PATH`; the default store is only for the real active import.
 - `dialled_phone_number`/partial phones are never used for matching or display.
 - `NoSaleType` and `Baz_DetailedNotes` are excluded untrusted legacy fields.
 - Allocation imports are parked.
 - Stable-ID later attempts prove only another related record exists in the uploaded window.
 - Semantic fields remain null/unknown unless manager-authored.
 - No sales, payment, fulfilment, revenue, ROI, order value, or CRM outcome claims.
+- Pilot callback/sale/profit facts exist only when the separate source contract proves them. Invalid assignments do not enter denominators, incomplete/unequal outcome windows withhold callback lift, and currencies never combine.
 
 ## Storage
 
@@ -72,6 +76,7 @@ Lead Harvest and model-backed action queues are retired.
 
 - Start: `node src/main.js`
 - Current-data example: `node src/main.js --csv "data/source/CallData 07.07.2026.csv"`
+- Optional pilot example: append `--voicemail-pilot "<local pilot.csv or .xlsx>"`.
 - Tests: `npm test`
 - Default URL: `http://127.0.0.1:3000`
 - Health: `http://127.0.0.1:3000/health`
@@ -79,7 +84,7 @@ Lead Harvest and model-backed action queues are retired.
 - The Windows task `Sales Dashboard Overnight Evaluations` is present but disabled. Its trigger remains recorded for audit; it cannot run while disabled, and controller capability preflight must still reject unpromoted work.
 - A separate Execution Layer may remain running for other work; it does not enable this application.
 
-## Verified Current State (2026-07-22)
+## Verified Current State (2026-07-23)
 
 - 19,914 active calls.
 - Every active call has `llm_status=not_requested`.
@@ -89,6 +94,7 @@ Lead Harvest and model-backed action queues are retired.
 - Deterministic voicemail/inbound lane: 1,972 exact voicemail encounters, 22 literal callback requests, 0 exact approved-template messages, 135 later-inbound relationships, and 113 clean chronology links.
 - Blocked write endpoints leave stored counts unchanged.
 - Browser verification passed across all workspaces, Evaluation Studio, and a call page with no console errors/warnings.
+- Optional voicemail-pilot populated, absent, invalid-source, and 390-pixel mobile states pass. The populated fixture created zero jobs, runs, results, reviews, queues, or persisted pilot rows.
 
 ## Future Work Boundary
 

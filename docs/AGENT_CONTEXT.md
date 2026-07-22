@@ -7,6 +7,7 @@ This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup d
 - Sales Dashboard is a local Node.js application for CSV/XLSX sales-call exports.
 - Active reporting is limited to source-record facts, exact stable-ID relationships, literal transcript states, and manager-authored review overlays.
 - Optional allocation imports remain parked and excluded from active analytics.
+- Optional voicemail-pilot imports are read-only source validation inputs, never active intelligence or model inputs.
 - The application does not currently have a promoted local-model capability. Historical Qwen outputs are research artifacts only.
 
 ## Mandatory Local-Model Boundary
@@ -36,6 +37,7 @@ This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup d
 - Intelligence is literal transcript triage with explicit provenance and guardrails.
 - Records & Reports contains source-record and attribution-review facts only.
 - Evaluation Studio at `/evaluation-studio` is a controlled validation workspace. It contains a read-only capability catalog, deterministic voicemail/inbound evidence, an isolated benchmark lab, and a visibly separate immutable historical research archive.
+- The optional pilot section accepts only the exact contract in `docs/VOICEMAIL_CALLBACK_ATTRIBUTION.md`. It rejects invalid assignments before denominators, keeps invalid downstream measures `not_scored`, separates currencies/provenance, and withholds callback lift unless both arms have complete equal-duration windows.
 - The only permitted Studio writes create benchmark manifests, record exact-evidence human labels in batches of at most five, and freeze complete manifests. They cannot create, submit, resume, poll, or harvest a model job and cannot mutate the archive.
 - Research metadata, quarantine state, semantic feedback, and result-to-review handoff are also locked; use the normal call page for an independent manager-authored review.
 - Lead Harvest and operational sales-opportunity APIs are retired or unavailable; do not restore them from historical code or documentation.
@@ -45,6 +47,7 @@ This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup d
 
 - Generic start: `node src/main.js`
 - Current-data example: `node src/main.js --csv "data/source/CallData 07.07.2026.csv"`
+- Optional pilot: append `--voicemail-pilot "<local pilot.csv or .xlsx>"` or set `SALES_DASHBOARD_VOICEMAIL_PILOT_PATH`.
 - Test: `npm test`
 - Boundary audit: `npm run audit:trusted-boundary`
 - Default URL: `http://127.0.0.1:3000`
@@ -59,6 +62,8 @@ This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup d
 ## Persistence And Review Rules
 
 - Raw input remains local and ignored by Git.
+- Raw pilot input remains local, ignored and unpersisted. Only sanitized in-memory report fields may reach the API/UI.
+- Any browser/UAT server that uses fixture call data must set `SALES_DASHBOARD_STORE_PATH` to an isolated temporary store. Never start fixture data against the default `data/store/state.json`.
 - Derived deterministic facts and manager overlays are versioned local data.
 - Manager review is a non-destructive overlay. It never overwrites raw source, deterministic evidence, or historical model artifacts.
 - Alert lifecycle actor attribution remains the server-side placeholder `local_manager` until authentication exists.
@@ -67,7 +72,7 @@ This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup d
 - A strict promotion partition is at least 100 genuinely unseen, balanced calls. A passing comparison only becomes eligible for external approval; code never promotes automatically.
 - Generated reports shown in the library must be based only on the active trusted boundary. Historical unsafe reports may remain preserved but hidden.
 
-## Current Live Proof (2026-07-22)
+## Current Live Proof (2026-07-23)
 
 - Active import: 19,914 calls from `CallData 07.07.2026.csv`.
 - All active-import calls have `llm_status=not_requested`; all audited semantic columns are null.
@@ -76,6 +81,7 @@ This is the fast handoff for Sales Dashboard. Read `AGENTS.md` and the startup d
 - Deterministic current-import voicemail proof: 1,972 exact voicemail encounters; 22 literal callback requests; 0 exact approved-template messages; 135 later-inbound relationships; 113 clean chronology links.
 - Model submission, result ingestion, run creation, prompt testing, resume, harvest, and Lead Harvest adversarial requests fail closed without changing stored counts.
 - Live browser verification found no operational model controls, Lead Harvest surface, semantic quality scores, or browser console errors.
+- Optional pilot parser/API/UI tests and populated/empty/invalid/mobile browser checks passed; the import created no model or operational work.
 
 ## Current Risks
 

@@ -7,6 +7,7 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - `dialled_phone_number` is intentionally incomplete for security and is ignored for MVP analytics and display.
 - Do not reconstruct, enrich, or infer full phone numbers.
 - Use stable source IDs for linkage only where present.
+- Treat optional voicemail-pilot exports as sensitive source data. Keep them ignored/local, expose only sanitized validation records, never reveal the full configured path, and never persist their raw rows into application stores.
 
 ## Local-Only AI Boundary
 - The MVP uses deterministic local rules and sends no transcript data to external AI services.
@@ -33,6 +34,7 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - Manager review notes, correction reasons, and evidence assessments are untrusted display text and must be escaped when rendered.
 - Evaluation Studio knowledgebase entries, prompt/template text, output schemas, and run metadata are untrusted display text and must be escaped when rendered.
 - Validation Lab manifest names, capability IDs, exact-fact descriptions, reasons, labels, and transcript quotes are untrusted display text and must be escaped. Frozen source and exclusion fingerprints must be checked before comparison.
+- Voicemail-pilot IDs, filenames, statuses and validation reasons are untrusted display text and must be escaped. Exact source IDs and ISO timestamps must pass the contract before they affect any displayed denominator.
 - Hide parked or superseded report content from normal report APIs and dashboard report views while preserving local store records.
 - Add role-based access before exposing transcript detail outside localhost.
 

@@ -8,7 +8,7 @@ The architecture is intentionally fail closed: no local-model capability is curr
 
 ## Runtime Flow
 
-1. `src/main.js` resolves call/allocation paths and starts the local HTTP server.
+1. `src/main.js` resolves call/allocation/optional voicemail-pilot paths and starts the local HTTP server.
 2. `src/sourceFile.js`, `src/csvParser.js`, and `src/xlsxReader.js` normalise source tables.
 3. `src/analysis.js` deduplicates by `call_id`, profiles source coverage, applies global filters, builds stable-ID reattempt facts, and combines literal detections with manager overlays.
 4. `src/transcriptEvaluator.js` performs only closed literal classification. Semantic fields remain null.
@@ -20,6 +20,7 @@ The architecture is intentionally fail closed: no local-model capability is curr
 10. Every model submission, polling, ingestion, automatic-routing, controller, and Studio mutation path checks the pinned register and rejects unpromoted capabilities before a network call or state mutation.
 11. `src/evaluationValidationLab.js` isolates genuinely unseen manifests and frozen human benchmark truth from both operational reviews and the historical archive.
 12. `src/voicemailRecovery.js` recomputes the closed voicemail/message/later-inbound evidence lane from active call rows without semantic or commercial inference.
+13. `src/voicemailPilotAttribution.js` validates the optional pilot source against active call proof in memory and builds fail-closed assignment, message, callback, handler, sale, profit and experiment-endpoint facts without persistence or model use.
 
 ## Trust Layers
 
@@ -29,6 +30,11 @@ raw source
   -> exact literal transcript detections + evidence
   -> manager-authored non-destructive overlays
   -> active UI, APIs, and reports
+
+optional voicemail-pilot source
+  -> exact ID/time/provenance validation against active call proof
+  -> read-only Studio report; invalid measures stay not_scored
+  -> never enters active intelligence, archive, jobs, reviews, or CRM
 
 historical model jobs/results
   -> research archive (authority: none)
@@ -54,6 +60,7 @@ historical model jobs/results
 - `src/evaluationStudio.js`: historical evaluator definitions and archive interpretation; live submission/operational use is blocked externally and internally by capability policy.
 - `src/evaluationValidationLab.js`: separate benchmark-only manifest selection; runtime/repository/result/run/manifest prior-use exclusion proof; direct-quote label validation; immutable freezing; exact result-set/evidence comparison; and strict promotion test.
 - `src/voicemailRecovery.js`: deterministic exact-message, stable-ID chronology, later-inbound relationship, and source-handler evidence.
+- `src/voicemailPilotAttribution.js`: optional pilot schema validation, exact call/event/source linkage, measure-level exclusions, separate-currency aggregation, and equal-window treatment/control gating.
 - `src/aiExecutionLayer.js`: fail-closed client boundary. Its submission/polling functions require a promoted capability.
 - `src/overnightEvaluationAutomation.js`, `scripts/run-overnight-evaluations.js`, and `scripts/run-adhoc-evaluations.js`: retained historical controllers that reject before network access while no capability is promoted.
 - `src/dashboardRenderer.js`: escaped HTML for dashboard, archive, drilldowns, and call proof.
@@ -68,6 +75,7 @@ historical model jobs/results
 ## Storage Boundaries
 
 - Raw source files remain at their configured locations and are not committed.
+- Raw pilot files also remain at their configured locations; only a sanitized in-memory report is exposed and no pilot row is persisted by the application.
 - `data/store/state.json` stores local operational history and job references.
 - `data/store/intelligence.sqlite` stores the active deterministic derived import.
 - `data/store/evaluation-studio.sqlite` stores historical model research artifacts.

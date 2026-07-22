@@ -30,6 +30,7 @@ This score describes the current trusted product, not the amount of historical e
 - Literal AI-assistant phrases, labelled only as literal detection.
 - Explicit manager-authored review overlays.
 - Closed deterministic voicemail/message/linkage observations with exact evidence; these are not callback-causation or commercial claims.
+- Optional pilot facts that pass the separate source contract: preassignment, explicit event/call linkage, source handler, CRM sale state/timestamp and separate-currency gross profit. Invalid measures are `not_scored`, and treatment/control lift requires complete equal-duration windows.
 
 All other semantic call attributes remain unknown unless a manager records them.
 
@@ -40,6 +41,7 @@ All other semantic call attributes remain unknown unless a manager records them.
 - Manager review uses the local placeholder actor `local_manager`; it is not authenticated multi-user governance.
 - Transcript speaker order depends on source data and is not independently diarised.
 - Stable-ID later-attempt evidence is bounded by the uploaded date window and cannot prove callback completion.
+- A pilot export can still contain inaccurate upstream source records. The application validates internal consistency and provenance fields; it does not independently prove that the telephony/CRM source system recorded reality correctly or that arm assignment was randomized.
 - Allocation artifacts and unsafe historical reports remain preserved for audit; active APIs and UI must continue filtering them.
 - The separate AI Execution Layer may run independently, but its health or availability must never reopen Sales Dashboard submission.
 - A benchmark may still be too small or unbalanced to support promotion; smoke/development results must never be presented as authority.

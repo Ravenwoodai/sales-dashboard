@@ -29,6 +29,11 @@ const {
   writeValidationLab
 } = require("./evaluationValidationLab");
 const { buildVoicemailInboundReport } = require("./voicemailRecovery");
+const {
+  buildVoicemailPilotAttributionReport,
+  emptyVoicemailPilotAttributionReport,
+  voicemailPilotLoadError
+} = require("./voicemailPilotAttribution");
 const { analyzeCsvText, attachInternalItems, buildFilteredAnalysis, internalItemsFor } = require("./analysis");
 const { buildDrilldownResult, findCallProof } = require("./drilldown");
 const { normalizeFilterState } = require("./globalFilters");
@@ -190,6 +195,27 @@ function resolveAllocationPath(argv = process.argv.slice(2), env = process.env) 
     return path.resolve(env.SALES_DASHBOARD_ALLOCATIONS_PATH);
   }
   return null;
+}
+
+function resolveVoicemailPilotPath(argv = process.argv.slice(2), env = process.env) {
+  const pilotFlagIndex = argv.findIndex((arg) => arg === "--voicemail-pilot" || arg === "--voicemail-pilot-path");
+  if (pilotFlagIndex >= 0 && argv[pilotFlagIndex + 1]) {
+    return path.resolve(argv[pilotFlagIndex + 1]);
+  }
+  if (env.SALES_DASHBOARD_VOICEMAIL_PILOT_PATH) {
+    return path.resolve(env.SALES_DASHBOARD_VOICEMAIL_PILOT_PATH);
+  }
+  return null;
+}
+
+function loadVoicemailPilotAttribution(pilotPath, calls = []) {
+  if (!pilotPath) return emptyVoicemailPilotAttributionReport({ configured: false });
+  try {
+    const source = readTabularFile(pilotPath);
+    return buildVoicemailPilotAttributionReport(source, calls, { configured: true });
+  } catch (error) {
+    return voicemailPilotLoadError(error, path.basename(pilotPath));
+  }
 }
 
 function brandLogoDirectory(storePath) {
@@ -2028,10 +2054,12 @@ function createServer(options = {}) {
   const env = options.env || process.env;
   const csvPath = options.csvPath || resolveCsvPath(options.argv || process.argv.slice(2), env);
   const allocationPath = options.allocationPath || resolveAllocationPath(options.argv || process.argv.slice(2), env);
+  const voicemailPilotPath = options.voicemailPilotPath || resolveVoicemailPilotPath(options.argv || process.argv.slice(2), env);
   const storePath = resolveStorePath(options);
   const aiConfig = resolveAiExecutionConfig(env);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   let state = loadAnalysis(csvPath, { storePath, allocationPath });
+  let voicemailPilot = loadVoicemailPilotAttribution(voicemailPilotPath, state.analysis?.drilldownRows || []);
 
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
@@ -2087,6 +2115,11 @@ function createServer(options = {}) {
         allocation_active_metrics_available: false,
         store_path_configured: Boolean(storePath),
         current_import_id: state.importRecord?.id || null,
+        voicemail_pilot_path_configured: Boolean(voicemailPilotPath),
+        voicemail_pilot_status: voicemailPilot.status,
+        voicemail_pilot_input_rows: voicemailPilot.totals?.inputRows || 0,
+        voicemail_pilot_accepted_assignments: voicemailPilot.totals?.acceptedAssignments || 0,
+        voicemail_pilot_rejected_assignments: voicemailPilot.totals?.rejectedAssignments || 0,
         ai_execution: publicAiExecutionStatus(aiConfig)
       });
       return;
@@ -2571,7 +2604,8 @@ function createServer(options = {}) {
         autoHarvest: publicAutoHarvestStatus(autoHarvest),
         capabilityCatalog: localModelCapabilityCatalog(),
         validationLab: { ...validationLabView(validation.lab, state.analysis?.drilldownRows || []), readError: validation.error },
-        voicemailInbound: buildVoicemailInboundReport(state.analysis?.drilldownRows || [])
+        voicemailInbound: buildVoicemailInboundReport(state.analysis?.drilldownRows || []),
+        voicemailPilot
       });
       return;
     }
@@ -2582,7 +2616,8 @@ function createServer(options = {}) {
         ok: !validation.error,
         validationLab: { ...validationLabView(validation.lab, state.analysis?.drilldownRows || []), readError: validation.error },
         capabilityCatalog: localModelCapabilityCatalog(),
-        voicemailInbound: buildVoicemailInboundReport(state.analysis?.drilldownRows || [])
+        voicemailInbound: buildVoicemailInboundReport(state.analysis?.drilldownRows || []),
+        voicemailPilot
       });
       return;
     }
@@ -3627,6 +3662,7 @@ function createServer(options = {}) {
 
     if (url.pathname === "/api/reload" && request.method === "POST") {
       state = loadAnalysis(csvPath, { storePath, allocationPath });
+      voicemailPilot = loadVoicemailPilotAttribution(voicemailPilotPath, state.analysis?.drilldownRows || []);
       sendJson(response, state.error ? 500 : 200, {
         ok: !state.error,
         error: state.error,
@@ -3914,6 +3950,7 @@ function createServer(options = {}) {
         capabilityCatalog: localModelCapabilityCatalog(),
         validationLab: validationView,
         voicemailInbound: buildVoicemailInboundReport(studioAnalysis?.drilldownRows || []),
+        voicemailPilot,
         selectedManifestId: url.searchParams.get("manifestId") || ""
       }));
       return;
@@ -3994,9 +4031,11 @@ function startServer(options = {}) {
   server.listen(port, host, () => {
     const csvPath = resolveCsvPath(options.argv || process.argv.slice(2), options.env || process.env);
     const allocationPath = resolveAllocationPath(options.argv || process.argv.slice(2), options.env || process.env);
+    const voicemailPilotPath = resolveVoicemailPilotPath(options.argv || process.argv.slice(2), options.env || process.env);
     console.log(`Sales Dashboard listening on http://${host}:${port}`);
     console.log(csvPath ? `CSV source: ${csvPath}` : "CSV source: not configured");
     console.log(allocationPath ? "Allocation source configured but parked from active analytics" : "Allocation source: not configured");
+    console.log(voicemailPilotPath ? "Voicemail pilot source: configured for strict read-only validation" : "Voicemail pilot source: not configured");
   });
   return server;
 }
@@ -4008,6 +4047,8 @@ if (require.main === module) {
 module.exports = {
   resolveCsvPath,
   resolveAllocationPath,
+  resolveVoicemailPilotPath,
+  loadVoicemailPilotAttribution,
   loadAnalysis,
   attachPersistence,
   createServer,

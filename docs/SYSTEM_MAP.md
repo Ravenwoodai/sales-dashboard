@@ -17,6 +17,11 @@ CSV/XLSX source
   -> analysis + literal transcript evaluator
   -> intelligence.sqlite + state overlays
   -> dashboardRenderer / JSON APIs / reports
+
+optional voicemail-pilot CSV/XLSX
+  -> sourceFile/csvParser/xlsxReader
+  -> voicemailPilotAttribution + active call proof
+  -> read-only Evaluation Studio/API report only
 ```
 
 ## Capability Guard Path
@@ -35,6 +40,7 @@ any model-related request/controller
 - `src/localModelCapability.js`: register validation, cached process binding, assertions, and public status.
 - `src/evaluationValidationLab.js`: isolated genuinely-unseen benchmark manifests, exact-quote human labels, immutable freezes, and strict candidate comparisons.
 - `src/voicemailRecovery.js`: closed voicemail/message/later-inbound evidence rules and source-handler observations.
+- `src/voicemailPilotAttribution.js`: strict optional pilot schema, exact attribution/commercial proof, measure-level `not_scored`, separate currencies, and equal-window experiment gating.
 - `src/sourceFile.js`, `src/csvParser.js`, `src/xlsxReader.js`: source ingestion.
 - `src/analysis.js`: deduplication, source metrics, exact reattempt relationships, literal risks, filters, reviews, and sanitized rows.
 - `src/transcriptEvaluator.js`: recognised literal terminal-state rules.
@@ -85,7 +91,7 @@ any model-related request/controller
 - `/api/lead-harvest`: retired (`410`).
 - Evaluation Studio result ingestion is retired (`410`); run/prompt/resume/harvest mutations are capability-locked (`423`).
 - Knowledge/template/archive/feedback/result-review mutations are locked (`423`); only archive reads and read-only selection preview remain.
-- `GET /api/evaluation-studio/validation-lab`: capability catalog, validation-lab state, direct-quote review questions, and deterministic voicemail/inbound evidence.
+- `GET /api/evaluation-studio` and `GET /api/evaluation-studio/validation-lab`: capability catalog, validation-lab state, direct-quote review questions, deterministic voicemail/inbound evidence, and sanitized optional pilot attribution.
 - `POST /evaluation-studio/validation-lab/manifests`: create an isolated benchmark manifest; this never creates a model job or archive run.
 - `POST /evaluation-studio/validation-lab/manifests/<id>/labels`: record exact human benchmark truth in batches of at most five.
 - `POST /evaluation-studio/validation-lab/manifests/<id>/freeze`: freeze a complete, balanced, unchanged benchmark manifest. Freezing is not promotion.
@@ -99,6 +105,7 @@ any model-related request/controller
 - Benchmark truth is separate from routine manager review and the historical evaluator archive; unsupported benchmark cases are labelled explicitly rather than forced into a semantic class.
 - Unseen selection excludes call IDs found in runtime audits, repository rule/prompt/test/script artifacts, all historical/current results and attempted run selections, and every earlier benchmark manifest.
 - The deterministic voicemail lane may report exact prompt/message/chronology/linkage facts, but never callback causation, receptiveness, sales, gross profit, or commercial value.
+- The optional pilot lane may report only contract-valid source-system preassignment, event linkage, handler, CRM outcome and separate-currency facts. Invalid assignments do not enter denominators; incomplete or unequal outcome windows withhold callback lift.
 - No sales, conversion, payment, fulfilment, revenue, ROI, or CRM claims.
 - No phone-based matching.
 - No use of excluded legacy disposition/note fields.
@@ -110,6 +117,7 @@ any model-related request/controller
 - `npm test`
 - `npm run audit:trusted-boundary`
 - `node src/main.js --csv "data/source/CallData 07.07.2026.csv"`
+- Optional pilot: append `--voicemail-pilot "<local pilot.csv or .xlsx>"`.
 - Check `/health` for `ai_execution.enabled=false`, zero promoted capabilities, and operational consumption false.
 - Run SQLite `PRAGMA integrity_check` on both databases.
 - Confirm active semantic columns are null and active import `llm_status=not_requested`.

@@ -1,6 +1,6 @@
 # Voicemail Callback Attribution Contract
 
-Status: design approved in principle; implementation requires the repository's high-risk model escalation because it introduces attribution and financial-data validation.
+Status: implemented as an optional read-only, fail-closed source validator after explicit GPT-5.6 Sol high confirmation. It has no model, evaluator, job, run, result, queue or CRM write path.
 
 ## Objective
 
@@ -32,10 +32,14 @@ Configure one local CSV/XLSX through `--voicemail-pilot <path>` or `SALES_DASHBO
 
 One row represents one preassigned outbound voicemail opportunity.
 
+Every listed column header must be present so schema drift fails closed. The `Required` column below describes whether each row must contain a value.
+
 | Field | Required | Contract |
 | --- | --- | --- |
 | `pilot_record_id` | Yes | Immutable unique source-system record ID. |
 | `pilot_arm` | Yes | Exactly `treatment` or `control`; assigned before callback and commercial outcomes are known. |
+| `pilot_assigned_at` | Yes | ISO-8601 source timestamp proving assignment existed no later than the outbound call. |
+| `pilot_currency` | Yes | Currency scope for the assigned opportunity; exactly `AUD` or `NZD`. Required to calculate gross profit per assigned opportunity without mixing currencies. |
 | `voicemail_event_id` | Yes | Immutable unique telephony/CRM voicemail event ID. |
 | `outbound_call_id` | Yes | Exact call ID in the active import; must be outbound and deterministically classified as voicemail. |
 | `message_status` | Yes | Exactly `approved_left`, `other_left`, `not_left`, or `unknown`. |
@@ -49,13 +53,16 @@ One row represents one preassigned outbound voicemail opportunity.
 | `sale_status` | Conditional | Required with `crm_sale_id`; exactly `won`, `lost`, `pending`, or `reversed`. |
 | `sale_recorded_at` | Conditional | Required with `crm_sale_id`; ISO-8601 source timestamp. |
 | `gross_profit_minor_units` | No | Signed integer minor currency units; accepted only with a `won` or `reversed` sale and explicit sale ID. |
-| `currency` | Conditional | Required with gross profit; exactly an allowed ISO-4217 code such as `AUD` or `NZD`. Never aggregate unlike currencies. |
+| `currency` | Conditional | Required with gross profit; exactly an allowed ISO-4217 code such as `AUD` or `NZD`, and must match `pilot_currency`. Never aggregate unlike currencies. |
+| `outcome_observation_completed_at` | Conditional | ISO-8601 timestamp closing the callback-observation window. Required for every assignment before a treatment/control callback rate is available; all included windows must have the same duration from the outbound call. |
+| `commercial_observation_completed_at` | Conditional | ISO-8601 timestamp closing the CRM outcome window. Gross profit per assigned opportunity is withheld unless every assignment in that currency has complete commercial evidence and equal-duration commercial windows. |
 
 ## Fail-Closed Validation
 
 A row is `not_scored` for the affected measure when any controlling fact is missing or contradictory. It is never coerced into treatment compliance, callback, sale or profit.
 
 - IDs must be unique and exact; phone matching is forbidden.
+- Preassignment must have an exact timestamp no later than the outbound call.
 - Outbound and callback calls must exist in the same active import.
 - The outbound call must be direction `out` and exact deterministic voicemail.
 - The callback call must be direction `in`, later than the outbound call and share at least one permitted exact stable ID unless the source system supplies an explicit immutable event link that is retained as evidence.
@@ -63,6 +70,9 @@ A row is `not_scored` for the affected measure when any controlling fact is miss
 - Handler attribution uses the inbound call's source user/salesperson fields. A supplied handler ID must match them.
 - A sale requires an explicit CRM sale ID and explicit linkage. `OrderCount`, transcript wording and model output are prohibited sale evidence.
 - Gross profit requires sale ID, allowed sale status, integer minor units and currency. Missing or mixed currency is not aggregated.
+- An invalid `pilot_currency` does not remove a valid assignment from callback denominators, but financial scope is `not_scored` and gross profit per assigned opportunity is unavailable for that row.
+- Absence of `crm_sale_id` means no sale was observed only when `commercial_observation_completed_at` is valid. Without a closed commercial window, sale and profit coverage remain incomplete rather than becoming zero.
+- A missing observation-completion timestamp leaves a no-callback record unknown. Recorded callbacks remain visible source facts, but they do not make the experimental endpoint complete. Unequal observation-window durations withhold the treatment/control rate.
 - No field in this export may promote or enable a local-model capability.
 
 ## Reported Measures
@@ -74,10 +84,10 @@ Report denominators and missingness for every measure.
 3. Explicitly attributed inbound callbacks by arm and attribution source.
 4. Original-salesperson handling, different-salesperson handling and unknown handler from exact source fields.
 5. CRM-linked won/lost/pending/reversed outcomes by arm.
-6. Gross profit by currency, per assigned opportunity and per explicit won sale.
+6. Observed gross profit by currency, gross profit per explicit won sale, and gross profit per assigned opportunity only when same-currency commercial coverage is complete across equal-duration windows.
 7. Net contribution only after externally supplied pilot costs are recorded with the same currency and period.
 
-The primary experiment result is intention-to-treat callback lift between preassigned arms. Message compliance is a separate implementation measure; it must not be used to remove non-compliant treatment records from the main denominator.
+The primary experiment result is intention-to-treat callback lift between preassigned arms with complete, equal-duration outcome windows. Message compliance is a separate implementation measure; it must not be used to remove non-compliant treatment records from the main denominator. Even a measured comparison is not a causal conclusion unless the pilot's random-assignment process and operating controls are documented externally.
 
 ## Prohibited Claims
 
@@ -92,9 +102,9 @@ Do not claim:
 
 ## Implementation Sequence
 
-1. Add the optional parser and strict row validator without changing existing call or archive stores.
-2. Produce a read-only validation preview showing accepted, rejected and `not_scored` records with exact reasons.
-3. Add deterministic pilot measures only after fixtures cover duplicate IDs, chronology, stable-ID mismatch, missing commercial proof, currency separation and intention-to-treat denominators.
-4. Render the pilot section separately from the historical evaluator archive and label every source/provenance class.
+1. Implemented the optional parser and strict row validator without changing existing call or archive stores.
+2. Implemented a read-only validation preview showing accepted assignments, rejected assignments and measure-level `not_scored` facts with exact reasons.
+3. Implemented deterministic pilot measures with fixtures covering duplicate IDs, chronology, stable-ID mismatch, missing commercial proof, currency separation, incomplete/equal outcome windows and intention-to-treat denominators.
+4. Rendered the pilot separately from the historical evaluator archive with source/provenance labels.
 5. Browser-check populated, empty, invalid-file and mobile states.
 6. Re-run the trusted-boundary audit and prove the import creates no model job, run or result.

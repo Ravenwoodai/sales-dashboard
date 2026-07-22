@@ -26,6 +26,8 @@ This file records practical constraints for Sales Dashboard.
 - A promotion test requires at least 100 frozen, genuinely unseen, case-balanced calls with unchanged source hashes, predeclared thresholds, resource budgets, and stop rules. A passing report means eligible for external approval, never automatically promoted.
 - Ten-call smoke and fifty-call development partitions may reveal failure, but cannot establish promotion.
 - Deterministic voicemail/inbound reporting may state exact prompts, literal message wording, stable-ID chronology, later inbound relationships, and observed handling only. It must not infer callback causation, receptiveness, conversion, sale, revenue, profit, or ROI.
+- Optional pilot attribution requires the exact source contract in `docs/VOICEMAIL_CALLBACK_ATTRIBUTION.md`: no phone matching, no `OrderCount` or transcript sale evidence, no mixed-currency aggregation, no incomplete-window callback rate, no persistence, and no downstream operational action.
+- Fixture/UAT call imports must use an explicit isolated `SALES_DASHBOARD_STORE_PATH`; the default local store is reserved for the real active import.
 
 ## Safety Constraints
 - Do not commit secrets.

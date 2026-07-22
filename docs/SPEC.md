@@ -135,16 +135,27 @@ The following stay null/unknown unless a manager explicitly authors an overlay:
 - Generated reports shown normally must use only trusted active inputs. Unsafe historical/parked reports may remain stored but hidden.
 - Both SQLite databases must pass `PRAGMA integrity_check`.
 
+## Optional Voicemail Pilot Attribution
+
+- The optional source is configured with `--voicemail-pilot <path>` or `SALES_DASHBOARD_VOICEMAIL_PILOT_PATH` and follows `docs/VOICEMAIL_CALLBACK_ATTRIBUTION.md`.
+- Every listed pilot column header is required. Row values are conditionally required according to the contract.
+- Pilot assignment, voicemail event, outbound call and preassignment timestamp must validate before the record enters a treatment/control denominator.
+- Message, callback, handler, sale and gross-profit evidence are validated independently. A contradiction makes only the affected downstream measure `not_scored` unless the assignment itself is invalid.
+- A no-callback outcome requires an explicit completed observation timestamp. A treatment/control rate requires both arms, complete outcomes for every accepted assignment, and equal-duration observation windows.
+- Exact telephony, CRM and manager-verified callback links are reported separately. Manager-verified links require shared stable IDs; phone matching is forbidden.
+- CRM sale ID, state and source timestamp are required for observed commercial outcomes. Every assignment has a `pilot_currency`; gross profit requires signed integer minor units and a matching allowed currency. Unlike currencies are never combined. Per-assignment profit also requires a complete equal-duration commercial observation window for every assignment in that currency; missing sale IDs outside a closed window are unknown, not zero.
+- The import is read-only and in-memory. It does not change `state.json`, either SQLite database, the Validation Lab, a model capability, or any operational route.
+
 ## APIs And Fail-Closed Behavior
 
-- `/health` exposes import health, AI disabled/configured state, and capability summary.
+- `/health` exposes import health, AI disabled/configured state, capability summary, and sanitized optional-pilot validation status/counts without exposing the full pilot path.
 - `/api/summary`, `/api/alerts`, `/api/manager-reviews`, `/api/imports`, `/api/reports`, and call-proof routes expose active trusted data.
 - `/api/ai/jobs/<id>` may expose a sanitized historical job only with research-only/authority-none warning.
 - Direct transcript-evaluation submission endpoints return `410`.
 - `/api/evaluation-studio/results` mutation returns `410`.
 - Evaluation Studio run/prompt/resume/harvest mutations return `423` under capability quarantine.
 - Benchmark-only manifest creation, direct-quote labels, and irreversible freeze use isolated `/evaluation-studio/validation-lab/...` routes and never call the model service or mutate archive/job counts.
-- `/api/evaluation-studio/validation-lab` exposes the benchmark lab, capability catalog, and deterministic voicemail/inbound report without inference.
+- `/api/evaluation-studio` and `/api/evaluation-studio/validation-lab` expose the benchmark lab, capability catalog, deterministic voicemail/inbound report, and optional pilot validation report without inference.
 - `/api/lead-harvest` returns `410`.
 - Blocked requests must not change job, run, result, review, alert, or report counts and must not make a model-service network request.
 
