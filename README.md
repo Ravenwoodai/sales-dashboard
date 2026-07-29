@@ -1,6 +1,6 @@
 # Sales Dashboard
 
-Local call intelligence dashboard for scheduled CSV/XLSX transcript exports. Separate campaign/allocation imports are preserved only as parked diagnostics and are excluded from active analytics.
+Local evidence dashboard for scheduled CSV/XLSX call exports. Separate legacy campaign/allocation imports remain parked, while an optional versioned Carma SQLite contract can add authoritative approved-sale, allocation and source-credit evidence through a read-only exact-`customer_id` join. Carma lead-source reports default to `actual_seller_any_pre_sale_allocation.v1`: Company Sourced when the actual seller had any exact pre-sale allocation, otherwise Self Sourced.
 
 ## Run
 
@@ -12,6 +12,12 @@ The legacy allocation flag is still accepted, but allocation data is parked and 
 
 ```powershell
 node src/main.js --csv "C:\Users\User\Downloads\CallData 07.07.2026.xlsx" --allocations "C:\Users\User\Downloads\allocations 07.07.2026.xlsx"
+```
+
+The optional Carma evidence contract is configured by CLI, environment, or the local ignored config at `data/store/carma-evidence.json`:
+
+```powershell
+node src/main.js --csv "data\source\CallData 07.07.2026.csv" --carma-evidence "C:\path\to\carma-evidence.sqlite"
 ```
 
 Open:
@@ -36,9 +42,10 @@ node --test tests/*.test.js
 
 - `dialled_phone_number` is intentionally incomplete for security and ignored for MVP analytics.
 - Valid `CustomerImportDate` and `CustomerCreateDate` are used only for source-quality Record Age; malformed date fragments are treated as missing.
-- The current CSV does not support sales conversion, revenue, order value, or won/lost outcome reporting.
+- The call CSV does not support sales conversion, revenue, order value, or won/lost outcome reporting. The optional Carma contract may display its own approved-sale amount and source-credit facts, but exact customer linkage never proves that a call caused a sale and an approved amount is not paid or recognised revenue.
 - No external AI service is used in the MVP.
 - Separate campaign/allocation imports are parked. They are preserved as inactive metadata, but excluded from active dashboard metrics, reports, alerts, filters, source/list quality, and AI transcript context.
+- Carma evidence is opened read-only, uses exact `customer_id` only, exposes no phone fields or raw paths, performs no CRM writeback, and stores sourcing method, acquisition source type and dated/batch campaign labels as separate dimensions.
 
 ## Local Storage
 
@@ -108,6 +115,29 @@ JSON is available at:
 ```text
 GET /api/allocations
 ```
+
+## Read-Only Carma Evidence
+
+The complete local extract inventory is documented in [docs/CARMA_DATA_LAYER.md](docs/CARMA_DATA_LAYER.md). It gives agents a single entry point for the full approved-sales history, raw weekly allocation logs, customer allocation history and optional Campaign status snapshots. Refresh the local catalog after adding a new raw allocation log or Carma extract:
+
+```powershell
+npm run carma:refresh-data-layer
+```
+
+Build and verify the local evidence contract from the already-extracted Carma datasets:
+
+```powershell
+npm run carma:build-evidence
+npm run carma:verify-evidence
+```
+
+The sanitized API is:
+
+```text
+GET /api/carma-evidence
+```
+
+Records & Reports shows approved orders linked to the active call cohort by exact `customer_id`. It includes the locked Company Sourced/Self Sourced method, actual seller, seller-allocation date, sale approval date, approved value, separate acquisition source and campaign, policy credited source, Carma credited source, reconciliation status and exact call proof. No phone, fuzzy business-name, inferred-person or call-to-sale causation matching is permitted.
 
 ## Local AI Execution Layer
 

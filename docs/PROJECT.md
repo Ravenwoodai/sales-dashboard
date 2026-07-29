@@ -6,7 +6,7 @@ Sales Dashboard
 
 ## Purpose
 
-Sales Dashboard is a local web application for inspecting scheduled CSV/XLSX sales-call exports. It turns supported source facts, exact stable-ID relationships, conservative literal transcript detections, and manager-authored review overlays into usable evidence without inventing call quality, sales, revenue, or customer intent.
+Sales Dashboard is a local web application for inspecting scheduled CSV/XLSX sales-call exports and optional validated Carma evidence. It turns supported source facts, exact stable-ID relationships, conservative literal transcript detections, policy-governed approved-sale/source-credit evidence, and manager-authored review overlays into usable evidence without inventing call quality, payment, recognised revenue, ROI, or customer intent.
 
 The current product deliberately has no automated semantic evaluator. The audited Qwen service works technically, but none of its evaluator capabilities is accurate enough for operational authority.
 
@@ -21,6 +21,7 @@ The current product deliberately has no automated semantic evaluator. The audite
 - Load a call CSV/XLSX from `--csv <path>` or `SALES_DASHBOARD_CSV_PATH`.
 - Optionally load a separate voicemail-pilot CSV/XLSX from `--voicemail-pilot <path>` or `SALES_DASHBOARD_VOICEMAIL_PILOT_PATH`; validate it read-only and never persist its raw rows into the active stores.
 - Optionally parse an allocation file from `--allocations <path>` or `SALES_DASHBOARD_ALLOCATIONS_PATH`, but park it outside active analytics.
+- Optionally open a normalized Carma evidence SQLite contract from `--carma-evidence <path>`, `SALES_DASHBOARD_CARMA_EVIDENCE_PATH`, or ignored local configuration. Open it read-only, validate its contract and integrity, and join calls to approved sales by exact `customer_id` only.
 - Deduplicate calls by `call_id`.
 - Use source facts such as timestamps, direction, method, salesperson, source, region, record dates, and transcript availability.
 - Use permitted stable IDs for exact repeat/later-attempt relationships. Never use partial phone values.
@@ -36,8 +37,10 @@ The current product deliberately has no automated semantic evaluator. The audite
 - Measure a controlled voicemail pilot only from exact preassignment, event-link, call-ID, source-handler, CRM-sale and currency facts. Withhold treatment/control lift until both arms have complete equal-duration observation windows.
 - Retire Lead Harvest and every model-backed operational route, queue, rollup, ranking, or action.
 - Persist local history under the ignored `data/` directory.
-- Keep reports based on trusted source/literal evidence; preserve unsafe historical reports without exposing them as active truth.
-- Clearly state that the source data does not prove sales conversion, payment, fulfilment, order value, recognised revenue, ROI, close date, or CRM won/lost state.
+- Keep reports based on trusted source/literal evidence and validated read-only Carma evidence; preserve unsafe historical reports without exposing them as active truth.
+- When Carma evidence is configured, show approved order, seller, approval date/value, seller-allocation date, sourcing method, acquisition source, policy credited source, campaign, Carma credited source, allowable credit, and reconciliation findings without CRM writeback.
+- Default every Carma lead-source and salesperson-performance report to `actual_seller_any_pre_sale_allocation.v1`: Company Sourced when the actual seller had any exact recorded pre-sale allocation; otherwise Self Sourced. Allocation age and acquisition-source proof do not change this top-level method.
+- Clearly state that call-source data alone does not prove sales conversion. Validated Carma evidence may prove an approved sale and its recorded approval value, but does not prove payment, fulfilment, recognised revenue, profit, ROI, or causal influence.
 
 ## Model Capability Policy
 
@@ -74,17 +77,19 @@ The current product deliberately has no automated semantic evaluator. The audite
 - Every registered capability shows exact scope, status, provenance, authority, exclusions, evidence, failure reason, and permitted next action.
 - The voicemail/inbound lane recomputes counts from the active import and keeps ambiguous chronology/linkage `unknown`/`not_scored`.
 - The optional pilot import rejects invalid assignments before denominators, keeps invalid downstream measures `not_scored`, separates attribution provenance and currencies, and creates no job, run, result, queue, review or CRM action.
+- The optional Carma evidence adapter opens the contract read-only, passes integrity and foreign-key checks, uses exact `customer_id` matching only, separates source from campaign, and exposes no raw configured path.
+- The Carma contract keeps sourcing method, acquisition-source type, campaign and credited source separate. Administrative/other-person allocations and unverified aliases never qualify in place of the actual seller.
 - Call pages show readable transcript proof, provenance, historical research warnings, and manager review without exposing unsupported raw fields.
 - `NoSaleType` and `Baz_DetailedNotes` remain excluded from active computation and display.
 - Phone values and malformed date fragments are not used for matching or analytics.
-- Allocation data remains parked.
+- Generic allocation imports remain parked. Only the separately validated read-only Carma evidence contract may contribute allocation and approved-sale facts.
 - Browser, tests, SQLite integrity, runtime health, and adversarial fail-closed checks pass before release.
 
 ## Non-Goals
 
 - Automated call-quality, Spiel, objection-handling, procedure, offer-acceptance, lead-validity, or opportunity decisions under the current model.
 - Semantic search or automatic coaching/ranking.
-- Sales, revenue, payment, fulfilment, ROI, or CRM inference.
+- Sales, revenue, payment, fulfilment, ROI, or CRM inference from call records. Approved-sale and source-credit facts may be displayed only from validated Carma evidence.
 - Audio processing, diarisation, re-transcription, or recording analysis.
 - Phone-based entity resolution.
 - External AI services or direct calls to Ollama/vLLM from this repository.

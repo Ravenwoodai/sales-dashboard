@@ -2,13 +2,15 @@
 
 ## System Overview
 
-Sales Dashboard is a local Node.js web application. It reads CSV/XLSX call exports, keeps raw source data local, builds a conservative derived SQLite view, and renders evidence-focused manager pages. Optional allocation data is parked. Historical local-model artifacts are isolated as research.
+Sales Dashboard is a local Node.js web application. It reads CSV/XLSX call exports, keeps raw source data local, builds a conservative derived SQLite view, and renders evidence-focused manager pages. Optional legacy allocation data is parked. A separate optional Carma SQLite evidence contract is consumed read-only. Historical local-model artifacts are isolated as research.
 
 The architecture is intentionally fail closed: no local-model capability is currently promoted, so neither model availability nor historical output can enable submission or operational consumption.
 
+`docs/CARMA_DATA_LAYER.md` and the ignored local `data/carma/catalog.json` provide source discovery for the complete extracted Carma history. This catalog is separate from `carma_evidence.v2`: the catalog records where the full approved-sales history and weekly raw allocation logs live; the evidence database is the read-only, validated subset consumed by the running dashboard.
+
 ## Runtime Flow
 
-1. `src/main.js` resolves call/allocation/optional voicemail-pilot paths and starts the local HTTP server.
+1. `src/main.js` resolves call/allocation/optional voicemail-pilot/optional Carma-evidence paths and starts the local HTTP server.
 2. `src/sourceFile.js`, `src/csvParser.js`, and `src/xlsxReader.js` normalise source tables.
 3. `src/analysis.js` deduplicates by `call_id`, profiles source coverage, applies global filters, builds stable-ID reattempt facts, and combines literal detections with manager overlays.
 4. `src/transcriptEvaluator.js` performs only closed literal classification. Semantic fields remain null.
@@ -21,6 +23,9 @@ The architecture is intentionally fail closed: no local-model capability is curr
 11. `src/evaluationValidationLab.js` isolates genuinely unseen manifests and frozen human benchmark truth from both operational reviews and the historical archive.
 12. `src/voicemailRecovery.js` recomputes the closed voicemail/message/later-inbound evidence lane from active call rows without semantic or commercial inference.
 13. `src/voicemailPilotAttribution.js` validates the optional pilot source against active call proof in memory and builds fail-closed assignment, message, callback, handler, sale, profit and experiment-endpoint facts without persistence or model use.
+14. `src/carmaEvidence.js` opens only supported `carma_evidence.v2` databases in read-only mode, validates integrity/required tables, and joins orders to calls only by exact `customer_id`.
+15. `src/leadSourcePolicy.js` supplies the canonical allocation-based Company Sourced/Self Sourced classification for every Carma lead-source report.
+16. `scripts/build-carma-evidence.js` rebuilds the normalized contract and proof exports from saved Carma extracts without browser access or repeat extraction.
 
 ## Trust Layers
 
@@ -35,6 +40,11 @@ optional voicemail-pilot source
   -> exact ID/time/provenance validation against active call proof
   -> read-only Studio report; invalid measures stay not_scored
   -> never enters active intelligence, archive, jobs, reviews, or CRM
+
+optional Carma evidence contract
+  -> schema/integrity validation in read-only mode
+  -> exact customer_id join to approved sale/allocation/source-credit facts
+  -> sanitized Records/API proof; no phone/fuzzy matching or CRM writeback
 
 historical model jobs/results
   -> research archive (authority: none)
@@ -55,6 +65,9 @@ historical model jobs/results
 - `src/selfSourcingAttribution.js`: record-age/source attribution-review facts only.
 - `src/weeklyLeadIntelligence.js`: isolated source-report snapshot, not a performance or commercial metric.
 - `src/allocationCoverage.js` and `src/allocationParking.js`: preserved parser and parked diagnostics only.
+- `src/carmaEvidence.js`: optional read-only Carma contract validation, exact-ID join, and sanitized API/UI projection.
+- `src/leadSourcePolicy.js`: versioned default classification; any exact actual-seller pre-sale allocation is Company Sourced, otherwise Self Sourced.
+- `scripts/build-carma-evidence.js` and `scripts/verify-carma-evidence.js`: repeatable contract producer and integrity/reconciliation verifier.
 - `src/storage.js`: local JSON/SQLite coordination, reports, alerts, reviews, and archive access.
 - `src/evaluationStudioDatabase.js`: authoritative historical Evaluation Studio SQLite store.
 - `src/evaluationStudio.js`: historical evaluator definitions and archive interpretation; live submission/operational use is blocked externally and internally by capability policy.
@@ -76,6 +89,7 @@ historical model jobs/results
 
 - Raw source files remain at their configured locations and are not committed.
 - Raw pilot files also remain at their configured locations; only a sanitized in-memory report is exposed and no pilot row is persisted by the application.
+- The Carma database remains at its configured local path and is opened read-only. The application exposes only sanitized normalized facts, never source paths, credentials, phones or raw evidence files.
 - `data/store/state.json` stores local operational history and job references.
 - `data/store/intelligence.sqlite` stores the active deterministic derived import.
 - `data/store/evaluation-studio.sqlite` stores historical model research artifacts.
@@ -85,6 +99,8 @@ historical model jobs/results
 - `NoSaleType` and `Baz_DetailedNotes` never enter active computation, UI, reports, reviews, or model context.
 - Manager corrections are overlays and never overwrite raw or derived evidence.
 - Allocation data is parked and excluded from active metrics and model context.
+- Carma source types and campaigns are separate dimensions. Dated or `(Batch)` labels cannot populate source type.
+- Carma sourcing method is also separate: Company Sourced/Self Sourced is controlled only by exact actual-seller pre-sale allocation. Named channels and external monetary credit remain independent dimensions.
 
 ## Model Boundary
 

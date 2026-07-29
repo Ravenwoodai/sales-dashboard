@@ -1,5 +1,23 @@
 # Plans
 
+## Completed 2026-07-29: Shared Carma Data Layer
+
+- Goal: give Sales Dashboard agents one documented, local entry point to the already-extracted Carma datasets.
+- Scope: full approved-sales-history manifest, raw weekly allocation logs, customer allocation-history extracts, optional Campaign status snapshots and the existing validated dashboard evidence contract.
+- Boundary: raw data remains local and is not exposed through the dashboard UI/API; app joins stay exact `customer_id` only.
+- Result: `docs/CARMA_DATA_LAYER.md`, a local ignored configuration/catalog, and `npm run carma:refresh-data-layer` now provide a reproducible source inventory. The first catalog registers approved-sales history from 1996-01-01 to 2026-07-27 and the 2026-07-20-to-2026-07-26 raw-log file (33,708 rows; 33,659 logical events).
+
+## Completed 2026-07-27: Carma Evidence Contract And Dashboard Sharing
+
+- Reused saved Carma approved-sales, allocation and complete parsed Lead Generators Sales extracts; did not repeat the 420-branch extraction.
+- Corrected the no-exact-seller-allocation population using explicit `seller_allocated_before_sale`, reproducing the prior focused 87/85/2 audit and separately retaining all 7 current lenient alias-review candidates.
+- Built and verified `carma_evidence.v2`: 930 orders, 910 customers, 30,494 allocations, 5,750 credit rows, versioned provenance/issues/views, integrity `ok`, zero foreign-key issues.
+- Added the optional read-only Sales Dashboard adapter, health fields, sanitized API and Records & Reports UI. Exact `customer_id` is the only join; phone/fuzzy-name matching and CRM writeback remain prohibited.
+- Locked `actual_seller_any_pre_sale_allocation.v1` as the default top-level classification for every lead-source report: Company Sourced when the actual seller had any exact pre-sale allocation, otherwise Self Sourced.
+- Preserved named acquisition-source/campaign separation and the independently versioned 28-day external-credit comparison; neither can override the top-level allocation classification.
+- Verified the original 293-order cohort at 26 exact customers/28 calls, with 15/15 comparable source and 15/15 import-date matches; expanded sources legitimately raise the combined overlap to 74 customers/121 calls.
+- Created the corrected 637-sale proof workbook and repeatable build/verify commands. Full suite passes 357/357.
+
 ## Active Plan
 
 ### Voicemail Pilot Attribution

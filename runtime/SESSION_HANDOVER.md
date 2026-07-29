@@ -1,10 +1,28 @@
 # Session Handover
 
-Date: 2026-07-23
+Date: 2026-07-27
 
 ## Outcome
 
-Sales Dashboard now operates inside an enforced zero-promoted local-model boundary. Evaluation Studio is a controlled validation laboratory with a capability catalog, deterministic voicemail/inbound evidence, optional fail-closed source-system pilot attribution, an isolated human-labelled benchmark store, and a separately marked immutable historical research archive. Historical Qwen work is research-only and cannot submit, route, score, rank, coach, or create operational actions.
+Sales Dashboard now operates inside an enforced zero-promoted local-model boundary and consumes a separate Carma evidence contract read-only. Evaluation Studio remains a controlled validation laboratory with a capability catalog, deterministic voicemail/inbound evidence, optional fail-closed source-system pilot attribution, an isolated human-labelled benchmark store, and a separately marked immutable historical research archive. Historical Qwen work is research-only and cannot submit, route, score, rank, coach, or create operational actions.
+
+## Carma Evidence Integration
+
+### Shared source catalog (2026-07-29)
+
+- Start Carma source discovery at `docs/CARMA_DATA_LAYER.md`; its local machine-readable inventory is `data/carma/catalog.json`.
+- Refresh after every new extract with `npm run carma:refresh-data-layer`. The ignored configuration is `data/carma/config.json`.
+- The catalog is an agent-only source directory: it covers the 1996â€“2026 approved-sales backfill, raw weekly lead-allocation logs, customer allocation-history extracts and optional Campaign snapshots. It is not an API/UI source and does not relax exact-`customer_id` matching or raw-path privacy controls.
+
+- Local contract: `carma_evidence.v2`, configured through `data/store/carma-evidence.json`, CLI or `SALES_DASHBOARD_CARMA_EVIDENCE_PATH`.
+- Contract contents: 930 approved orders, 910 customers, 30,494 allocation rows and 5,750 parsed Lead Generators Sales credit rows.
+- Default lead-source policy: `actual_seller_any_pre_sale_allocation.v1`. Company Sourced means the actual seller had any exact recorded allocation on or before approval; Self Sourced means no exact actual-seller pre-sale allocation exists. Allocation age and acquisition-source proof do not change this top-level classification.
+- Named acquisition source, campaign, Carma credited source and the retained `seller_allocation_within_28_days_lenient.v1` external-credit comparison remain separate dimensions. Possible aliases are review-only.
+- Source/campaign separation is enforced; dated and `(Batch)` labels are campaigns, not source types.
+- Dashboard boundary: read-only SQLite, exact `customer_id` only, no phone/fuzzy/inferred matching, no source-path exposure and no CRM writeback.
+- UI/API: Records & Reports plus `GET /api/carma-evidence`; health reports configured/available/read-only/order/match state.
+- Verification: integrity `ok`, zero foreign-key issues, zero lead-source classification violations, prior focused 87/85/2 population reproduced, original overlap 26 customers/28 calls with 15/15 source and 15/15 import-date matches, expanded overlap 74 customers/121 calls. The 13–19 July cohort is 541 Company Sourced and 96 Self Sourced under the locked default.
+- Build: `npm run carma:build-evidence`; verify: `npm run carma:verify-evidence`.
 
 ## Capability State
 

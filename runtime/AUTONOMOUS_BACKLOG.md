@@ -27,6 +27,9 @@ Allowed statuses: `TODO`, `IN_PROGRESS`, `BLOCKED`, `DONE`.
 | 21 | P1 | Add deterministic voicemail and inbound evidence | DONE | - | - | Exact prompt/message/chronology/linkage/handler facts are visible without causal, receptiveness, or commercial inference |
 | 22 | P0 | Validate a materially different semantic candidate | BLOCKED | No approved candidate; Qwen family hard-stopped | Use the existing strict promotion partition only after a materially different candidate and explicit authorisation exist | At least 100 frozen balanced calls pass predeclared thresholds/budgets, then receive separate external approval |
 | 23 | P1 | Add optional voicemail-pilot attribution import | DONE | - | - | Invalid/ambiguous records fail closed; explicit callback/sale/profit facts retain provenance; tests, browser checks and trusted-boundary audit pass |
+| 24 | P0 | Share normalized Carma approved-sale/allocation/source-credit evidence read-only | DONE | - | - | Versioned SQLite contract, exact-customer join, API/UI, workbook, integrity/reconciliation proof and repeatable commands pass |
+| 25 | P1 | Create a shared catalog for all extracted Carma data | DONE | - | - | Local configuration, agent documentation and reproducible refresh catalog cover approved-sales history, raw allocation logs, allocation history and Campaign status sources |
+| 26 | P0 | Lock the default Carma lead-source classification | DONE | - | - | Versioned policy, reusable module, contract fields, UI/API, regression tests and full-population invariant checks agree |
 
 ## Governing Rule
 

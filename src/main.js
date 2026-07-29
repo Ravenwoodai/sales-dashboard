@@ -30,6 +30,16 @@ const {
 } = require("./evaluationValidationLab");
 const { buildVoicemailInboundReport } = require("./voicemailRecovery");
 const {
+  loadCarmaEvidence,
+  publicCarmaEvidence,
+  resolveCarmaEvidencePath
+} = require("./carmaEvidence");
+const {
+  loadPerformanceCohorts,
+  publicPerformanceCohorts,
+  resolvePerformanceConfig
+} = require("./performanceCohorts");
+const {
   buildVoicemailPilotAttributionReport,
   emptyVoicemailPilotAttributionReport,
   voicemailPilotLoadError
@@ -2055,11 +2065,21 @@ function createServer(options = {}) {
   const csvPath = options.csvPath || resolveCsvPath(options.argv || process.argv.slice(2), env);
   const allocationPath = options.allocationPath || resolveAllocationPath(options.argv || process.argv.slice(2), env);
   const voicemailPilotPath = options.voicemailPilotPath || resolveVoicemailPilotPath(options.argv || process.argv.slice(2), env);
+  const carmaEvidencePath = resolveCarmaEvidencePath(options.argv || process.argv.slice(2), env, options);
+  const performanceConfig = resolvePerformanceConfig(options.argv || process.argv.slice(2), env, options);
   const storePath = resolveStorePath(options);
   const aiConfig = resolveAiExecutionConfig(env);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   let state = loadAnalysis(csvPath, { storePath, allocationPath });
   let voicemailPilot = loadVoicemailPilotAttribution(voicemailPilotPath, state.analysis?.drilldownRows || []);
+  let carmaEvidence = loadCarmaEvidence({
+    databasePath: carmaEvidencePath,
+    calls: state.analysis?.drilldownRows || []
+  });
+  let performanceCohorts = loadPerformanceCohorts({
+    config: performanceConfig,
+    databasePath: carmaEvidencePath
+  });
 
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
@@ -2120,6 +2140,18 @@ function createServer(options = {}) {
         voicemail_pilot_input_rows: voicemailPilot.totals?.inputRows || 0,
         voicemail_pilot_accepted_assignments: voicemailPilot.totals?.acceptedAssignments || 0,
         voicemail_pilot_rejected_assignments: voicemailPilot.totals?.rejectedAssignments || 0,
+        carma_evidence_configured: carmaEvidence.configured,
+        carma_evidence_available: carmaEvidence.available,
+        carma_evidence_status: carmaEvidence.status,
+        carma_evidence_read_only: carmaEvidence.readOnly,
+        carma_evidence_orders: carmaEvidence.totals?.orders || 0,
+        carma_evidence_exact_customer_matches: carmaEvidence.totals?.exactCustomerMatches || 0,
+        performance_cohorts_configured: performanceCohorts.configured,
+        performance_cohorts_available: performanceCohorts.available,
+        performance_cohorts_status: performanceCohorts.status,
+        performance_cohorts_period: performanceCohorts.period?.label || "",
+        performance_cohorts_sent_events: performanceCohorts.totals?.deduplicatedSentEvents || 0,
+        performance_cohorts_matched_approved_sales: performanceCohorts.totals?.matchedApprovedSales || 0,
         ai_execution: publicAiExecutionStatus(aiConfig)
       });
       return;
@@ -2160,6 +2192,22 @@ function createServer(options = {}) {
 
     if (url.pathname === "/api/summary") {
       sendJson(response, 200, publicAnalysis(analysisForRequest(state, url, storePath)));
+      return;
+    }
+
+    if (url.pathname === "/api/carma-evidence" && request.method === "GET") {
+      sendJson(response, carmaEvidence.available ? 200 : 503, publicCarmaEvidence(
+        carmaEvidence,
+        Object.fromEntries(url.searchParams.entries())
+      ));
+      return;
+    }
+
+    if (url.pathname === "/api/performance-cohorts" && request.method === "GET") {
+      sendJson(response, performanceCohorts.available ? 200 : 503, publicPerformanceCohorts(
+        performanceCohorts,
+        Object.fromEntries(url.searchParams.entries())
+      ));
       return;
     }
 
@@ -3663,11 +3711,20 @@ function createServer(options = {}) {
     if (url.pathname === "/api/reload" && request.method === "POST") {
       state = loadAnalysis(csvPath, { storePath, allocationPath });
       voicemailPilot = loadVoicemailPilotAttribution(voicemailPilotPath, state.analysis?.drilldownRows || []);
+      carmaEvidence = loadCarmaEvidence({
+        databasePath: carmaEvidencePath,
+        calls: state.analysis?.drilldownRows || []
+      });
+      performanceCohorts = loadPerformanceCohorts({
+        config: performanceConfig,
+        databasePath: carmaEvidencePath
+      });
       sendJson(response, state.error ? 500 : 200, {
         ok: !state.error,
         error: state.error,
         sourceName: state.analysis.sourceName,
-        importId: state.importRecord?.id || null
+        importId: state.importRecord?.id || null,
+        performanceCohortsAvailable: performanceCohorts.available
       });
       return;
     }
@@ -4018,6 +4075,8 @@ function createServer(options = {}) {
       dashboardView,
       intelligenceQueue,
       intelligenceCalls,
+      carmaEvidence,
+      performanceCohorts,
       opportunityStage: url.searchParams.get("opportunityStage") || "",
       opportunityQueue: url.searchParams.get("opportunityQueue") || ""
     }));
@@ -4032,10 +4091,14 @@ function startServer(options = {}) {
     const csvPath = resolveCsvPath(options.argv || process.argv.slice(2), options.env || process.env);
     const allocationPath = resolveAllocationPath(options.argv || process.argv.slice(2), options.env || process.env);
     const voicemailPilotPath = resolveVoicemailPilotPath(options.argv || process.argv.slice(2), options.env || process.env);
+    const carmaEvidencePath = resolveCarmaEvidencePath(options.argv || process.argv.slice(2), options.env || process.env, options);
+    const performanceConfig = resolvePerformanceConfig(options.argv || process.argv.slice(2), options.env || process.env, options);
     console.log(`Sales Dashboard listening on http://${host}:${port}`);
     console.log(csvPath ? `CSV source: ${csvPath}` : "CSV source: not configured");
     console.log(allocationPath ? "Allocation source configured but parked from active analytics" : "Allocation source: not configured");
     console.log(voicemailPilotPath ? "Voicemail pilot source: configured for strict read-only validation" : "Voicemail pilot source: not configured");
+    console.log(carmaEvidencePath ? "Carma evidence source: configured read-only" : "Carma evidence source: not configured");
+    console.log(performanceConfig.configured ? "Performance cohort sources: configured local read-only" : "Performance cohort sources: not configured");
   });
   return server;
 }
@@ -4048,6 +4111,8 @@ module.exports = {
   resolveCsvPath,
   resolveAllocationPath,
   resolveVoicemailPilotPath,
+  resolveCarmaEvidencePath,
+  resolvePerformanceConfig,
   loadVoicemailPilotAttribution,
   loadAnalysis,
   attachPersistence,

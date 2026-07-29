@@ -4202,6 +4202,12 @@ const DASHBOARD_VIEW_META = Object.freeze({
     title: "Literal Transcript Triage",
     description: "Inspect raw transcript facts, restricted literal triage, and provenance. Semantic evaluation and automated scoring are unavailable."
   },
+  performance: {
+    label: "Performance & Cohorts",
+    kicker: "Governed commercial evidence",
+    title: "Performance & Cohorts",
+    description: "Compare workload, approved-sales productivity, execution timing, and matured allocation cohorts with explicit attribution limits."
+  },
   records: {
     label: "Records & Reports",
     kicker: "Audit and evidence",
@@ -4707,6 +4713,131 @@ function renderSalesOpportunityActionCentre(centre = {}, options = {}) {
   </div>`;
 }
 
+function renderPerformanceCohorts(report = {}) {
+  if (!report.configured) {
+    return `<section class="panel" id="performance-summary">
+      <div class="panel-header"><div><p class="page-kicker">Local configuration</p><h2>Performance & Cohorts</h2><p class="muted small">Configure a raw allocation log and the read-only Carma evidence contract to enable this workspace.</p></div>${badge("Not configured", "warning")}</div>
+      <div class="panel-body"><div class="empty">No performance cohort source is configured. Raw call analytics remain separate and unchanged.</div></div>
+    </section>`;
+  }
+  if (!report.available) {
+    return `<section class="panel" id="performance-summary">
+      <div class="panel-header"><div><p class="page-kicker">Source validation</p><h2>Performance & Cohorts unavailable</h2><p class="muted small">The report failed closed before calculating a personnel comparison.</p></div>${badge("Unavailable", "critical")}</div>
+      <div class="panel-body"><div class="empty">${escapeHtml(report.error || "Performance source validation failed.")}</div></div>
+    </section>`;
+  }
+
+  const totals = report.totals || {};
+  const rows = report.comparison?.rows || [];
+  const cohortWindows = report.cohortWindows || [];
+  const dataQuality = report.dataQuality || {};
+  const history = report.history || [];
+  const currency = (value) => Number(value || 0).toLocaleString("en-AU", {
+    style: "currency",
+    currency: "AUD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2
+  });
+  const statusLabel = (row) => {
+    if (row.comparisonStatus === "role_review") return badge("Role review", "warning");
+    if (!row.comparisonEligible) return badge("Low sample", "neutral");
+    return badge(`Rank ${formatNumber(row.comparisonRank)}`, "notice");
+  };
+  const cohortValue = (window) => window.status === "measured"
+    ? formatPercent(window.conversionRate)
+    : "Not mature";
+
+  return `<div class="workspace-flow">
+    <section class="panel" id="performance-summary">
+      <div class="panel-header">
+        <div>
+          <p class="page-kicker">Same-week productivity proxy</p>
+          <h2>${escapeHtml(report.period?.label || "Configured period")}</h2>
+          <p class="muted small">Approved orders in the period divided by deduplicated sent allocation events. This is not proof that those allocations or calls caused the sales.</p>
+        </div>
+        <div class="stack">${badge("Deterministic", "success")}${badge("Carma read-only", "neutral")}${badge("Exact IDs / labels", "notice")}</div>
+      </div>
+      <div class="panel-body metrics">
+        ${metricCard("Sent allocation events", formatNumber(totals.deduplicatedSentEvents), `${formatNumber(totals.logicalDuplicateRows)} logical duplicate rows excluded`, "info", "/api/performance-cohorts")}
+        ${metricCard("Unique customer-recipient pairs", formatNumber(totals.uniqueCustomerRecipientPairs), "Customer identity uses CustomerID only", "info", "/api/performance-cohorts")}
+        ${metricCard("Matched approved sales", formatNumber(totals.matchedApprovedSales), `${formatNumber(totals.unmatchedApprovedSales)} approved orders lack an exact allocation-recipient label match`, "good", "/api/performance-cohorts")}
+        ${metricCard("Team approved-sales proxy", formatPercent(totals.approvedSalesPerSentEvent), "Approved sales / sent allocation events", "good", "/api/performance-cohorts")}
+        ${metricCard("Approved value ex GST", currency(totals.approvedSalesValue), "Approved-sale amount; not payment, profit or recognised revenue", "info", "/api/performance-cohorts")}
+        ${metricCard("Comparable salespeople", formatNumber(report.comparison?.eligibleRows), `Minimum ${formatNumber(report.comparison?.minimumAllocations)} sent events; low-sample and role-review rows remain visible`, "neutral", "/api/performance-cohorts")}
+      </div>
+    </section>
+
+    <section class="panel" id="cohort-conversion">
+      <div class="panel-header">
+        <div><h2>Mature Cohort Conversion</h2><p class="muted small">Exact customer and exact seller approval within 30, 60 or 90 days after allocation. Only fully matured customers enter a denominator.</p></div>
+        ${badge(cohortWindows.some((window) => window.status === "measured") ? "Measured cohorts available" : "Awaiting maturity", cohortWindows.some((window) => window.status === "measured") ? "success" : "warning")}
+      </div>
+      <div class="panel-body metrics">
+        ${cohortWindows.map((window) => metricCard(
+          `${formatNumber(window.days)}-day conversion`,
+          cohortValue(window),
+          window.status === "measured"
+            ? `${formatNumber(window.convertedCustomers)} of ${formatNumber(window.matureCustomers)} mature customer-recipient pairs`
+            : `Evidence currently runs through ${escapeHtml(window.evidenceThrough)}; no ${formatNumber(window.days)}-day cohort is mature`,
+          window.status === "measured" ? "good" : "neutral"
+        )).join("")}
+      </div>
+    </section>
+
+    <section class="panel performance-comparison" id="salesperson-comparison">
+      <div class="panel-header">
+        <div><h2>Fair Salesperson Comparison</h2><p class="muted small">All recipients are visible. Rank applies only to source labels with at least ${formatNumber(report.comparison?.minimumAllocations)} sent events and no administrative-role flag.</p></div>
+        ${badge(`${formatNumber(rows.length)} rows`, "neutral")}
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            ${["Status", "Salesperson", "Manager", "Sent events", "Unique customers", "Approved sales", "Sales proxy", "Value / sent", "Call coverage", "Within 24h", "Reallocation"].map((label) => renderTableHeading(label)).join("")}
+          </tr></thead>
+          <tbody>${rows.map((row) => `<tr class="${row.comparisonStatus === "role_review" ? "warning-row" : ""}">
+            <td data-label="Status">${statusLabel(row)}</td>
+            <td data-label="Salesperson"><strong>${escapeHtml(row.salesperson)}</strong><br /><span class="muted small">${escapeHtml(humanizeSlug(row.relativeToTeam))}</span></td>
+            <td data-label="Manager">${escapeHtml(row.manager)}</td>
+            <td data-label="Sent events">${formatNumber(row.sentAllocationEvents)}</td>
+            <td data-label="Unique customers">${formatNumber(row.uniqueCustomers)}</td>
+            <td data-label="Approved sales">${formatNumber(row.approvedSales)}<br /><span class="muted small">${currency(row.approvedSalesValue)}</span></td>
+            <td data-label="Sales proxy"><strong>${formatPercent(row.approvedSalesPerSentEvent)}</strong><br /><span class="muted small">${formatPercent(row.approvedSalesPerUniqueCustomer)} per unique customer</span></td>
+            <td data-label="Value / sent">${currency(row.valuePerSentEvent)}</td>
+            <td data-label="Call coverage">${formatPercent(row.observedCallCoverageRate)}</td>
+            <td data-label="Within 24h">${formatPercent(row.callWithin24HoursRate)}</td>
+            <td data-label="Reallocation">${formatNumber(row.reallocationEvents)}<br /><span class="muted small">${formatPercent(row.reallocationRate)}</span></td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>
+      <div class="panel-body"><p class="muted small">This table is descriptive source evidence for manager investigation. It must not be used as an automatic discipline, lead-removal, pay, or CRM decision.</p></div>
+    </section>
+
+    <section class="panel" id="performance-history">
+      <div class="panel-header"><div><h2>Historical Context</h2><p class="muted small">Earlier Carma workbooks remain visible as context. Different allocation denominators are not silently merged into the current raw-log series.</p></div>${badge(`${formatNumber(history.length)} snapshots`, "neutral")}</div>
+      ${table([
+        { label: "Period", render: (row) => escapeHtml(row.period) },
+        { label: "Method", render: (row) => escapeHtml(row.method || "Not recorded") },
+        { label: "Leads", render: (row) => formatNumber(row.leads) },
+        { label: "Approved sales", render: (row) => formatNumber(row.approvedSales) },
+        { label: "Proxy", render: (row) => formatPercent(row.proxyRate) },
+        { label: "Comparability", render: (row) => row.comparableToCurrent ? badge("Comparable", "success") : badge("Context only", "warning") },
+        { label: "Source", render: (row) => escapeHtml(row.sourceLabel || "Local Carma report") }
+      ], history, "No historical summary snapshots are configured.")}
+    </section>
+
+    <section class="panel" id="performance-quality">
+      <div class="panel-header"><div><h2>Data Quality & Interpretation</h2><p class="muted small">The report fails closed on required allocation fields and discloses unresolved cross-system identity and date-window differences.</p></div>${badge(dataQuality.dateWindowMismatch ? "Date mismatch disclosed" : "Dates aligned", dataQuality.dateWindowMismatch ? "warning" : "success")}</div>
+      <div class="panel-body guardrails">
+        <div class="note"><h3>Source windows</h3><p class="muted small">Allocation dates: ${(dataQuality.allocationDates || []).map(escapeHtml).join(", ") || "none"}<br />Call dates: ${(dataQuality.callDates || []).map(escapeHtml).join(", ") || "none"}</p></div>
+        <div class="note"><h3>Personnel identity</h3><p class="muted small">${escapeHtml(dataQuality.salespersonIdentityRule || "Exact source labels only.")}<br />Shared allocation/call user IDs: ${formatNumber(dataQuality.sharedUserIds)}.</p></div>
+        <div class="note"><h3>Stable joins</h3><p class="muted small">Customer linkage uses exact CustomerID/customer_id only. Phone, fuzzy-name and partial-ID matching are prohibited.</p></div>
+        <div class="note"><h3>Commercial meaning</h3><p class="muted small">Approved sales and approved value are CRM source facts. They do not establish call causation, payment, fulfilment, profit or recognised revenue.</p></div>
+      </div>
+      <div class="panel-body"><details><summary>Definitions and limitations</summary><dl class="definition-list">${Object.entries(report.definitions || {}).map(([key, value]) => `<div><dt>${escapeHtml(humanizeSlug(key))}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl><ul>${(report.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details></div>
+    </section>
+  </div>`;
+}
+
 function renderDashboard(analysis, options = {}) {
   const sourceData = analysis || renderEmptyState("Set SALES_DASHBOARD_CSV_PATH or start with --csv to load a scheduled CSV export.");
   const activeView = normalizeDashboardView(options.dashboardView || options.view);
@@ -4749,6 +4880,24 @@ function renderDashboard(analysis, options = {}) {
   const leadTotals = leadUtilization.totals || {};
   const intelligence = data.intelligence || { totals: {}, salespeople: [], sources: [] };
   const intelligenceTotals = intelligence.totals || {};
+  const carmaEvidence = options.carmaEvidence || {
+    configured: false,
+    available: false,
+    status: "not_configured",
+    readOnly: true,
+    totals: {},
+    rows: [],
+    limitations: []
+  };
+  const carmaTotals = carmaEvidence.totals || {};
+  const carmaRows = (carmaEvidence.rows || []).slice(0, 60);
+  const performanceCohorts = options.performanceCohorts || {
+    configured: false,
+    available: false,
+    status: "not_configured",
+    comparison: { rows: [] },
+    totals: {}
+  };
 
   const salespersonRows = data.salespersonScorecards.slice(0, 18);
   const sourceRows = data.sourceMetrics.slice(0, 14);
@@ -4812,7 +4961,8 @@ function renderDashboard(analysis, options = {}) {
     reviews: [["alerts", "Alerts & reviews"]],
     team: [["salespeople", "Salespeople"], ["sources", "Sources"], ["source-quality", "Source quality"], ["ai-assistants", "AI assistants"], ["system-audio", "System audio"]],
     intelligence: [["provenance", "Provenance"], ["evaluation-results", "Evaluation results"], ["intelligence", "Call intelligence"], ["intelligence-queue", "Evidence queue"]],
-    records: [["explorer", "Call explorer"], ["confidence", "Data confidence"], ["history", "Imports"], ["reports", "Reports"]]
+    performance: [["performance-summary", "Weekly proxy"], ["cohort-conversion", "Mature cohorts"], ["salesperson-comparison", "Salespeople"], ["performance-history", "History"], ["performance-quality", "Data quality"]],
+    records: [["carma-evidence", "Carma evidence"], ["explorer", "Call explorer"], ["confidence", "Data confidence"], ["history", "Imports"], ["reports", "Reports"]]
   };
   const currentSectionLinks = sectionLinksByView[activeView] || sectionLinksByView.overview;
 
@@ -5901,6 +6051,8 @@ function renderDashboard(analysis, options = {}) {
           </div>
           <div class="stack">
             ${hasAnyData ? badge("CSV loaded", "success") : badge("No CSV loaded", "warning")}
+            ${carmaEvidence.available ? badge("Carma linked read-only", "success") : badge("Carma not linked", "neutral")}
+            ${activeView === "performance" ? badge(performanceCohorts.available ? "Performance data ready" : "Performance data unavailable", performanceCohorts.available ? "success" : "warning") : ""}
             ${activeSegment ? badge(`${segmentLabel} view`, "notice") : ""}
             ${badge(formatDateRange(data.dateRange), "neutral")}
           </div>
@@ -5908,7 +6060,7 @@ function renderDashboard(analysis, options = {}) {
 
         ${renderDatasetBanner(sourceData, persistence)}
 
-        ${hasAnyData ? renderGlobalFilters(data, { dashboardView: activeView }) : ""}
+        ${hasAnyData && activeView !== "performance" ? renderGlobalFilters(data, { dashboardView: activeView }) : ""}
 
         ${["overview", "intelligence"].includes(activeView) ? renderProcessingStatePanel(data, persistence, intelligenceTotals) : ""}
 
@@ -5918,6 +6070,10 @@ function renderDashboard(analysis, options = {}) {
 
         ${!hasAnyData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
         ${hasAnyData && !hasData ? `<section class="panel"><div class="panel-body"><div class="empty">No calls match the selected filters. Clear filters or broaden the date range before interpreting performance.</div></div></section>` : ""}
+
+        <div class="workspace-flow" ${workspaceAttr("performance")}>
+          ${renderPerformanceCohorts(performanceCohorts)}
+        </div>
 
         <div class="workspace-flow" ${workspaceAttr("opportunities")}>
           ${hasData ? renderSalesOpportunityActionCentre(data.salesOpportunityActionCentre || {}, {
@@ -6415,6 +6571,52 @@ function renderDashboard(analysis, options = {}) {
         </div>
 
         <div class="workspace-flow" ${workspaceAttr("records")}>
+        <section class="panel" id="carma-evidence">
+          <div class="panel-header">
+            <div>
+              <h2>Carma Sale & Lead-Source Evidence</h2>
+              <p class="muted small">Default classification: Company Sourced when the actual seller had any exact pre-sale allocation; otherwise Self Sourced. Acquisition sources and campaigns remain separate.</p>
+            </div>
+            <div class="stack">
+              ${badge(carmaEvidence.available ? "Contract available" : humanizeSlug(carmaEvidence.status || "not_configured"), carmaEvidence.available ? "success" : "warning")}
+              ${carmaEvidence.readOnly ? badge("Read-only", "neutral") : badge("Write access blocked", "critical")}
+            </div>
+          </div>
+          ${carmaEvidence.available ? `
+          <div class="panel-body metrics">
+            ${metricCard("Approved sales", formatNumber(carmaTotals.orders || 0), "Carma orders in the versioned evidence contract", "info", "/api/carma-evidence")}
+            ${metricCard("Company sourced", formatNumber(carmaTotals.companySourcedOrders || 0), "Actual seller allocated before approval", "good", "/api/carma-evidence?classification=Company%20Sourced")}
+            ${metricCard("Self sourced", formatNumber(carmaTotals.selfSourcedOrders || 0), "No exact actual-seller pre-sale allocation", "info", "/api/carma-evidence?classification=Self%20Sourced")}
+            ${metricCard("Exact customers linked", formatNumber(carmaTotals.exactCustomerMatches || 0), `${formatNumber(carmaTotals.matchingCalls || 0)} call records`, "good", "/api/carma-evidence")}
+            ${metricCard("Source checks", `${formatNumber(carmaTotals.sourceMatches || 0)}/${formatNumber(carmaTotals.sourceComparisons || 0)}`, "Comparable Carma and Dashboard import-source facts", carmaTotals.sourceMatches === carmaTotals.sourceComparisons ? "good" : "warning", "/api/carma-evidence")}
+            ${metricCard("Import-date checks", `${formatNumber(carmaTotals.importDateMatches || 0)}/${formatNumber(carmaTotals.importDateComparisons || 0)}`, "Comparable source import dates", carmaTotals.importDateMatches === carmaTotals.importDateComparisons ? "good" : "warning", "/api/carma-evidence")}
+            ${metricCard("Credit contradictions", formatNumber(carmaTotals.directReportingErrors || 0), "Carma external credit exceeds current policy allowance", carmaTotals.directReportingErrors ? "risk" : "good", "/api/carma-evidence?errorsOnly=true")}
+            ${metricCard("Join authority", "Exact ID", "customer_id only; causation is not inferred", "neutral")}
+          </div>
+          ${table([
+            { label: "Order", render: (row) => `<span class="mono">${escapeHtml(row.orderNumber)}</span>` },
+            { label: "Customer", render: (row) => `<strong>${escapeHtml(row.customer || "Unknown")}</strong><br /><span class="muted small mono">${escapeHtml(row.customerId)}</span>` },
+            { label: "Actual seller", render: (row) => escapeHtml(row.actualSeller || "Unknown") },
+            { label: "Seller allocated", render: (row) => escapeHtml(row.sellerAllocationDate || "No exact allocation") },
+            { label: "Approved", render: (row) => escapeHtml(formatDateTime(row.saleApprovalDate)) },
+            { label: "Approved value", render: (row) => `$${Number(row.saleValue || 0).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+            { label: "Sourcing method", render: (row) => `<strong>${escapeHtml(row.leadSourceClassification || "Unknown")}</strong><br /><span class="muted small">${escapeHtml(row.leadSourceClassificationReason || "")}</span>` },
+            { label: "Acquisition source", render: (row) => `${escapeHtml(row.acquisitionSourceType || "Not recorded")}${row.campaign ? `<br /><span class="muted small">Campaign: ${escapeHtml(row.campaign)}</span>` : ""}` },
+            { label: "Policy credited source", render: (row) => escapeHtml(row.policyCreditedSource || "Unverified") },
+            { label: "Carma credited source", render: (row) => `${escapeHtml(row.carmaCreditedSource || "Unverified")}<br /><span class="muted small">${escapeHtml(row.reportingFinding || "")}</span>` },
+            { label: "Call proof", render: (row) => `${row.callId ? callLink(row.callId) : "No linked call"}<br />${provenanceBadge(row.joinProof || "Exact customer_id")}` },
+            { label: "Reconciliation", render: (row) => `${badge(humanizeSlug(row.validationStatus || "unknown"), row.directReportingError ? "critical" : row.validationStatus === "verified" ? "success" : "warning")}<br /><span class="muted small">Source ${escapeHtml(row.sourceComparison)} · date ${escapeHtml(row.importDateComparison)}</span>` }
+          ], carmaRows, "No exact customer_id matches exist between the active call cohort and the Carma evidence contract.")}
+          <div class="panel-body">
+            <p class="muted small">Showing up to 60 exact joined rows. The full sanitized result is available at <a class="open-link" href="/api/carma-evidence">/api/carma-evidence</a>. Approved sale value is not paid or recognised revenue.</p>
+          </div>
+          ` : `
+          <div class="panel-body">
+            <div class="empty">${escapeHtml(carmaEvidence.error || "Configure a versioned Carma evidence database to enable exact customer proof.")}</div>
+          </div>
+          `}
+        </section>
+
         <section class="panel" id="confidence">
           <div class="panel-header">
             <div>

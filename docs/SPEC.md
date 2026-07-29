@@ -9,6 +9,7 @@
 5. A manager can open a contributing call, read the transcript and exact evidence, and record a non-destructive review overlay.
 6. A manager can inspect capability boundaries, deterministic voicemail/inbound evidence, and benchmark-only human-truth work in Evaluation Studio.
 7. Historical model work remains in a separate immutable Evaluation Research Archive, clearly labelled non-authoritative.
+8. When the optional Carma evidence contract is configured, a manager can inspect approved sales, seller-allocation proof, policy source/campaign, Carma credited source, and exact-ID call reconciliation in Records & Reports.
 
 ## Data Contract
 
@@ -23,6 +24,11 @@
 - A later stable-ID match means `later_attempt_observed` only. It does not prove callback completion, human contact, lead validity, sale, payment, or revenue.
 - `NoSaleType` and `Baz_DetailedNotes` are excluded untrusted legacy fields. Preserve them only in original raw input; never use or expose them in active analytics, filters, alerts, reports, UI/APIs, manager-review prefill, or evaluator input.
 - Optional campaign/allocation imports are parked and excluded from active analytics, filters, reports, alerts, scorecards, and evaluator context.
+- The separate normalized Carma evidence contract is optional, local, validated, and opened read-only. It may contribute approved-sale, seller-allocation, source, campaign, and credit facts after integrity validation.
+- Join call records to Carma customers by exact `customer_id` only. Name, phone, partial-ID, and fuzzy matching are forbidden.
+- Keep acquisition source and campaign in separate fields. Campaign labels must never be promoted into source types.
+- Under default lead-source policy `actual_seller_any_pre_sale_allocation.v1`, classify a sale as `Company Sourced` when the actual seller has any exact recorded allocation on or before sale approval; otherwise classify it as `Self Sourced`. Allocation age, acquisition-source proof, most-recent-recipient status and later allocations to other people do not change this top-level classification.
+- Keep any named acquisition-channel credit policy separate. The retained external-credit comparison may still use its own independently versioned source-proof/28-day rule, but that rule must never redefine Company Sourced versus Self Sourced.
 
 ## Active Evaluation Rules
 
@@ -65,7 +71,7 @@ The following stay null/unknown unless a manager explicitly authors an overlay:
 - **Follow-Up:** reattempt activity derived from exact stable IDs and literal no-contact states. It is not a semantic callback queue.
 - **Alerts & Reviews:** lifecycle controls for supported literal alerts plus manager review records.
 - **Intelligence:** literal transcript triage, exact evidence, provenance, and guardrail disclosure.
-- **Records & Reports:** source records, record-age/source summaries, attribution-review facts, and safe reports.
+- **Records & Reports:** source records, record-age/source summaries, attribution-review facts, safe reports, and optional read-only Carma sale/source-credit evidence with a separate campaign field.
 - **Evaluation Studio:** controlled validation laboratory with a complete capability catalog, deterministic voicemail/inbound lane, benchmark builder, direct-quote human labelling in batches of at most five, strict frozen promotion checks, and a separate immutable Historical Research area. It has no model submit, run, retry, resume, harvest, or operational review-handoff controls.
 - **Call proof:** ordered transcript timeline, literal detections, sanitized source fields, historical model research warnings, manager review, and audit history.
 - Lead Harvest and semantic team-performance panels are retired.
@@ -133,6 +139,7 @@ The following stay null/unknown unless a manager explicitly authors an overlay:
 - Historical model artifacts never populate active semantic columns.
 - Quarantine preserves records and adds explicit state/history; it does not delete evidence.
 - Generated reports shown normally must use only trusted active inputs. Unsafe historical/parked reports may remain stored but hidden.
+- The optional Carma evidence database remains an external ignored local artifact and is opened read-only. It is not copied into either application SQLite database.
 - Both SQLite databases must pass `PRAGMA integrity_check`.
 
 ## Optional Voicemail Pilot Attribution
@@ -146,9 +153,21 @@ The following stay null/unknown unless a manager explicitly authors an overlay:
 - CRM sale ID, state and source timestamp are required for observed commercial outcomes. Every assignment has a `pilot_currency`; gross profit requires signed integer minor units and a matching allowed currency. Unlike currencies are never combined. Per-assignment profit also requires a complete equal-duration commercial observation window for every assignment in that currency; missing sale IDs outside a closed window are unknown, not zero.
 - The import is read-only and in-memory. It does not change `state.json`, either SQLite database, the Validation Lab, a model capability, or any operational route.
 
+## Optional Carma Sale And Source-Credit Evidence
+
+- Build the normalized `carma_evidence.v2` contract from already saved Carma extracts with `npm run carma:build-evidence`; this is an offline producer and does not log in to or modify Carma.
+- Configure the dashboard with `--carma-evidence <path>`, `SALES_DASHBOARD_CARMA_EVIDENCE_PATH`, or ignored `data/store/carma-evidence.json`.
+- Validate schema, required tables, SQLite integrity, foreign keys, source/campaign separation, and absence of phone-named matching columns before reporting.
+- Expose approved order, customer, actual seller, latest exact pre-sale seller-allocation date, approval date/value, lead-source classification, acquisition source, policy credited source, campaign, allowable external credit, Carma credited source/value, validation state, and reconciliation finding.
+- `Company Sourced` requires any exact allocation to the actual seller on or before approval. The allocation may be older than 28 days. Administrative or other-person allocations do not qualify in place of the actual seller, and possible aliases remain review-only.
+- `Self Sourced` requires that no exact recorded pre-sale allocation to the actual seller exists.
+- Acquisition source type, campaign, Carma credited source and external monetary/source-credit policy are separate dimensions; see `docs/LEAD_SOURCE_REPORTING_POLICY.md`.
+- Comparisons and timelines are descriptive evidence. They do not prove that a call, allocation, source, or campaign caused a sale.
+- The adapter is read-only and provides no CRM mutation or writeback route.
+
 ## APIs And Fail-Closed Behavior
 
-- `/health` exposes import health, AI disabled/configured state, capability summary, and sanitized optional-pilot validation status/counts without exposing the full pilot path.
+- `/health` exposes import health, AI disabled/configured state, capability summary, sanitized optional-pilot validation status/counts, and sanitized optional-Carma availability/counts without exposing full configured paths.
 - `/api/summary`, `/api/alerts`, `/api/manager-reviews`, `/api/imports`, `/api/reports`, and call-proof routes expose active trusted data.
 - `/api/ai/jobs/<id>` may expose a sanitized historical job only with research-only/authority-none warning.
 - Direct transcript-evaluation submission endpoints return `410`.
@@ -156,6 +175,7 @@ The following stay null/unknown unless a manager explicitly authors an overlay:
 - Evaluation Studio run/prompt/resume/harvest mutations return `423` under capability quarantine.
 - Benchmark-only manifest creation, direct-quote labels, and irreversible freeze use isolated `/evaluation-studio/validation-lab/...` routes and never call the model service or mutate archive/job counts.
 - `/api/evaluation-studio` and `/api/evaluation-studio/validation-lab` expose the benchmark lab, capability catalog, deterministic voicemail/inbound report, and optional pilot validation report without inference.
+- `/api/carma-evidence` exposes the sanitized read-only Carma evidence report and exact-ID reconciliation when configured.
 - `/api/lead-harvest` returns `410`.
 - Blocked requests must not change job, run, result, review, alert, or report counts and must not make a model-service network request.
 

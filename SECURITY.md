@@ -8,6 +8,9 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - Do not reconstruct, enrich, or infer full phone numbers.
 - Use stable source IDs for linkage only where present.
 - Treat optional voicemail-pilot exports as sensitive source data. Keep them ignored/local, expose only sanitized validation records, never reveal the full configured path, and never persist their raw rows into application stores.
+- Treat Carma extracts and the normalized Carma evidence database as sensitive operational data. Keep them ignored/local, open the evidence database read-only, expose only sanitized report fields/counts, and never reveal its configured path through the UI or APIs.
+- Carma-to-dashboard linkage must use exact permitted customer IDs only. Never use phone, customer-name, partial-ID, or fuzzy matching.
+- Company Sourced/Self Sourced classification must use only exact actual-seller pre-sale allocation evidence. Administrative/other-person allocations and unverified name aliases cannot be silently promoted into actual-seller matches.
 
 ## Local-Only AI Boundary
 - The MVP uses deterministic local rules and sends no transcript data to external AI services.
@@ -35,6 +38,7 @@ This file defines the minimum safety expectations for Sales Dashboard.
 - Evaluation Studio knowledgebase entries, prompt/template text, output schemas, and run metadata are untrusted display text and must be escaped when rendered.
 - Validation Lab manifest names, capability IDs, exact-fact descriptions, reasons, labels, and transcript quotes are untrusted display text and must be escaped. Frozen source and exclusion fingerprints must be checked before comparison.
 - Voicemail-pilot IDs, filenames, statuses and validation reasons are untrusted display text and must be escaped. Exact source IDs and ISO timestamps must pass the contract before they affect any displayed denominator.
+- Carma customer, seller, source, campaign, order, allocation, and validation fields are untrusted display text and must be validated and escaped. The dashboard must not offer Carma writeback or mutation controls.
 - Hide parked or superseded report content from normal report APIs and dashboard report views while preserving local store records.
 - Add role-based access before exposing transcript detail outside localhost.
 

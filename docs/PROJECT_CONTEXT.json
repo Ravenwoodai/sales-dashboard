@@ -1,7 +1,7 @@
 {
   "system_name": "Sales Dashboard",
-  "overview": "A local Node.js dashboard for CSV/XLSX sales-call exports. Active reporting is limited to source facts, exact stable-ID relationships, conservative literal transcript detections, and manager-authored overlays. Historical Qwen output is a research archive with no authority.",
-  "objective": "Provide a system managers can use confidently by showing only evidence-backed facts and explicit unknowns, while preventing unpromoted model output from driving any operational decision.",
+  "overview": "A local Node.js dashboard for CSV/XLSX sales-call exports with an optional read-only Carma evidence contract. Active reporting is limited to source facts, exact stable-ID relationships, conservative literal transcript detections, policy-governed CRM sale/source-credit evidence, and manager-authored overlays. Historical Qwen output is a research archive with no authority.",
+  "objective": "Provide a system managers can use confidently by showing only evidence-backed facts and explicit unknowns, including exact-ID reconciliation of call records with approved Carma sales and source-credit decisions, while preventing unpromoted model output from driving any operational decision.",
   "active_entities": [
     "CSV/XLSX import",
     "canonical call",
@@ -16,7 +16,14 @@
     "benchmark manifest",
     "frozen exact-evidence human label",
     "deterministic voicemail/inbound evidence relationship",
-    "validated read-only voicemail-pilot source fact"
+    "validated read-only voicemail-pilot source fact",
+    "validated read-only Carma evidence contract",
+    "local Carma data catalog",
+    "approved Carma sale",
+    "seller allocation",
+    "allocation-based lead-source classification",
+    "policy source-credit award",
+    "Carma source-credit reconciliation"
   ],
   "research_only_entities": [
     "local AI job",
@@ -41,6 +48,9 @@
       "Build isolated genuinely-unseen benchmark manifests and freeze exact-quote human truth separately from manager review and the historical archive.",
       "Compute exact voicemail prompts, literal callback requests, stable-ID chronology, later inbound relationships, and observed handling without causal or commercial inference.",
       "Optionally validate a local voicemail-pilot export against exact call IDs, source timestamps, stable IDs, event provenance and CRM proof without persisting raw pilot rows.",
+      "Classify Carma sales with actual_seller_any_pre_sale_allocation.v1: Company Sourced when the actual seller had any exact pre-sale allocation, otherwise Self Sourced.",
+      "Optionally open the normalized Carma evidence SQLite contract read-only, reconcile calls to approved sales by exact customer_id, and show sourcing method/source/campaign/credit proof without CRM writeback.",
+      "Use the local Carma catalog for complete approved-sales-history and raw weekly-allocation source discovery; do not treat the dashboard evidence subset as the whole history.",
       "Reject every model submission or operational consumption while the exact capability is unpromoted."
     ],
     "run_command": "node src/main.js",
@@ -48,7 +58,9 @@
     "test_command": "npm test"
   },
   "architecture": [
-    "src/main.js: HTTP server, health, UI/API routes, and fail-closed mutation boundaries",
+    "src/main.js: HTTP server, health, UI/API routes, optional read-only Carma evidence loading, and fail-closed mutation boundaries",
+    "src/carmaEvidence.js: validated read-only Carma SQLite adapter and exact customer_id reconciliation",
+    "src/leadSourcePolicy.js: locked allocation-based Company Sourced/Self Sourced default for Carma reporting",
     "src/localModelCapability.js: pinned register validation and submission/consumption assertions",
     "src/evaluationValidationLab.js: isolated unseen manifests, exact-quote labels, immutable freezes, and strict candidate comparisons",
     "src/voicemailRecovery.js: deterministic voicemail/message/chronology/later-inbound/handler evidence",
@@ -85,7 +97,10 @@
     "active_intelligence_store": "data/store/intelligence.sqlite",
     "research_archive_store": "data/store/evaluation-studio.sqlite",
     "validation_lab_store": "data/store/evaluation-validation-lab.json",
-    "voicemail_pilot_store": "none; raw rows and the sanitized report are in-memory only"
+    "voicemail_pilot_store": "none; raw rows and the sanitized report are in-memory only",
+    "carma_evidence_store": "optional ignored local SQLite contract configured by --carma-evidence, SALES_DASHBOARD_CARMA_EVIDENCE_PATH, or data/store/carma-evidence.json",
+    "carma_evidence_schema": "carma_evidence.v2",
+    "carma_data_catalog": "ignored data/carma/catalog.json; refresh with npm run carma:refresh-data-layer before cross-extract analysis"
   },
   "guardrails": {
     "active_semantics": "unknown/null unless manager-authored",
@@ -94,18 +109,23 @@
     "operational_consumption": "fail closed unless the exact capability is explicitly promoted",
     "phone_matching": "forbidden; use permitted exact source IDs only",
     "untrusted_legacy_fields": "NoSaleType and Baz_DetailedNotes are raw-source-only and excluded everywhere active",
-    "allocation_data": "parked and excluded",
-    "commercial_claims": "sales, payment, fulfilment, revenue, ROI, and CRM outcomes are unsupported",
+    "allocation_data": "generic allocation imports remain parked; validated Carma allocation evidence is available only through the separate read-only contract",
+    "commercial_claims": "approved sale, approval value, seller allocation, and source-credit fields are supported only when present in validated Carma evidence; payment, fulfilment, recognised revenue, profit, ROI, and causation remain unsupported",
     "qwen_spiel": "v3-v6 stopped; no same-model rescue or further inference",
     "benchmark_authority": "human calibration truth only; a passing comparison requires external approval and never self-promotes",
     "voicemail_inbound_claims": "exact deterministic evidence only; callback causation, receptiveness, conversion, sale, revenue, profit, and ROI remain unknown",
     "voicemail_pilot_claims": "exact source-contract facts only; invalid assignments are excluded, invalid measures are not_scored, incomplete or unequal windows withhold lift, and currencies remain separate",
-    "fixture_uat_store": "must set an isolated SALES_DASHBOARD_STORE_PATH; never use the default active store"
+    "fixture_uat_store": "must set an isolated SALES_DASHBOARD_STORE_PATH; never use the default active store",
+    "carma_matching": "exact customer_id only; phone, name, and fuzzy matching are forbidden",
+    "carma_access": "read-only local evidence; no live extraction, CRM writeback, raw configured path in APIs, or credential handling",
+    "carma_lead_source_policy": "actual_seller_any_pre_sale_allocation.v1; Company Sourced when the actual seller had any exact recorded pre-sale allocation, otherwise Self Sourced; allocation age and channel proof do not change the classification"
   },
   "sources": [
     "AGENTS.md",
     "docs/PROJECT.md",
     "docs/SPEC.md",
+    "docs/LEAD_SOURCE_REPORTING_POLICY.md",
+    "docs/CARMA_DATA_LAYER.md",
     "docs/ARCHITECTURE.md",
     "docs/SYSTEM_MAP.md",
     "docs/LOCAL_MODEL_CAPABILITY_POLICY.md",
@@ -113,6 +133,6 @@
     "runtime/LOCAL_MODEL_COMPREHENSIVE_AUDIT_2026-07-22.md",
     "runtime/SESSION_HANDOVER.md"
   ],
-  "generated_at": "2026-07-23T09:16:18+10:00",
+  "generated_at": "2026-07-27T21:26:00+10:00",
   "confidence": "high"
 }

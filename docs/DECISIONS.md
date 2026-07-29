@@ -457,3 +457,32 @@ Consequences:
 - a no-sale/zero-profit denominator requires a separately closed commercial observation timestamp; per-assignment gross profit is withheld unless same-currency commercial coverage is complete across equal-duration windows
 - even a measured comparison is not a causal claim without documented random assignment and pilot controls
 - the pilot path is configured only by CLI/environment, the full path is not exposed, and no raw pilot row enters `state.json`, SQLite, Validation Lab, model input, reviews, queues or CRM
+
+## ADR-037 - Share Carma Evidence Through A Versioned Read-Only Contract
+Date: 2026-07-27
+Status: Accepted architecture; source-classification portion superseded by ADR-038
+Decision: Normalize saved Carma approved-sale, allocation and Lead Generators Sales credit extracts into a versioned local SQLite contract, then let Sales Dashboard open that contract read-only and join to active calls only by exact `customer_id`. Keep acquisition source types separate from campaign labels and preserve the current lenient source-credit rule: a proven source qualifies only when the actual seller has an exact allocation 0–28 days before approval; a later allocation to another person is ignored.
+Context: The Carma investigation produced authoritative order/allocation/credit facts and exact overlap with the call cohort, but the dashboard previously remained call-data-only. Direct file coupling, phone/fuzzy matching or importing raw evidence paths would weaken provenance and privacy. The earlier report also mixed dated/batch campaign labels with source types and filtered no-allocation cases through a primary-reason field.
+Consequences:
+- `carma_evidence.v1` stores normalized customers, orders, allocations, credit awards, staff identities, provenance, validation issues and read-only proof views
+- the no-exact-seller-allocation population uses explicit `seller_allocated_before_sale`, not `primaryFailureReason`; the prior focused 87/85/2 audit remains reproducible and the current lenient policy separately identifies seven possible aliases for review
+- possible aliases never become exact staff matches without an authoritative mapping
+- dated or `(Batch)` campaign labels never populate acquisition or policy source type
+- Sales Dashboard may display Carma-approved order/value facts, but exact customer overlap does not prove that a call caused a sale and approved value does not prove payment, fulfilment, profit or recognised revenue
+- phone, fuzzy business-name and inferred-person matching, raw path exposure, credential exposure and CRM writeback are prohibited
+- the contract is rebuildable from saved local extracts; the 420-branch report extraction is not repeated unless source scope changes or a demonstrated defect requires it
+- the documented $3,801.20 parsed-versus-displayed Lead Generators Sales reconciliation gap remains visible
+
+## ADR-038 - Lock Lead-Source Classification To Actual-Seller Allocation
+Date: 2026-07-27
+Status: Accepted
+Decision: Make `actual_seller_any_pre_sale_allocation.v1` the default top-level classification for every Carma lead-source, source-credit and salesperson-performance report. A sale is Company Sourced when the actual seller had any exact recorded allocation on or before approval; it is Self Sourced only when no exact recorded pre-sale allocation to the actual seller exists.
+Context: The prior source-credit rule combined two different questions: whether the company allocated the customer to the seller, and whether a named acquisition channel qualified for external monetary credit within 28 days. Order 11884640 demonstrated the error: Timothy Knight received the lead 10 days before approval, but a blank acquisition-source field caused the sale to be labelled Self Sourced. Allocation proves company sourcing even when the original channel is unknown.
+Consequences:
+- allocation age, source proof, most-recent-recipient status and later allocations to other people do not disqualify Company Sourced
+- administrative staff, other salespeople and unverified aliases cannot qualify in place of the actual seller
+- post-sale allocations do not affect the sale classification
+- sourcing method, named acquisition source, campaign, Carma credited source and allowable external credit remain separate report dimensions
+- the retained `seller_allocation_within_28_days_lenient.v1` rule may still govern named external credit comparisons, but it cannot redefine Company Sourced versus Self Sourced
+- every report exposes the classification policy version and enough allocation evidence to audit the result
+- the added classification fields version the normalized SQLite contract as `carma_evidence.v2`; older v1 contracts fail closed until rebuilt

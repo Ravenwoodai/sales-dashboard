@@ -56,6 +56,10 @@ any model-related request/controller
 - `src/dashboardRenderer.js`: escaped UI rendering.
 - `src/dateTimeFormat.js`: Australian/AEST display.
 - `src/allocationCoverage.js`, `src/allocationParking.js`: parked allocation diagnostics.
+- `src/carmaEvidence.js`: read-only Carma evidence adapter; exact `customer_id` join and sanitized sale/source-credit projection.
+- `src/leadSourcePolicy.js`: locked `actual_seller_any_pre_sale_allocation.v1` default used by Carma lead-source and performance reporting.
+- `scripts/build-carma-evidence.js`: versioned `carma_evidence.v2` producer from saved order/allocation/credit extracts and the active call export.
+- `scripts/verify-carma-evidence.js`: read-only integrity, foreign-key, cohort, join and source/campaign boundary verifier.
 - `src/selfSourcingAttribution.js`: record-age/source attribution-review facts.
 - `src/weeklyLeadIntelligence.js`: isolated source-report snapshot.
 
@@ -106,7 +110,10 @@ any model-related request/controller
 - Unseen selection excludes call IDs found in runtime audits, repository rule/prompt/test/script artifacts, all historical/current results and attempted run selections, and every earlier benchmark manifest.
 - The deterministic voicemail lane may report exact prompt/message/chronology/linkage facts, but never callback causation, receptiveness, sales, gross profit, or commercial value.
 - The optional pilot lane may report only contract-valid source-system preassignment, event linkage, handler, CRM outcome and separate-currency facts. Invalid assignments do not enter denominators; incomplete or unequal outcome windows withhold callback lift.
-- No sales, conversion, payment, fulfilment, revenue, ROI, or CRM claims.
+- No call/transcript-derived sales, conversion, payment, fulfilment, revenue, ROI, or CRM claims. Carma-approved orders may be displayed as authoritative CRM facts, but exact customer linkage is not causal attribution and approved value is not paid or recognised revenue.
+- Carma matching uses exact `customer_id` only; no phone/fuzzy-name/inferred-person matching or CRM writeback.
+- Acquisition source types and campaign labels remain separate dimensions.
+- Company Sourced/Self Sourced is a separate exact-allocation dimension: any exact actual-seller pre-sale allocation is Company Sourced; no exact actual-seller pre-sale allocation is Self Sourced.
 - No phone-based matching.
 - No use of excluded legacy disposition/note fields.
 - Allocation data remains parked.
