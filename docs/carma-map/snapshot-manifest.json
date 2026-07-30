@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "sales_dashboard_carma_map_snapshot.v1",
+  "generatedAt": "2026-07-30T01:17:44.752Z",
+  "sourceRootName": "Carma Reports",
+  "privacy": "Sanitized structural map only. No raw CRM rows, customer/contact values, credentials, one-time codes, browser state or session values are included.",
+  "status": "partial_prior_live_evidence_authenticated_current_ui_pass_pending",
+  "counts": {
+    "navigationEntries": 38,
+    "placedReports": 4,
+    "screens": 4,
+    "customerManagementTabs": 12,
+    "cachedTechnicalReportFiles": 8,
+    "mutationsPerformed": 0,
+    "businessRecordsSelected": 0
+  },
+  "files": [
+    {
+      "sourceRelativePath": "CARMA-APPLICATION-MAP.md",
+      "destination": "docs/carma-map/CARMA-APPLICATION-MAP.md",
+      "bytes": 6786,
+      "sha256": "b5fd751aec9675475fa9cc4db6e05267f07f2a7815c0983733ffb7efd6f77339"
+    },
+    {
+      "sourceRelativePath": "CARMA-REPORT-CATALOG.md",
+      "destination": "docs/carma-map/CARMA-REPORT-CATALOG.md",
+      "bytes": 5934,
+      "sha256": "7affb7fbe0448de133c59545c1df09b805b6d2bef846867790d317b835831178"
+    },
+    {
+      "sourceRelativePath": "CARMA-MAPPING-GAPS.md",
+      "destination": "docs/carma-map/CARMA-MAPPING-GAPS.md",
+      "bytes": 3082,
+      "sha256": "375e6abe7e68616f9d8fdda0adc123fa034e038c33ff7808d0d4f376d73616a3"
+    },
+    {
+      "sourceRelativePath": "mapping/carma-read-only-inventory.json",
+      "destination": "docs/carma-map/carma-read-only-inventory.json",
+      "bytes": 31123,
+      "sha256": "0c697c6d51a763377129e0e98ff089c5d7c3c4c5b0fd0dd13d803863a700e3d3"
+    },
+    {
+      "sourceRelativePath": "mapping/retained-navigation-evidence-2026-07-24.json",
+      "destination": "docs/carma-map/retained-navigation-evidence-2026-07-24.json",
+      "bytes": 3166,
+      "sha256": "e0898e6d8ae23b2d68f9ccf2dcc0673d4e956d085067cfa9e2e3d5f06ebe179f"
+    },
+    {
+      "sourceRelativePath": "mapping/cached-report-evidence.json",
+      "destination": "docs/carma-map/cached-report-evidence.json",
+      "bytes": 5969,
+      "sha256": "9da5ee359fa0e76cf4fc9e759040332968f37b3b3a0de2bde462b8ffa0d973c6"
+    }
+  ]
+}
