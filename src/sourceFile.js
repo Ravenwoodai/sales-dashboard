@@ -2,7 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { parseCsv } = require("./csvParser");
+const { parseCsv, parseCsvColumns } = require("./csvParser");
 const { readXlsxWorksheet } = require("./xlsxReader");
 
 function csvEscape(value) {
@@ -42,7 +42,39 @@ function readTabularFile(filePath, options = {}) {
   };
 }
 
+function readTabularFileColumns(filePath, selectedColumns = [], options = {}) {
+  const requested = new Set(
+    selectedColumns.map((column) => String(column || "").trim()).filter(Boolean)
+  );
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === ".xlsx") {
+    const workbook = readXlsxWorksheet(filePath, options);
+    const columns = workbook.columns.filter((column) => requested.has(column));
+    return {
+      sourceType: "xlsx",
+      sourceName: path.basename(filePath),
+      sheetName: workbook.sheetName,
+      columns,
+      rows: workbook.rows.map((row) => Object.fromEntries([
+        ["__rowNumber", row.__rowNumber],
+        ...columns.map((column) => [column, row[column] ?? ""])
+      ]))
+    };
+  }
+
+  const csvText = fs.readFileSync(filePath, "utf8");
+  const parsed = parseCsvColumns(csvText, selectedColumns);
+  return {
+    sourceType: "csv",
+    sourceName: path.basename(filePath),
+    sheetName: null,
+    columns: parsed.columns,
+    rows: parsed.rows
+  };
+}
+
 module.exports = {
   readTabularFile,
+  readTabularFileColumns,
   rowsToCsv
 };

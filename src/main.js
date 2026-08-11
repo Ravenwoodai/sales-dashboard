@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+const { pathToFileURL } = require("url");
 const {
   checkAiExecutionHealth,
   EVALUATION_STUDIO_TASK_TYPE,
@@ -39,10 +40,19 @@ const {
   resolveBusinessRelationshipEvidencePath
 } = require("./businessRelationship");
 const {
-  loadPerformanceCohorts,
+  buildPerformanceCohortsFromContext,
+  buildPerformanceDrilldown,
+  loadPerformanceSourceContext,
   publicPerformanceCohorts,
   resolvePerformanceConfig
 } = require("./performanceCohorts");
+const {
+  buildLeadResultDashboardModel,
+  leadResultCompleteRanges,
+  leadResultCompleteness,
+  publicLeadResultDashboard,
+  resolvePreviousLeadResultSnapshot
+} = require("./leadResultDashboard");
 const {
   buildVoicemailPilotAttributionReport,
   emptyVoicemailPilotAttributionReport,
@@ -52,6 +62,13 @@ const { analyzeCsvText, attachInternalItems, buildFilteredAnalysis, internalItem
 const { buildDrilldownResult, findCallProof } = require("./drilldown");
 const { normalizeFilterState } = require("./globalFilters");
 const { summarizeLeadReattemptRecords } = require("./leadReattemptAnalytics");
+const {
+  buildFollowUpReports,
+  buildIndividualFollowUpReport,
+  individualReportRecord,
+  loadFollowUpAllocationEvidence,
+  overviewReportRecord
+} = require("./followUpReports");
 const { summarizeSystemAudioRecords } = require("./systemAudioAnalytics");
 const {
   buildSalesOpportunityActionCentre,
@@ -552,6 +569,15 @@ function analysisForRequest(state, url, storePath) {
       ? summarizeFilteredIntelligence(intelligenceRows.filter((row) => filteredCallIds.has(row.call_id)))
       : filtered.intelligence
   }, internalItemsFor(filtered));
+}
+
+function analysisForIndividualFollowUpReport(state, url, storePath) {
+  const evidenceUrl = new URL(url.toString());
+  evidenceUrl.searchParams.delete("salesperson");
+  evidenceUrl.searchParams.delete("reportSalesperson");
+  evidenceUrl.searchParams.delete("requiredAttempts");
+  evidenceUrl.searchParams.delete("graceDays");
+  return analysisForRequest(state, evidenceUrl, storePath);
 }
 
 function salesOpportunityActionCentreForRequest(state, url, storePath) {
@@ -2077,6 +2103,7 @@ function createServer(options = {}) {
     options
   );
   const performanceConfig = resolvePerformanceConfig(options.argv || process.argv.slice(2), env, options);
+  let followUpAllocationEvidence = loadFollowUpAllocationEvidence(performanceConfig.allocationLogPath);
   const storePath = resolveStorePath(options);
   const aiConfig = resolveAiExecutionConfig(env);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
@@ -2093,10 +2120,97 @@ function createServer(options = {}) {
     databasePath: carmaEvidencePath,
     calls: state.analysis?.drilldownRows || []
   });
-  let performanceCohorts = loadPerformanceCohorts({
+  let performanceSourceContext = loadPerformanceSourceContext({
     config: performanceConfig,
     databasePath: carmaEvidencePath
   });
+  let performanceCohorts = buildPerformanceCohortsFromContext(performanceSourceContext);
+  let performanceReportCache = new Map();
+  const performanceReportForUrl = (url) => {
+    const startDate = url.searchParams.get("performanceFrom")
+      || url.searchParams.get("startDate")
+      || performanceConfig.startDate;
+    const endDate = url.searchParams.get("performanceTo")
+      || url.searchParams.get("endDate")
+      || performanceConfig.endDate;
+    const key = `${startDate}|${endDate}`;
+    if (performanceReportCache.has(key)) return performanceReportCache.get(key);
+    const report = buildPerformanceCohortsFromContext(performanceSourceContext, {
+      startDate,
+      endDate
+    });
+    if (performanceReportCache.size >= 16) {
+      performanceReportCache.delete(performanceReportCache.keys().next().value);
+    }
+    performanceReportCache.set(key, report);
+    return report;
+  };
+  const leadResultModelCache = new Map();
+  let leadResultExporterPromise = null;
+  const leadResultStateForUrl = async (url) => {
+    const report = performanceReportForUrl(url);
+    const completeness = leadResultCompleteness(report);
+    const completeRanges = leadResultCompleteRanges(performanceCohorts);
+    if (!completeness.complete) {
+      return {
+        schemaVersion: "lead_result_dashboard_page_state.v1",
+        available: false,
+        configured: report.configured === true,
+        report,
+        completeness,
+        completeRanges,
+        model: null
+      };
+    }
+    const cacheKey = `${report.period.startDate}|${report.period.endDate}`;
+    if (!leadResultModelCache.has(cacheKey)) {
+      const modelPromise = (async () => {
+        const previousSnapshotRecord = await resolvePreviousLeadResultSnapshot({
+          rootPath: path.resolve(__dirname, ".."),
+          currentStartDate: report.period.startDate
+        });
+        return buildLeadResultDashboardModel({
+          config: performanceConfig,
+          carmaConfig: { databasePath: carmaEvidencePath },
+          report,
+          previousSnapshot: previousSnapshotRecord?.snapshot || null,
+          previousSnapshotSource: previousSnapshotRecord?.sourcePath || ""
+        });
+      })();
+      leadResultModelCache.set(cacheKey, modelPromise);
+      if (leadResultModelCache.size > 16) {
+        leadResultModelCache.delete(leadResultModelCache.keys().next().value);
+      }
+    }
+    try {
+      return {
+        schemaVersion: "lead_result_dashboard_page_state.v1",
+        available: true,
+        configured: true,
+        report,
+        completeness,
+        completeRanges,
+        model: await leadResultModelCache.get(cacheKey)
+      };
+    } catch (error) {
+      leadResultModelCache.delete(cacheKey);
+      return {
+        schemaVersion: "lead_result_dashboard_page_state.v1",
+        available: false,
+        configured: true,
+        report,
+        completeness: {
+          ...completeness,
+          complete: false,
+          status: "incomplete",
+          unavailableReasons: [error.message],
+          explanation: error.message
+        },
+        completeRanges,
+        model: null
+      };
+    }
+  };
 
   return http.createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
@@ -2176,7 +2290,8 @@ function createServer(options = {}) {
         performance_cohorts_status: performanceCohorts.status,
         performance_cohorts_period: performanceCohorts.period?.label || "",
         performance_cohorts_sent_events: performanceCohorts.totals?.deduplicatedSentEvents || 0,
-        performance_cohorts_matched_approved_sales: performanceCohorts.totals?.matchedApprovedSales || 0,
+        performance_cohorts_recipient_label_matched_approved_sales:
+          performanceCohorts.totals?.approvedSalesWithRecipientLabelMatch || 0,
         ai_execution: publicAiExecutionStatus(aiConfig)
       });
       return;
@@ -2229,10 +2344,63 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/performance-cohorts" && request.method === "GET") {
-      sendJson(response, performanceCohorts.available ? 200 : 503, publicPerformanceCohorts(
-        performanceCohorts,
+      const selectedPerformance = performanceReportForUrl(url);
+      const responseStatus = selectedPerformance.available
+        ? 200
+        : selectedPerformance.code === "PERFORMANCE_DATE_RANGE_INVALID" ? 400 : 503;
+      sendJson(response, responseStatus, publicPerformanceCohorts(
+        selectedPerformance,
         Object.fromEntries(url.searchParams.entries())
       ));
+      return;
+    }
+
+    if (url.pathname === "/api/lead-results-dashboard" && request.method === "GET") {
+      const selectedLeadResults = await leadResultStateForUrl(url);
+      sendJson(
+        response,
+        selectedLeadResults.available
+          ? 200
+          : selectedLeadResults.report?.code === "PERFORMANCE_DATE_RANGE_INVALID" ? 400 : 409,
+        publicLeadResultDashboard(selectedLeadResults)
+      );
+      return;
+    }
+
+    if (url.pathname === "/exports/lead-results-dashboard.xlsx" && request.method === "GET") {
+      const selectedLeadResults = await leadResultStateForUrl(url);
+      if (!selectedLeadResults.available) {
+        sendJson(response, selectedLeadResults.report?.code === "PERFORMANCE_DATE_RANGE_INVALID" ? 400 : 409, {
+          ok: false,
+          code: selectedLeadResults.report?.code || "LEAD_RESULT_PERIOD_INCOMPLETE",
+          error: selectedLeadResults.completeness?.explanation || "The selected period is incomplete and cannot be exported.",
+          completeness: selectedLeadResults.completeness,
+          completeRanges: selectedLeadResults.completeRanges
+        });
+        return;
+      }
+      try {
+        if (!leadResultExporterPromise) {
+          const exporterUrl = pathToFileURL(path.join(__dirname, "..", "scripts", "build-lead-result-dashboard.mjs")).href;
+          leadResultExporterPromise = import(exporterUrl);
+        }
+        const { exportLeadResultDashboardXlsx } = await leadResultExporterPromise;
+        const exported = await exportLeadResultDashboardXlsx(selectedLeadResults.model);
+        response.writeHead(200, {
+          "Content-Type": exported.mimeType,
+          "Content-Disposition": `attachment; filename="${exported.fileName}"`,
+          "Cache-Control": "no-store",
+          "Content-Length": exported.data.length
+        });
+        response.end(exported.data);
+      } catch (error) {
+        leadResultExporterPromise = null;
+        sendJson(response, 500, {
+          ok: false,
+          code: "LEAD_RESULT_EXPORT_FAILED",
+          error: "The governed Lead Results workbook could not be generated."
+        });
+      }
       return;
     }
 
@@ -2412,6 +2580,33 @@ function createServer(options = {}) {
       return;
     }
 
+    if (url.pathname === "/api/follow-up-reports/overview" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      sendJson(response, 200, buildFollowUpReports(requestAnalysis, {
+        requiredAttempts: query.requiredAttempts,
+        graceDays: query.graceDays,
+        allocationEvidence: followUpAllocationEvidence
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/follow-up-reports/individual" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForIndividualFollowUpReport(state, url, storePath);
+      const report = buildIndividualFollowUpReport(requestAnalysis, query.reportSalesperson || query.salesperson, {
+        requiredAttempts: query.requiredAttempts,
+        graceDays: query.graceDays,
+        allocationEvidence: followUpAllocationEvidence
+      });
+      sendJson(
+        response,
+        report.available ? 200 : report.code === "SALESPERSON_REQUIRED" ? 400 : 404,
+        report
+      );
+      return;
+    }
+
     if (url.pathname === "/api/lead-harvest" && request.method === "GET") {
       sendJson(response, 410, {
         ok: false,
@@ -2423,7 +2618,18 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/drilldown" && request.method === "GET") {
-      sendJson(response, 200, buildDrilldownResult(analysisForRequest(state, url, storePath), Object.fromEntries(url.searchParams.entries())));
+      const query = Object.fromEntries(url.searchParams.entries());
+      if (String(query.metric || "").startsWith("performance.")) {
+        const result = buildPerformanceDrilldown(performanceReportForUrl(url), query);
+        const status = result.available
+          ? 200
+          : result.code === "PERFORMANCE_DRILLDOWN_METRIC_UNKNOWN"
+            ? 404
+            : result.code === "PERFORMANCE_DATE_RANGE_INVALID" ? 400 : 503;
+        sendJson(response, status, result);
+      } else {
+        sendJson(response, 200, buildDrilldownResult(analysisForRequest(state, url, storePath), query));
+      }
       return;
     }
 
@@ -3747,10 +3953,14 @@ function createServer(options = {}) {
         databasePath: carmaEvidencePath,
         calls: state.analysis?.drilldownRows || []
       });
-      performanceCohorts = loadPerformanceCohorts({
+      performanceSourceContext = loadPerformanceSourceContext({
         config: performanceConfig,
         databasePath: carmaEvidencePath
       });
+      followUpAllocationEvidence = loadFollowUpAllocationEvidence(performanceConfig.allocationLogPath);
+      performanceCohorts = buildPerformanceCohortsFromContext(performanceSourceContext);
+      performanceReportCache = new Map();
+      leadResultModelCache.clear();
       sendJson(response, state.error ? 500 : 200, {
         ok: !state.error,
         error: state.error,
@@ -3772,6 +3982,46 @@ function createServer(options = {}) {
         pageKicker: "Evidence-backed management brief",
         backHref: "/?view=opportunities",
         backLabel: "Back to Opportunity Action Centre"
+      }));
+      return;
+    }
+
+    if (url.pathname === "/reports/follow-up-overview" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForRequest(state, url, storePath);
+      const overview = buildFollowUpReports(requestAnalysis, {
+        requiredAttempts: query.requiredAttempts,
+        graceDays: query.graceDays,
+        allocationEvidence: followUpAllocationEvidence
+      });
+      response.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end(renderReportPage(overviewReportRecord(overview, requestAnalysis), {
+        pageKicker: "Restricted literal reattempt evidence",
+        backHref: "/?view=follow_up",
+        backLabel: "Back to Follow-Up"
+      }));
+      return;
+    }
+
+    if (url.pathname === "/reports/follow-up-individual" && request.method === "GET") {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const requestAnalysis = analysisForIndividualFollowUpReport(state, url, storePath);
+      const individual = buildIndividualFollowUpReport(requestAnalysis, query.reportSalesperson || query.salesperson, {
+        requiredAttempts: query.requiredAttempts,
+        graceDays: query.graceDays,
+        allocationEvidence: followUpAllocationEvidence
+      });
+      response.writeHead(individual.available ? 200 : individual.code === "SALESPERSON_REQUIRED" ? 400 : 404, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store"
+      });
+      response.end(renderReportPage(individualReportRecord(individual, requestAnalysis), {
+        pageKicker: "On-demand individual reattempt evidence",
+        backHref: "/reports/follow-up-overview",
+        backLabel: "Back to Reattempt Overview"
       }));
       return;
     }
@@ -3822,11 +4072,20 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/drilldown" && request.method === "GET") {
-      const result = buildDrilldownResult(analysisForRequest(state, url, storePath), Object.fromEntries(url.searchParams.entries()));
-      response.writeHead(200, {
+      const query = Object.fromEntries(url.searchParams.entries());
+      const isPerformanceDrilldown = String(query.metric || "").startsWith("performance.");
+      const result = isPerformanceDrilldown
+        ? buildPerformanceDrilldown(performanceReportForUrl(url), query)
+        : buildDrilldownResult(analysisForRequest(state, url, storePath), query);
+      response.writeHead(
+        result.available === false
+          ? result.code === "PERFORMANCE_DATE_RANGE_INVALID" ? 400 : 404
+          : 200,
+        {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store"
-      });
+        }
+      );
       response.end(renderDrilldownPage(result));
       return;
     }
@@ -4050,9 +4309,17 @@ function createServer(options = {}) {
       "Cache-Control": "no-store"
     });
     const activeBusinessSegment = url.searchParams.get("businessSegment") || url.searchParams.get("segment") || "";
-    const dashboardView = url.searchParams.get("view") || "overview";
+    const dashboardView = url.pathname === "/lead-results-dashboard"
+      ? "lead_results"
+      : (url.searchParams.get("view") || "overview");
+    const isGovernedPerformanceView = dashboardView === "performance" || dashboardView === "lead_results";
     const intelligenceQueue = url.searchParams.get("intelligenceQueue") || "waste";
-    let dashboardAnalysis = analysisForRequest(state, url, storePath);
+    let dashboardAnalysis = isGovernedPerformanceView
+      ? state.analysis
+      : analysisForRequest(state, url, storePath);
+    const leadResultsDashboard = dashboardView === "lead_results"
+      ? await leadResultStateForUrl(url)
+      : null;
     if (dashboardView === "opportunities") {
       const store = readStore({ storePath });
       const centre = buildSalesOpportunityActionCentre({
@@ -4085,7 +4352,7 @@ function createServer(options = {}) {
       llm_queued: { llmStatus: "queued" },
       high_quality: { highQuality: "1" }
     }[intelligenceQueue] || { wasteRisk: "1" };
-    const intelligenceCalls = state.importRecord?.id
+    const intelligenceCalls = !isGovernedPerformanceView && state.importRecord?.id
       ? listCallIntelligence({
         storePath,
         importId: state.importRecord.id,
@@ -4108,28 +4375,56 @@ function createServer(options = {}) {
       intelligenceQueue,
       intelligenceCalls,
       carmaEvidence,
-      performanceCohorts,
+      performanceCohorts: isGovernedPerformanceView
+        ? performanceReportForUrl(url)
+        : performanceCohorts,
+      leadResultsDashboard,
       opportunityStage: url.searchParams.get("opportunityStage") || "",
       opportunityQueue: url.searchParams.get("opportunityQueue") || ""
     }));
   });
 }
 
+function isLoopbackHost(host) {
+  const normalized = String(host || "").trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "localhost"
+    || normalized === "::1"
+    || normalized === "0:0:0:0:0:0:0:1"
+    || /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
 function startServer(options = {}) {
   const port = Number(options.port || process.env.PORT || 3000);
   const host = options.host || process.env.HOST || "127.0.0.1";
+  const performanceConfig = resolvePerformanceConfig(
+    options.argv || process.argv.slice(2),
+    options.env || process.env,
+    options
+  );
+  if (performanceConfig.configured && !isLoopbackHost(host)) {
+    throw new Error("Performance & Cohorts is local-only and cannot bind to a non-loopback host without access control.");
+  }
   const server = createServer(options);
   server.listen(port, host, () => {
     const csvPath = resolveCsvPath(options.argv || process.argv.slice(2), options.env || process.env);
     const allocationPath = resolveAllocationPath(options.argv || process.argv.slice(2), options.env || process.env);
     const voicemailPilotPath = resolveVoicemailPilotPath(options.argv || process.argv.slice(2), options.env || process.env);
     const carmaEvidencePath = resolveCarmaEvidencePath(options.argv || process.argv.slice(2), options.env || process.env, options);
-    const performanceConfig = resolvePerformanceConfig(options.argv || process.argv.slice(2), options.env || process.env, options);
+    const businessRelationshipEvidencePath = resolveBusinessRelationshipEvidencePath(
+      options.argv || process.argv.slice(2),
+      options.env || process.env,
+      options
+    );
     console.log(`Sales Dashboard listening on http://${host}:${port}`);
     console.log(csvPath ? `CSV source: ${csvPath}` : "CSV source: not configured");
     console.log(allocationPath ? "Allocation source configured but parked from active analytics" : "Allocation source: not configured");
     console.log(voicemailPilotPath ? "Voicemail pilot source: configured for strict read-only validation" : "Voicemail pilot source: not configured");
     console.log(carmaEvidencePath ? "Carma evidence source: configured read-only" : "Carma evidence source: not configured");
+    console.log(
+      businessRelationshipEvidencePath
+        ? "Business relationship evidence: configured read-only"
+        : "Business relationship evidence: not configured; binary fallback policy active"
+    );
     console.log(performanceConfig.configured ? "Performance cohort sources: configured local read-only" : "Performance cohort sources: not configured");
   });
   return server;
@@ -4149,6 +4444,7 @@ module.exports = {
   loadAnalysis,
   attachPersistence,
   createServer,
+  isLoopbackHost,
   startServer,
   saveGeneratedReport
 };

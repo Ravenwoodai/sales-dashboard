@@ -3,6 +3,7 @@
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { regionNameFor, sourceNameFor } = require("./sourceQuality");
 const { clean, isMissing } = require("./transcriptEvaluator");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 function percent(numerator, denominator) {
   if (!denominator) return 0;
@@ -25,6 +26,7 @@ const ONE_DIAL_BUCKET_LABELS = {
 
 const VALID_ONE_DIAL_OUTCOMES = new Set([
   "wrong_number",
+  "not_interested",
   "opt_out"
 ]);
 
@@ -34,13 +36,8 @@ const EXPLICIT_NO_CONTACT_CLASSIFICATIONS = new Set([
   "system_audio"
 ]);
 
-function orderCount(row) {
-  const value = Number.parseInt(clean(row?.OrderCount), 10);
-  return Number.isFinite(value) ? value : 0;
-}
-
 function businessSegmentFor(row) {
-  return orderCount(row) > 0 ? "warm" : "new";
+  return businessRelationshipFor(row).segment;
 }
 
 function businessSegmentLabel(segment) {
@@ -116,6 +113,8 @@ function itemCall(item) {
     transcriptWordCount: Number(evaluation.transcript?.wordCount || 0),
     evidenceAvailable: Boolean(firstEvidence?.text),
     evidenceSummary: firstEvidence?.summary || firstEvidence?.text || "",
+    evidenceText: firstEvidence?.text || "",
+    evidenceMatchText: firstEvidence?.matchText || "",
     confidence: Number(evaluation.outcome?.confidence ?? evaluation.contact?.confidence ?? 0),
     durationSeconds: evaluation.durationSeconds || 0
   };
@@ -153,7 +152,7 @@ function classifyOneDialRecord(record) {
     return {
       oneDialBucket: ONE_DIAL_BUCKETS.validOutcome,
       oneDialBucketLabel: ONE_DIAL_BUCKET_LABELS[ONE_DIAL_BUCKETS.validOutcome],
-      oneDialReason: "Single dial has exact literal evidence of a direct wrong-number or opt-out terminal state.",
+      oneDialReason: "Single dial has exact literal evidence of a direct wrong-number, not-interested, or opt-out terminal state.",
       oneDialConfidence: "restricted_literal",
       oneDialEvidenceSummary: evidenceSummary
     };
@@ -236,6 +235,13 @@ function buildRecords(items) {
       if (call.callId === firstCall.callId) return false;
       return call.timestamp > firstCall.timestamp || (call.timestamp === firstCall.timestamp && call.callId.localeCompare(firstCall.callId) > 0);
     });
+    const lastPersonalCall = calls[calls.length - 1] || {};
+    const laterCallsAfterPersonalLast = globalCalls.filter((call) => {
+      if (call.callId === lastPersonalCall.callId) return false;
+      return call.timestamp > lastPersonalCall.timestamp
+        || (call.timestamp === lastPersonalCall.timestamp && call.callId.localeCompare(lastPersonalCall.callId) > 0);
+    });
+    const laterCallsAfterPersonalLastByOther = laterCallsAfterPersonalLast.filter((call) => call.salesperson !== entry.salesperson);
     const segment = mixedSegment(calls);
     const source = mixedValue(calls.map((call) => call.source), "Unknown source");
     const region = mixedValue(calls.map((call) => call.region), "Unknown region");
@@ -267,6 +273,10 @@ function buildRecords(items) {
       laterCallByAnyone,
       noLaterCallByAnyone,
       laterCallCountByAnyone: laterGlobalCalls.length,
+      laterCallAfterPersonalLastByAnyone: laterCallsAfterPersonalLast.length > 0,
+      laterCallAfterPersonalLastByOther: laterCallsAfterPersonalLastByOther.length > 0,
+      laterCallIdsAfterPersonalLastByAnyone: laterCallsAfterPersonalLast.map((call) => call.callId),
+      laterCallIdsAfterPersonalLastByOther: laterCallsAfterPersonalLastByOther.map((call) => call.callId),
       firstCallId: firstCall.callId || "",
       lastCallId: calls[calls.length - 1]?.callId || "",
       primaryCallId: firstCall.callId || "",
@@ -446,7 +456,7 @@ function buildLeadReattemptModel(items) {
       lead: "A matched customer/contact anchor using customer_id first, then AllocatedLeadID, ContactId, FoundContactID, and FoundCustomerID.",
       personalRetryRate: "Matched records a salesperson called more than once divided by matched records they dialed.",
       oneDialRecordRate: "Matched records a salesperson called exactly once divided by matched records they dialed. This is a neutral activity count.",
-      validOneDialOutcome: "One-dial records with exact direct-customer wrong-number or opt-out evidence.",
+      validOneDialOutcome: "One-dial records with exact direct-customer wrong-number, not-interested, or opt-out evidence.",
       literalOneDialNoContact: "One-dial records with exact no-answer, machine-voicemail, or carrier-system evidence. A blank transcript is not no-contact evidence.",
       literalOneDialNoContactNoLater: "Literal one-dial no-contact records with no later matching call observed for the same stable customer/contact/lead ID. This is activity triage, not under-utilisation or performance evidence.",
       oneDialNeedsReview: "One-dial records without a validated literal state. Semantic meaning is unavailable, so these records are excluded from automated decisions.",

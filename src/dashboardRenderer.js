@@ -16,6 +16,7 @@ const {
   isoDateFromParts,
   parseSourceDateParts
 } = require("./dateTimeFormat");
+const { publicLeadResultDashboard } = require("./leadResultDashboard");
 
 function escapeHtml(value) {
   return String(value === undefined || value === null ? "" : value)
@@ -168,6 +169,1425 @@ const COLUMN_HELP_STYLES = `
   .column-help:hover .column-tooltip, .column-help:focus-visible .column-tooltip { visibility: visible; opacity: 1; transform: translateY(0); }
 `;
 
+const TABLE_COLUMN_STYLES = `
+  [hidden] { display: none !important; }
+  .table-column-toolbar {
+    position: relative;
+    z-index: 12;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    min-height: 38px;
+    margin: 0 0 8px;
+  }
+  .panel:has(.table-column-toolbar),
+  .audit-details:has(.table-column-toolbar) { overflow: visible !important; }
+  .table-columns-menu { position: relative; }
+  .table-columns-menu > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted-foreground);
+    background: var(--surface-elevated);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    list-style: none;
+  }
+  .table-columns-menu > summary::-webkit-details-marker { display: none; }
+  .table-columns-menu > summary::before { content: "☷"; color: var(--accent); font-size: 14px; }
+  .table-columns-menu[open] > summary,
+  .table-columns-menu > summary:hover { color: var(--foreground); border-color: rgba(166, 107, 255, 0.55); }
+  .table-columns-count { color: var(--muted-soft); font-variant-numeric: tabular-nums; }
+  .table-columns-popover {
+    position: absolute;
+    top: calc(100% + 7px);
+    right: 0;
+    width: min(300px, calc(100vw - 32px));
+    max-height: min(520px, calc(100vh - 100px));
+    overflow: auto;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .table-columns-title { margin: 0 0 2px; color: var(--foreground); font-size: 13px; font-weight: 750; }
+  .table-columns-help { margin: 0 0 10px; color: var(--muted-foreground); font-size: 12px; line-height: 1.4; }
+  .table-columns-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .table-columns-presets button {
+    min-height: 30px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--muted-foreground);
+    background: var(--surface-elevated);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .table-columns-presets button:hover { color: var(--foreground); border-color: rgba(166, 107, 255, 0.55); }
+  .table-columns-list { display: grid; gap: 2px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+  .table-columns-option {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    padding: 6px;
+    border-radius: 6px;
+    color: var(--foreground);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .table-columns-option:hover { background: var(--surface-elevated); }
+  .table-columns-option input { width: 15px; height: 15px; margin: 1px 0 0; accent-color: var(--accent); }
+  .table-columns-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  @media (max-width: 520px) {
+    .table-column-toolbar { justify-content: stretch; }
+    .table-columns-menu { width: 100%; }
+    .table-columns-menu > summary { justify-content: center; width: 100%; }
+    .table-columns-popover { right: auto; left: 0; width: 100%; }
+  }
+  @media print { .table-column-toolbar { display: none !important; } }
+`;
+
+const TABLE_COLUMNS_SCRIPT = `<script>
+  (() => {
+    const STORAGE_PREFIX = "sales-dashboard-table-columns:v1:";
+    const slug = (value) => String(value || "table").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "table";
+    const tableLabel = (header, index) => {
+      if (header.dataset.columnLabel) return header.dataset.columnLabel;
+      const help = header.querySelector(".column-help");
+      if (help && help.childNodes[0]) return String(help.childNodes[0].textContent || "").trim() || "Column " + (index + 1);
+      const button = header.querySelector("button");
+      if (button && button.childNodes[0]) return String(button.childNodes[0].textContent || "").trim() || "Column " + (index + 1);
+      return String(header.textContent || "").replace(/[?\u2195]/g, "").trim() || "Column " + (index + 1);
+    };
+    const tables = Array.from(document.querySelectorAll("table")).filter((table) => table.tHead && table.tHead.rows[0]);
+    tables.forEach((table, tableIndex) => {
+      if (table.dataset.columnMenuReady === "true") return;
+      const headers = Array.from(table.tHead.rows[0].cells);
+      if (headers.length < 2) return;
+      const labels = headers.map(tableLabel);
+      const keys = headers.map((header, index) => header.dataset.columnKey || slug(labels[index]));
+      const scope = table.closest("section[id]")?.id || table.closest("[id]")?.id || "table-" + (tableIndex + 1);
+      const tableKey = table.dataset.tableKey || [location.pathname, scope, keys.join("|")].join(":");
+      const storageKey = STORAGE_PREFIX + tableKey;
+      const defaultVisible = new Set(keys.filter((key) => !String(table.dataset.defaultHidden || "").split(",").includes(key)));
+      const auditVisible = new Set(keys);
+      const preferredCompact = ["business", "business-name", "customer-id", "salesperson", "manager", "status", "result", "approved-sales", "observed-sales"];
+      const compactVisible = new Set();
+      keys.forEach((key, index) => {
+        if (index < 2 || preferredCompact.includes(key)) compactVisible.add(key);
+      });
+      if (compactVisible.size > 6) {
+        Array.from(compactVisible).slice(6).forEach((key) => compactVisible.delete(key));
+      }
+      const configuredCompact = String(table.dataset.compactColumns || "").split(",").map((key) => key.trim()).filter((key) => keys.includes(key));
+      if (configuredCompact.length) {
+        compactVisible.clear();
+        configuredCompact.forEach((key) => compactVisible.add(key));
+      }
+      let visible = new Set(defaultVisible);
+      try {
+        const saved = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+        if (Array.isArray(saved)) {
+          const valid = saved.filter((key) => keys.includes(key));
+          if (valid.length) visible = new Set(valid);
+        }
+      } catch {}
+
+      const toolbar = document.createElement("div");
+      toolbar.className = "table-column-toolbar";
+      toolbar.innerHTML = '<details class="table-columns-menu"><summary>Columns <span class="table-columns-count"></span></summary><div class="table-columns-popover"><p class="table-columns-title">Choose visible columns</p><p class="table-columns-help">This changes only your table view on this computer. Data, totals and exports stay unchanged.</p><div class="table-columns-presets"><button type="button" data-column-preset="audit">Audit view</button><button type="button" data-column-preset="compact">Compact view</button><button type="button" data-column-preset="reset">Reset</button></div><div class="table-columns-list"></div><span class="table-columns-status" aria-live="polite"></span></div></details>';
+      const list = toolbar.querySelector(".table-columns-list");
+      const count = toolbar.querySelector(".table-columns-count");
+      const status = toolbar.querySelector(".table-columns-status");
+      const inputs = [];
+      labels.forEach((label, index) => {
+        const option = document.createElement("label");
+        option.className = "table-columns-option";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.value = keys[index];
+        input.checked = visible.has(keys[index]);
+        const text = document.createElement("span");
+        text.textContent = label;
+        option.append(input, text);
+        list.append(option);
+        inputs.push(input);
+      });
+      const wrap = table.closest(".table-wrap");
+      (wrap || table).before(toolbar);
+      table.dataset.columnMenuReady = "true";
+
+      const persist = () => {
+        try { window.localStorage.setItem(storageKey, JSON.stringify(Array.from(visible))); } catch {}
+      };
+      const apply = (announce = false) => {
+        headers.forEach((header, index) => {
+          const shown = visible.has(keys[index]);
+          header.hidden = !shown;
+          Array.from(table.tBodies).forEach((body) => Array.from(body.rows).forEach((row) => {
+            if (row.cells[index]) row.cells[index].hidden = !shown;
+          }));
+          inputs[index].checked = shown;
+        });
+        count.textContent = visible.size + " of " + keys.length;
+        if (announce) status.textContent = visible.size + " of " + keys.length + " columns shown.";
+      };
+      const usePreset = (preset, persistChoice = true) => {
+        visible = new Set(preset);
+        if (!visible.size) visible.add(keys[0]);
+        if (persistChoice) persist();
+        apply(true);
+      };
+      inputs.forEach((input, index) => input.addEventListener("change", () => {
+        if (!input.checked && visible.size === 1) {
+          input.checked = true;
+          status.textContent = "At least one column must remain visible.";
+          return;
+        }
+        if (input.checked) visible.add(keys[index]); else visible.delete(keys[index]);
+        persist();
+        apply(true);
+      }));
+      toolbar.querySelectorAll("[data-column-preset]").forEach((button) => button.addEventListener("click", () => {
+        const preset = button.dataset.columnPreset;
+        if (preset === "audit") usePreset(auditVisible);
+        if (preset === "compact") usePreset(compactVisible);
+        if (preset === "reset") {
+          try { window.localStorage.removeItem(storageKey); } catch {}
+          usePreset(defaultVisible, false);
+        }
+      }));
+      toolbar.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          toolbar.querySelector("details").open = false;
+          toolbar.querySelector("summary").focus();
+        }
+      });
+      apply();
+    });
+  })();
+</script>`;
+
+const PANELIFY_THEME_STYLES = `
+  ${TABLE_COLUMN_STYLES}
+  :root {
+    color-scheme: dark;
+    --background: #0D101B;
+    --surface: #181B2A;
+    --surface-elevated: #1C1F30;
+    --surface-soft: #22263A;
+    --sidebar: #151827;
+    --topnav: #10131F;
+    --border: rgba(255, 255, 255, 0.10);
+    --border-subtle: rgba(255, 255, 255, 0.065);
+    --foreground: #F5F5F8;
+    --muted-foreground: #9CA3B8;
+    --muted-soft: #747C91;
+    --primary: #8B5CF6;
+    --accent: #A66BFF;
+    --pink: #E851B9;
+    --success: #34D399;
+    --warning: #FBBF24;
+    --danger: #FB7185;
+    --chart-1: #8B5CF6;
+    --chart-2: #A66BFF;
+    --chart-3: #E851B9;
+    --chart-4: #60A5FA;
+    --chart-5: #34D399;
+    --accent-gradient: linear-gradient(108deg, #7C5CFC 0%, #A65FF2 54%, #DD56BA 100%);
+    --shadow: 0 18px 42px rgba(2, 4, 12, 0.24);
+    --soft-shadow: 0 10px 24px rgba(2, 4, 12, 0.18);
+    --radius-panel: 14px;
+    --radius-control: 10px;
+    --transition: 170ms ease;
+  }
+  * { scrollbar-color: rgba(166, 107, 255, 0.34) transparent; scrollbar-width: thin; }
+  *::-webkit-scrollbar { width: 7px; height: 7px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb { background: rgba(166, 107, 255, 0.30); border-radius: 999px; }
+  html { background: var(--background); }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: "Instrument Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  a, button, input, select, textarea, summary { transition: border-color var(--transition), background-color var(--transition), color var(--transition), opacity var(--transition), transform var(--transition), box-shadow var(--transition); }
+  :where(a, button, input, select, textarea, summary):focus-visible {
+    outline: 2px solid rgba(166, 107, 255, 0.88) !important;
+    outline-offset: 3px !important;
+  }
+  h1 { color: var(--foreground); font-size: clamp(28px, 2.4vw, 34px); font-weight: 700; letter-spacing: -0.035em; }
+  h2 { color: var(--foreground); font-size: 17px; font-weight: 650; letter-spacing: -0.015em; }
+  h3 { color: var(--foreground); font-weight: 650; }
+  .muted { color: var(--muted-foreground); }
+  .small { font-size: 13px; }
+  .mono, .metric-value, .command-value, td:nth-child(n+2) {
+    font-variant-numeric: tabular-nums;
+  }
+  .page-kicker, .section-kicker {
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.095em;
+  }
+  .panel,
+  .metric,
+  .command-panel,
+  .topbar,
+  .audit-details,
+  .commercial-summary {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-panel);
+    background: var(--surface);
+    box-shadow: none;
+  }
+  .panel { overflow: clip; }
+  .panel-header {
+    min-height: 68px;
+    padding: 18px 21px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .panel-header > div:first-child { min-width: 0; }
+  .panel-header h2 + p { margin-top: 5px; }
+  .panel-body { padding: 20px 21px; }
+  .metric {
+    position: relative;
+    min-height: 128px;
+    padding: 18px;
+    border-color: var(--border-subtle);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .metric::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(139, 92, 246, 0.92), rgba(232, 81, 185, 0.38), transparent 84%);
+    opacity: 0.72;
+  }
+  .metric.good::before { background: linear-gradient(90deg, var(--success), transparent 78%); }
+  .metric.warn::before { background: linear-gradient(90deg, var(--warning), transparent 78%); }
+  .metric.risk::before { background: linear-gradient(90deg, var(--danger), transparent 78%); }
+  .metric.good, .metric.warn, .metric.risk, .metric.info { border-top-width: 1px; }
+  a.metric:hover {
+    border-color: rgba(166, 107, 255, 0.46);
+    background: var(--surface-elevated);
+    transform: translateY(-1px);
+    box-shadow: var(--soft-shadow);
+  }
+  .metric-label {
+    margin-bottom: 14px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.015em;
+  }
+  .metric-value {
+    color: var(--foreground);
+    font-family: "Geist Mono", "Cascadia Code", Consolas, monospace;
+    font-size: clamp(24px, 2vw, 29px);
+    font-weight: 650;
+    letter-spacing: -0.045em;
+  }
+  .metric-detail { color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+  .badge {
+    min-height: 25px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.012em;
+  }
+  .success { color: #62DDA9; background: rgba(52, 211, 153, 0.09); border-color: rgba(52, 211, 153, 0.22); }
+  .warning { color: #F6C95B; background: rgba(251, 191, 36, 0.09); border-color: rgba(251, 191, 36, 0.22); }
+  .critical { color: #FF8CA0; background: rgba(251, 113, 133, 0.09); border-color: rgba(251, 113, 133, 0.22); }
+  .notice { color: #C19AFF; background: rgba(139, 92, 246, 0.11); border-color: rgba(166, 107, 255, 0.26); }
+  .neutral { color: #AEB5C8; background: rgba(156, 163, 184, 0.07); border-color: rgba(156, 163, 184, 0.16); }
+  .data-link, .open-link, .button-link, .proof-link, .filter-link, .aggregate-drill-link {
+    color: #B99AFF;
+  }
+  .data-link { border-bottom-color: rgba(166, 107, 255, 0.34); }
+  .data-link:hover, .open-link:hover, .button-link:hover, .proof-link:hover, .filter-link:hover, .aggregate-drill-link:hover {
+    color: #E5D7FF;
+  }
+  button,
+  .button,
+  .button-link,
+  .open-link,
+  .filter-link,
+  .upload-button {
+    min-height: 38px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    color: var(--foreground);
+    background: var(--surface-elevated);
+    box-shadow: none;
+  }
+  button:hover,
+  .button:hover,
+  .button-link:hover,
+  .open-link:hover,
+  .filter-link:hover,
+  .upload-button:hover {
+    border-color: rgba(166, 107, 255, 0.46);
+    background: var(--surface-soft);
+  }
+  .filter-actions button[type="submit"],
+  .studio-form > button[type="submit"],
+  .button.primary {
+    border-color: rgba(166, 107, 255, 0.56);
+    color: #FFFFFF;
+    background: var(--accent-gradient);
+    box-shadow: 0 8px 20px rgba(139, 92, 246, 0.18);
+  }
+  input,
+  select,
+  textarea,
+  .filter-control input,
+  .filter-control select,
+  .studio-form input,
+  .studio-form select,
+  .studio-form textarea {
+    min-height: 39px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    color: var(--foreground);
+    background: #141725;
+  }
+  input::placeholder, textarea::placeholder { color: var(--muted-soft); }
+  input:focus, select:focus, textarea:focus {
+    border-color: rgba(166, 107, 255, 0.64);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.10);
+  }
+  .filter-control {
+    color: var(--muted-foreground);
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+  }
+  .filter-chip {
+    border-color: rgba(166, 107, 255, 0.30);
+    color: #D8C5FF;
+    background: rgba(139, 92, 246, 0.10);
+  }
+  .filter-advanced,
+  .bulk-alert-form,
+  .context-details {
+    border-color: var(--border-subtle);
+    border-radius: 12px;
+    background: #141725;
+  }
+  .table-wrap {
+    border-color: var(--border-subtle);
+    background: var(--surface);
+  }
+  table { border-collapse: separate; border-spacing: 0; }
+  th, td {
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 12.5px;
+  }
+  th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    color: var(--muted-foreground);
+    background: #1A1D2D;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.065em;
+  }
+  tbody tr { background: transparent; }
+  tbody tr:hover { background: rgba(139, 92, 246, 0.055); }
+  tbody tr:last-child td { border-bottom: 0; }
+  .column-help-mark {
+    border-color: rgba(166, 107, 255, 0.48);
+    color: var(--accent);
+  }
+  .column-tooltip {
+    border-color: var(--border);
+    border-radius: 10px;
+    background: #202336;
+    box-shadow: var(--soft-shadow);
+  }
+  .note,
+  .dataset-fact,
+  .mini-stat,
+  .attention-item,
+  .segment-card,
+  .action-queue-card,
+  .opportunity-stage,
+  .opportunity-record,
+  .audit-section,
+  .proof-card,
+  .turn,
+  .meta-card {
+    border-color: var(--border-subtle);
+    border-radius: 11px;
+    background: var(--surface-elevated);
+  }
+  .note, .dataset-fact, .mini-stat { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.015); }
+  .empty {
+    border-color: rgba(166, 107, 255, 0.24);
+    border-radius: 12px;
+    color: var(--muted-foreground);
+    background: rgba(139, 92, 246, 0.045);
+  }
+  .pipeline-track,
+  .segment-track {
+    border-color: var(--border-subtle);
+    background: #10131F;
+  }
+  .pipeline-fill.primary,
+  .segment-fill.warm { background: var(--accent-gradient); }
+  .pipeline-fill.accent,
+  .segment-fill.new { background: linear-gradient(90deg, #60A5FA, #8B5CF6); }
+  .pipeline-fill.success { background: var(--success); }
+  .pipeline-fill.warning { background: var(--warning); }
+  .pipeline-fill.danger { background: var(--danger); }
+  pre, .raw-result {
+    border-color: var(--border-subtle);
+    border-radius: 11px;
+    background: #090B13;
+  }
+  details { border-color: var(--border-subtle); }
+  summary:hover { color: #D9C7FF; }
+
+  body[data-dashboard-view] { overflow-x: hidden; }
+  body[data-dashboard-view] .layout { display: block; min-height: 100vh; overflow: visible; }
+  body[data-dashboard-view] aside {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 60;
+    width: 264px;
+    height: 100vh;
+    padding: 18px 14px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-right: 1px solid var(--border-subtle);
+    background: var(--sidebar);
+    transition: width var(--transition), transform var(--transition);
+  }
+  .app-frame {
+    min-width: 0;
+    min-height: 100vh;
+    margin-left: 264px;
+    transition: margin-left var(--transition);
+  }
+  .app-topnav {
+    position: sticky;
+    top: 0;
+    z-index: 45;
+    min-height: 68px;
+    display: grid;
+    grid-template-columns: minmax(190px, 0.85fr) minmax(280px, 560px) minmax(220px, 0.85fr);
+    gap: 18px;
+    align-items: center;
+    padding: 12px 30px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: var(--topnav);
+  }
+  .topnav-context { min-width: 0; display: grid; gap: 2px; }
+  .topnav-context span { color: var(--muted-soft); font-size: 11px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; }
+  .topnav-context strong { overflow: hidden; color: var(--foreground); font-size: 13px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+  .top-search {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    min-height: 42px;
+    padding: 4px 5px 4px 13px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: #171A29;
+  }
+  .top-search:focus-within {
+    border-color: rgba(166, 107, 255, 0.60);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.09);
+  }
+  .search-mark {
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid var(--muted-soft);
+    border-radius: 50%;
+    position: relative;
+  }
+  .search-mark::after {
+    content: "";
+    position: absolute;
+    width: 6px;
+    height: 1.5px;
+    right: -5px;
+    bottom: -2px;
+    border-radius: 2px;
+    background: var(--muted-soft);
+    transform: rotate(45deg);
+  }
+  .top-search input {
+    min-height: 30px;
+    padding: 3px 5px;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 13px;
+  }
+  .top-search input:focus { outline: 0 !important; box-shadow: none; }
+  .top-search button {
+    min-height: 30px;
+    padding: 5px 10px;
+    border-radius: 9px;
+    color: #E5D8FF;
+    font-size: 11px;
+  }
+  .topnav-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+  .topnav-link {
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--muted-foreground);
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 620;
+    text-decoration: none;
+  }
+  .topnav-link:hover { border-color: rgba(166, 107, 255, 0.42); color: var(--foreground); }
+  .sidebar-mobile-toggle { display: none; }
+  body[data-dashboard-view] .app-frame > main {
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 30px 32px 48px;
+    gap: 16px;
+  }
+  body[data-dashboard-view] .topbar {
+    padding: 2px 0 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  body[data-dashboard-view] .topbar > div:first-child { max-width: 820px; }
+  body[data-dashboard-view] .topbar h1 + p { margin-top: 8px; max-width: 780px; }
+  body[data-dashboard-view] .metrics {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+  }
+  body[data-dashboard-view] .command-grid { gap: 16px; }
+  body[data-dashboard-view] .command-panel { border-radius: var(--radius-panel); background: var(--surface); }
+  body[data-dashboard-view] .command-panel.primary {
+    position: relative;
+    background: var(--surface-elevated);
+    overflow: hidden;
+  }
+  body[data-dashboard-view] .command-panel.primary::after {
+    content: "";
+    position: absolute;
+    width: 210px;
+    height: 210px;
+    right: -130px;
+    top: -145px;
+    border-radius: 50%;
+    background: rgba(139, 92, 246, 0.16);
+    filter: blur(2px);
+    pointer-events: none;
+  }
+  body[data-dashboard-view] .command-value {
+    color: #FBFAFF;
+    font-family: "Geist Mono", "Cascadia Code", Consolas, monospace;
+    font-size: clamp(38px, 4vw, 50px);
+    font-weight: 650;
+    letter-spacing: -0.055em;
+  }
+  body[data-dashboard-view] .dataset-grid { gap: 12px; }
+  body[data-dashboard-view] .filter-form { gap: 12px; }
+  body[data-dashboard-view] .workspace-tabs { display: none; }
+  body[data-dashboard-view] aside .brand {
+    position: relative;
+    min-height: 92px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+    margin: 0 0 15px;
+    padding: 4px 3px 13px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .brand-identity { min-width: 0; display: grid; gap: 9px; }
+  body[data-dashboard-view] .brand-logo { min-height: 34px; }
+  body[data-dashboard-view] .brand-logo img { width: min(184px, 100%); max-height: 34px; object-fit: contain; object-position: left center; }
+  body[data-dashboard-view] .brand-title { font-size: 12px; font-weight: 650; letter-spacing: 0.04em; text-transform: none; }
+  body[data-dashboard-view] .brand-subtitle { color: var(--muted-soft); font-size: 11px; }
+  .brand-monogram {
+    display: none;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border: 1px solid rgba(166, 107, 255, 0.34);
+    border-radius: 11px;
+    color: #E8DBFF;
+    background: linear-gradient(145deg, rgba(139, 92, 246, 0.30), rgba(232, 81, 185, 0.13));
+    font-family: "Geist Mono", monospace;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .sidebar-collapse {
+    width: 34px;
+    min-width: 34px;
+    min-height: 34px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border-radius: 9px;
+    color: var(--muted-foreground);
+  }
+  .sidebar-collapse.sidebar-mobile-toggle { display: none; }
+  .sidebar-collapse-mark,
+  .sidebar-collapse-mark::before,
+  .sidebar-collapse-mark::after {
+    width: 14px;
+    height: 1.5px;
+    display: block;
+    border-radius: 2px;
+    background: currentColor;
+  }
+  .sidebar-collapse-mark { position: relative; }
+  .sidebar-collapse-mark::before, .sidebar-collapse-mark::after { content: ""; position: absolute; left: 0; }
+  .sidebar-collapse-mark::before { top: -5px; }
+  .sidebar-collapse-mark::after { top: 5px; }
+  body[data-dashboard-view] .product-switcher {
+    gap: 4px;
+    margin-bottom: 12px;
+    padding: 5px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 11px;
+    background: #10131F;
+  }
+  body[data-dashboard-view] .product-switcher a {
+    min-height: 36px;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 620;
+  }
+  body[data-dashboard-view] .product-switcher a.active {
+    border-color: rgba(166, 107, 255, 0.24);
+    background: rgba(139, 92, 246, 0.13);
+  }
+  body[data-dashboard-view] aside nav {
+    gap: 3px;
+    padding-top: 8px;
+    border-top: 0;
+    scrollbar-width: thin;
+  }
+  body[data-dashboard-view] aside nav a {
+    position: relative;
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 9px 11px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    color: var(--muted-foreground);
+    font-size: 13px;
+    font-weight: 560;
+  }
+  body[data-dashboard-view] aside nav a:hover {
+    color: var(--foreground);
+    background: rgba(255, 255, 255, 0.035);
+  }
+  body[data-dashboard-view] aside nav a.active {
+    padding-left: 11px;
+    border: 1px solid rgba(166, 107, 255, 0.24);
+    color: #F5F0FF;
+    background: rgba(97, 63, 180, 0.34);
+  }
+  body[data-dashboard-view] aside nav a.active::before {
+    content: "";
+    position: absolute;
+    left: -15px;
+    top: 9px;
+    bottom: 9px;
+    width: 3px;
+    border-radius: 0 4px 4px 0;
+    background: linear-gradient(180deg, #A66BFF, #E851B9);
+  }
+  .nav-icon {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 20px;
+    display: grid;
+    place-items: center;
+    border: 1px solid rgba(156, 163, 184, 0.17);
+    border-radius: 6px;
+    color: var(--muted-soft);
+    font-family: "Geist Mono", monospace;
+    font-size: 12px;
+    line-height: 1;
+  }
+  aside nav a.active .nav-icon, aside nav a:hover .nav-icon {
+    border-color: rgba(166, 107, 255, 0.34);
+    color: #B98AFF;
+  }
+  .nav-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body[data-dashboard-view] .nav-label {
+    margin: 15px 10px 6px;
+    color: var(--muted-soft);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+  }
+  .on-page-link { min-height: 34px !important; padding-block: 6px !important; font-size: 11px !important; }
+  .sidebar-overlay { display: none; }
+  body.sidebar-collapsed .app-frame { margin-left: 84px; }
+  body.sidebar-collapsed aside { width: 84px; }
+  body.sidebar-collapsed aside .brand { grid-template-columns: 1fr; justify-items: center; }
+  body.sidebar-collapsed aside .brand-identity > :not(.brand-monogram),
+  body.sidebar-collapsed aside .product-switcher .nav-text,
+  body.sidebar-collapsed aside .nav-text,
+  body.sidebar-collapsed aside .nav-label,
+  body.sidebar-collapsed aside .on-page-link,
+  body.sidebar-collapsed aside .brand-settings { display: none; }
+  body.sidebar-collapsed aside .brand-monogram { display: grid; }
+  body.sidebar-collapsed aside .brand-identity { justify-items: center; }
+  body.sidebar-collapsed aside .sidebar-collapse { margin: 0 auto; }
+  body.sidebar-collapsed aside .product-switcher { padding: 5px; }
+  body.sidebar-collapsed aside .product-switcher a,
+  body.sidebar-collapsed aside nav a { justify-content: center; padding-inline: 8px; }
+  body.sidebar-collapsed aside nav a.active::before { left: -15px; }
+  body.sidebar-collapsed aside nav a[aria-current="page"] { overflow: visible; }
+
+  .sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+  .lead-chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    min-width: 0;
+  }
+  .lead-chart-grid-primary { grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.85fr); }
+  .lead-chart-grid > * { min-width: 0; }
+  .lead-chart-panel .panel-header { align-items: flex-start; }
+  .lead-chart-panel .panel-body { min-width: 0; }
+  .lead-chart-panel code {
+    color: #CDB7FF;
+    font-family: "Geist Mono", "Cascadia Code", Consolas, monospace;
+    font-size: 0.92em;
+  }
+  .lead-chart-figure,
+  .lead-age-figure,
+  .lead-usage-funnel { margin: 0; }
+  .lead-chart-legend {
+    min-height: 26px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    align-items: center;
+    margin-bottom: 15px;
+    color: var(--muted-foreground);
+    font-size: 11px;
+  }
+  .lead-chart-legend span { display: inline-flex; gap: 6px; align-items: center; }
+  .lead-chart-legend i,
+  .lead-age-legend i {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    display: inline-block;
+    border-radius: 3px;
+    background: var(--legend-color, var(--muted-soft));
+  }
+  .series-0 { background: var(--chart-1) !important; }
+  .series-1 { background: var(--chart-2) !important; }
+  .series-2 { background: var(--chart-3) !important; }
+  .series-3 { background: var(--chart-4) !important; }
+  .series-4 { background: var(--chart-5) !important; }
+  .series-5 { background: var(--warning) !important; }
+  .series-6 { background: var(--muted-soft) !important; }
+  .daily-allocation-chart {
+    height: 270px;
+    display: grid;
+    grid-template-columns: repeat(var(--daily-column-count), minmax(0, 1fr));
+    gap: clamp(12px, 2.2vw, 26px);
+    align-items: end;
+    padding: 18px 10px 0;
+    border-radius: 11px;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0, transparent 53px, rgba(255, 255, 255, 0.055) 54px),
+      #141725;
+  }
+  .daily-allocation-column {
+    min-width: 0;
+    height: 100%;
+    display: grid;
+    grid-template-rows: 22px minmax(0, 1fr) 28px;
+    gap: 6px;
+    align-items: end;
+    color: var(--muted-foreground);
+    font-size: 11px;
+    text-align: center;
+  }
+  .daily-allocation-column > strong { color: var(--foreground); font-size: 11px; font-weight: 650; }
+  .daily-allocation-track {
+    width: min(56px, 76%);
+    height: 100%;
+    display: flex;
+    align-items: end;
+    justify-self: center;
+    border-radius: 8px 8px 3px 3px;
+    background: rgba(255, 255, 255, 0.022);
+    overflow: hidden;
+  }
+  .daily-allocation-stack {
+    width: 100%;
+    height: var(--column-height);
+    min-height: 2px;
+    display: flex;
+    flex-direction: column-reverse;
+    border-radius: 8px 8px 3px 3px;
+    overflow: hidden;
+  }
+  .daily-allocation-stack > span {
+    min-height: 1px;
+    flex-grow: var(--segment-grow);
+    border-top: 1px solid rgba(13, 16, 27, 0.24);
+  }
+  .lead-chart-list,
+  .lead-age-legend {
+    display: grid;
+    gap: 13px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .lead-chart-row { min-width: 0; display: grid; gap: 6px; }
+  .lead-chart-row-link {
+    min-width: 0;
+    display: grid;
+    gap: 6px;
+    color: inherit;
+    text-decoration: none;
+    border-radius: 8px;
+    outline: none;
+  }
+  .lead-chart-row-link:hover .lead-chart-label,
+  .lead-chart-row-link:focus-visible .lead-chart-label { color: #CDB7FF; }
+  .lead-chart-row-link:focus-visible { box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.32); }
+  .lead-chart-row.low-sample .lead-chart-detail::after {
+    content: "Low sample";
+    display: inline-flex;
+    margin-left: 7px;
+    padding: 1px 6px;
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    border-radius: 999px;
+    color: #F4D88A;
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    vertical-align: 1px;
+  }
+  .lead-chart-row.not-scored .lead-chart-fill {
+    background: repeating-linear-gradient(135deg, rgba(156, 163, 184, 0.22) 0 4px, rgba(156, 163, 184, 0.07) 4px 8px) !important;
+  }
+  .lead-chart-row-head {
+    min-width: 0;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: baseline;
+  }
+  .lead-chart-label { min-width: 0; color: var(--foreground); font-size: 12px; font-weight: 620; overflow-wrap: anywhere; }
+  .lead-chart-value { flex: 0 0 auto; color: var(--foreground); font-size: 12px; }
+  .lead-chart-track {
+    position: relative;
+    height: 7px;
+    display: block;
+    border-radius: 999px;
+    background: #10131F;
+    overflow: visible;
+  }
+  .lead-chart-reference {
+    position: absolute;
+    top: -4px;
+    bottom: -4px;
+    left: var(--reference-left);
+    width: 2px;
+    border-radius: 2px;
+    background: #FBBF24;
+    box-shadow: 0 0 0 1px rgba(13, 16, 27, 0.72);
+  }
+  .lead-chart-fill {
+    width: var(--chart-width);
+    height: 100%;
+    display: block;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--chart-1), var(--chart-2));
+  }
+  .lead-chart-fill.pink { background: linear-gradient(90deg, var(--chart-1), var(--pink)); }
+  .lead-chart-fill.blue { background: linear-gradient(90deg, #527FEA, var(--chart-4)); }
+  .lead-chart-detail {
+    min-width: 0;
+    color: var(--muted-foreground);
+    font-size: 10.5px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+  .lead-chart-more {
+    margin-top: 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: #141725;
+  }
+  .lead-chart-more summary { padding: 10px 12px; color: #CDB7FF; font-size: 11px; }
+  .lead-chart-more .lead-chart-list { padding: 12px; border-top: 1px solid var(--border-subtle); }
+  .daily-allocation-details ul {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 12px;
+    border-top: 1px solid var(--border-subtle);
+    list-style: none;
+  }
+  .daily-allocation-details li { display: grid; gap: 4px; }
+  .daily-allocation-details strong { color: var(--foreground); font-size: 11px; }
+  .daily-allocation-details span { color: var(--muted-foreground); font-size: 10.5px; line-height: 1.5; }
+  .lead-chart-boundary { padding-top: 0; }
+  .lead-chart-boundary p { padding-top: 13px; border-top: 1px solid var(--border-subtle); }
+  .lead-age-figure {
+    min-height: 284px;
+    display: grid;
+    grid-template-columns: minmax(170px, 0.85fr) minmax(220px, 1.15fr);
+    gap: 24px;
+    align-items: center;
+  }
+  .lead-age-donut {
+    width: min(210px, 100%);
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    justify-self: center;
+    border-radius: 50%;
+    background: var(--donut-fill);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  }
+  .lead-age-donut > div {
+    width: 58%;
+    aspect-ratio: 1;
+    display: grid;
+    place-content: center;
+    gap: 3px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 50%;
+    background: var(--surface);
+    text-align: center;
+  }
+  .lead-age-donut strong { color: var(--foreground); font-size: 20px; }
+  .lead-age-donut span { color: var(--muted-foreground); font-size: 10px; }
+  .lead-age-legend li {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    color: var(--muted-foreground);
+    font-size: 11px;
+  }
+  .lead-age-legend li > a {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    color: inherit;
+    text-decoration: none;
+    border-radius: 7px;
+  }
+  .lead-age-legend li > a:hover span,
+  .lead-age-legend li > a:focus-visible span { color: #CDB7FF; }
+  .lead-age-legend strong { color: var(--foreground); font-size: 11px; }
+  .lead-age-legend small { min-width: 44px; text-align: right; }
+  .lead-usage-layout { display: grid; gap: 17px; }
+  .lead-usage-funnel { display: grid; gap: 11px; }
+  .lead-usage-stage { display: grid; gap: 5px; color: inherit; text-decoration: none; border-radius: 7px; }
+  a.lead-usage-stage:hover,
+  a.lead-usage-stage:focus-visible { background: rgba(139, 92, 246, 0.07); }
+  .lead-usage-stage > div { display: flex; justify-content: space-between; gap: 12px; color: var(--muted-foreground); font-size: 11px; }
+  .lead-usage-stage strong { color: var(--foreground); font-size: 11px; }
+  .lead-usage-track { height: 9px; display: block; border-radius: 999px; background: #10131F; overflow: hidden; }
+  .lead-usage-track > span { width: var(--usage-width); height: 100%; display: block; border-radius: inherit; }
+  .lead-usage-signals {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .lead-usage-signals > div,
+  .lead-usage-signals > a {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: #141725;
+    color: inherit;
+    text-decoration: none;
+  }
+  .lead-usage-signals > a:hover,
+  .lead-usage-signals > a:focus-visible { border-color: rgba(166, 107, 255, 0.5); background: #181B2A; }
+  .lead-usage-signals span { color: var(--muted-foreground); font-size: 10px; line-height: 1.35; }
+  .lead-usage-signals strong { color: var(--foreground); font-size: 15px; }
+  .allocation-frequency {
+    display: grid;
+    gap: 12px;
+    padding-top: 15px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .allocation-frequency h3 { font-size: 12px; }
+  .daily-allocation-column { color: var(--muted-foreground); text-decoration: none; border-radius: 8px; }
+  a.daily-allocation-column:hover,
+  a.daily-allocation-column:focus-visible { background: rgba(139, 92, 246, 0.08); outline: none; box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.28); }
+  .performance-range-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: end;
+    padding: 14px 20px;
+    border-top: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
+    background: rgba(13, 16, 27, 0.34);
+  }
+  .performance-range-form label { display: grid; gap: 5px; color: var(--muted-foreground); font-size: 10px; font-weight: 700; }
+  .performance-range-form input {
+    min-height: 40px;
+    padding: 8px 10px;
+    color: var(--foreground);
+    color-scheme: dark;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-elevated);
+    font: inherit;
+  }
+  .performance-range-form .button { min-height: 40px; }
+  .performance-range-form > .muted { align-self: center; margin-left: auto; }
+  .sales-heatmap-wrap { max-width: 100%; overflow-x: auto; padding-bottom: 4px; }
+  .sales-activity-heatmap {
+    min-width: max(760px, calc(190px + var(--heatmap-columns) * 96px));
+    display: grid;
+    grid-template-columns: minmax(190px, 1.35fr) repeat(var(--heatmap-columns), minmax(82px, 1fr));
+    gap: 6px;
+    align-items: stretch;
+  }
+  .heatmap-corner,
+  .heatmap-date,
+  .heatmap-source,
+  .heatmap-cell {
+    min-height: 58px;
+    display: grid;
+    align-content: center;
+    gap: 3px;
+    padding: 9px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+  }
+  .heatmap-corner,
+  .heatmap-date { color: var(--muted-foreground); background: #141725; font-size: 10px; font-weight: 700; }
+  .heatmap-date { text-align: center; }
+  .heatmap-date small { font-size: 9px; font-weight: 500; }
+  .heatmap-source { grid-template-columns: minmax(0, 1fr) auto; align-items: center; color: var(--foreground); background: #141725; font-size: 11px; }
+  .heatmap-source strong { color: #CDB7FF; }
+  .heatmap-cell {
+    place-content: center;
+    color: var(--foreground);
+    text-align: center;
+    text-decoration: none;
+    background: rgba(139, 92, 246, var(--heat-intensity, 0.12));
+    border-color: rgba(166, 107, 255, 0.34);
+  }
+  .heatmap-cell strong { font-size: 15px; }
+  .heatmap-cell small { color: rgba(245, 245, 247, 0.82); font-size: 9px; }
+  .heatmap-cell.empty-cell { color: var(--muted-foreground); background: rgba(255, 255, 255, 0.018); border-style: dashed; }
+  a.heatmap-cell:hover,
+  a.heatmap-cell:focus-visible { border-color: #CDB7FF; outline: none; box-shadow: inset 0 0 0 1px #CDB7FF; transform: translateY(-1px); }
+  .complete-range-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 20px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: rgba(13, 16, 27, 0.34);
+  }
+  .button.disabled { cursor: not-allowed; opacity: 0.52; }
+  .lead-results-workspace { gap: 18px; }
+  .lead-result-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .lead-result-chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--border-subtle);
+  }
+  .lead-result-chart-grid > article {
+    min-width: 0;
+    display: grid;
+    align-content: start;
+    gap: 16px;
+    padding: 21px;
+    background: var(--surface);
+  }
+  .lead-result-chart-grid > article > h3 { font-size: 14px; }
+  .lead-result-guidance { display: grid; gap: 8px; }
+  .lead-result-guidance > div {
+    padding: 11px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    background: var(--surface-elevated);
+  }
+  .lead-result-guidance > div.warning { color: #F6C95B; background: rgba(251, 191, 36, 0.06); }
+  .lead-result-guidance strong { display: block; margin-bottom: 4px; font-size: 11px; }
+  .lead-result-guidance p { white-space: normal; }
+  .lead-result-panel-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding: 20px;
+  }
+  .lead-result-compact-panel {
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid rgba(96, 165, 250, 0.22);
+    border-radius: 11px;
+    background: rgba(96, 165, 250, 0.045);
+  }
+  .lead-result-compact-panel.team { border-color: rgba(52, 211, 153, 0.24); background: rgba(52, 211, 153, 0.045); }
+  .lead-result-compact-panel h3 {
+    padding: 12px 14px;
+    color: #B9D6FF;
+    border-bottom: 1px solid rgba(96, 165, 250, 0.18);
+    background: rgba(96, 165, 250, 0.08);
+    font-size: 12px;
+  }
+  .lead-result-compact-panel.team h3 { color: #88E0C0; border-color: rgba(52, 211, 153, 0.18); background: rgba(52, 211, 153, 0.08); }
+  .lead-result-compact-panel ol { display: grid; margin: 0; padding: 0; list-style: none; }
+  .lead-result-compact-panel li + li { border-top: 1px solid var(--border-subtle); }
+  .lead-result-compact-panel li > a,
+  .lead-result-compact-panel li > span,
+  .lead-result-compact-panel li { color: inherit; text-decoration: none; }
+  .lead-result-compact-panel li > a { display: grid; gap: 3px; padding: 11px 14px; }
+  .lead-result-compact-panel li > div { display: grid; gap: 3px; padding: 11px 14px; }
+  .lead-result-compact-panel li > a:hover,
+  .lead-result-compact-panel li > a:focus-visible { background: rgba(166, 107, 255, 0.09); }
+  .lead-result-compact-panel li strong { color: var(--foreground); font-size: 12px; }
+  .lead-result-compact-panel li span { color: var(--muted-foreground); font-size: 11px; line-height: 1.4; }
+  .lead-result-compact-panel li small { color: var(--muted-soft); font-size: 10px; line-height: 1.4; }
+  .lead-result-compact-panel > p { padding: 14px; }
+  .lead-result-rankings-wrap { max-height: none; overflow: auto; }
+  .performance-rankings table { min-width: 2200px; }
+  .performance-rankings thead { position: sticky; top: 0; z-index: 3; }
+  .performance-rankings tbody tr:hover { background: rgba(166, 107, 255, 0.055); }
+  .sort-button {
+    width: 100%;
+    display: inline-flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: center;
+    padding: 0;
+    color: inherit;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+  }
+  .sort-button:hover, .sort-button:focus-visible { color: #E5D7FF; background: transparent; }
+  .sort-button[aria-sort="ascending"] span::after { content: "↑"; }
+  .sort-button[aria-sort="descending"] span::after { content: "↓"; }
+  .sort-button[aria-sort] span { font-size: 0; }
+  .sort-button[aria-sort] span::after { font-size: 11px; }
+
+  body:not([data-dashboard-view]) main {
+    width: min(1500px, calc(100vw - 48px));
+    padding-top: 24px;
+  }
+  body:not([data-dashboard-view]) .topbar { padding: 20px 22px; }
+  body:not([data-dashboard-view]) .page-brand,
+  body:not([data-dashboard-view]) .call-brand { min-width: 150px; max-width: 188px; }
+
+  @media (max-width: 1100px) {
+    body[data-dashboard-view] aside {
+      width: 264px;
+      transform: translateX(-100%);
+      box-shadow: 18px 0 42px rgba(0, 0, 0, 0.34);
+    }
+    body[data-dashboard-view] .app-frame,
+    body.sidebar-collapsed .app-frame { margin-left: 0; }
+    body.sidebar-open aside { transform: translateX(0); }
+    .sidebar-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 55;
+      display: block;
+      border: 0;
+      border-radius: 0;
+      background: rgba(5, 7, 14, 0.66);
+      opacity: 0;
+      pointer-events: none;
+    }
+    body.sidebar-open .sidebar-overlay { opacity: 1; pointer-events: auto; }
+    .sidebar-collapse.sidebar-mobile-toggle { display: grid; }
+    body[data-dashboard-view] .app-topnav {
+      grid-template-columns: auto minmax(220px, 1fr) auto;
+      padding-inline: 20px;
+    }
+    .topnav-context { display: none; }
+    body[data-dashboard-view] aside .brand-logo { display: flex; }
+    body[data-dashboard-view] aside .brand-identity > div:not(.brand-logo) { display: block; }
+    body[data-dashboard-view] aside .product-switcher .nav-text,
+    body[data-dashboard-view] aside .nav-text { display: inline; }
+    body[data-dashboard-view] aside .nav-label { display: block; }
+    body[data-dashboard-view] aside .on-page-link { display: flex; }
+    body[data-dashboard-view] aside .brand-settings { display: block; }
+    body[data-dashboard-view] aside .brand-monogram { display: none; }
+  }
+  @media (max-width: 900px) {
+    .lead-chart-grid,
+    .lead-chart-grid-primary,
+    .lead-result-chart-grid,
+    .lead-result-panel-grid { grid-template-columns: 1fr; }
+    .lead-result-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 760px) {
+    body[data-dashboard-view] {
+      max-width: 100vw;
+      overflow-x: clip;
+    }
+    body[data-dashboard-view] .layout,
+    body[data-dashboard-view] .app-frame,
+    body[data-dashboard-view] .app-frame > main,
+    body[data-dashboard-view] .app-topnav,
+    body[data-dashboard-view] .topbar,
+    body[data-dashboard-view] .workspace-flow,
+    body[data-dashboard-view] .panel,
+    body[data-dashboard-view] .panel-header,
+    body[data-dashboard-view] .panel-body,
+    body[data-dashboard-view] .metrics,
+    body[data-dashboard-view] .metric {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+    }
+    body[data-dashboard-view] .app-topnav {
+      min-height: auto;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      padding: 10px 14px;
+    }
+    .top-search {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+    }
+    .top-search input { min-width: 0; }
+    .topnav-actions {
+      grid-column: 2;
+      grid-row: 1;
+      min-width: 0;
+      max-width: 100%;
+      justify-self: end;
+    }
+    .topnav-actions .topnav-link:not(:last-child) { display: none; }
+    body[data-dashboard-view] .app-frame > main { padding: 20px 16px 38px; }
+    body[data-dashboard-view] .topbar { gap: 14px; }
+    body[data-dashboard-view] .topbar > div,
+    body[data-dashboard-view] .topbar p,
+    body[data-dashboard-view] .panel-header > *,
+    body[data-dashboard-view] .panel-body > * {
+      min-width: 0;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    body[data-dashboard-view] .topbar .stack,
+    body[data-dashboard-view] .panel-header .stack {
+      display: flex;
+      width: 100%;
+      flex-wrap: wrap;
+    }
+    body[data-dashboard-view] .topbar .badge {
+      width: auto;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    body[data-dashboard-view] .metrics { grid-template-columns: 1fr; }
+    .lead-result-kpis { grid-template-columns: 1fr; }
+    .metric { min-height: 112px; }
+    .panel-header, .panel-body { padding-inline: 16px; }
+    .lead-age-figure { min-height: 0; grid-template-columns: 1fr; }
+    .lead-age-donut { width: min(190px, 72vw); }
+    .performance-range-form { align-items: stretch; padding-inline: 16px; }
+    .performance-range-form label { flex: 1 1 140px; }
+    .performance-range-form > .muted { width: 100%; margin-left: 0; }
+    body:not([data-dashboard-view]) main { width: min(100vw - 24px, 1500px); padding-top: 12px; }
+  }
+  @media (max-width: 520px) {
+    body[data-dashboard-view] .topnav-actions { display: none; }
+    body[data-dashboard-view] .app-topnav {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .daily-allocation-chart { height: 230px; gap: 5px; padding-inline: 2px; }
+    .daily-allocation-track { width: min(34px, 88%); }
+    .lead-chart-row-head { align-items: flex-start; }
+    .lead-chart-value { text-align: right; }
+    .lead-usage-signals { grid-template-columns: 1fr; }
+  }
+  @media print {
+    body { background: #FFFFFF !important; color: #111827 !important; }
+    body[data-dashboard-view] aside,
+    body[data-dashboard-view] .app-topnav,
+    body[data-dashboard-view] .sidebar-overlay {
+      display: none !important;
+    }
+    body[data-dashboard-view] .app-frame {
+      margin: 0 !important;
+    }
+    body[data-dashboard-view] .app-frame > main,
+    body:not([data-dashboard-view]) main {
+      width: 100% !important;
+      padding: 0 !important;
+    }
+    .panel, .metric, .topbar { break-inside: avoid; box-shadow: none !important; }
+  }
+`;
+
 function normalizeColumnLabel(value) {
   return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
@@ -188,7 +1608,8 @@ function renderTableHeading(header) {
   const descriptionValue = columnDescription(labelValue, typeof header === "string" ? "" : header?.description);
   const label = escapeHtml(labelValue);
   const description = escapeHtml(descriptionValue);
-  return `<th scope="col"><span class="column-help" tabindex="0" aria-label="${escapeHtml(`${labelValue}: ${descriptionValue}`)}">${label}<span class="column-help-mark" aria-hidden="true">?</span><span class="column-tooltip" role="tooltip">${description}</span></span></th>`;
+  const key = normalizeColumnLabel(typeof header === "string" ? labelValue : header?.columnKey || header?.key || labelValue);
+  return `<th scope="col" data-column-key="${escapeHtml(key)}" data-column-label="${label}"><span class="column-help" tabindex="0" aria-label="${escapeHtml(`${labelValue}: ${descriptionValue}`)}">${label}<span class="column-help-mark" aria-hidden="true">?</span><span class="column-tooltip" role="tooltip">${description}</span></span></th>`;
 }
 
 function formatDays(value) {
@@ -612,12 +2033,17 @@ function aggregateResultLink(value, filters = {}, label = "") {
   return `<a class="aggregate-drill-link" href="${escapeHtml(evaluationResultsUrl(filters))}" aria-label="${escapeHtml(accessibleLabel)}">${escapeHtml(value)}</a>`;
 }
 
-function table(headers, rows, emptyMessage = "No rows to show") {
+function table(headers, rows, emptyMessage = "No rows to show", options = {}) {
   if (!rows.length) {
     return `<div class="empty">${escapeHtml(emptyMessage)}</div>`;
   }
 
-  return `<div class="table-wrap"><table>
+  const tableAttributes = [
+    options.key ? `data-table-key="${escapeHtml(options.key)}"` : "",
+    options.defaultHidden?.length ? `data-default-hidden="${escapeHtml(options.defaultHidden.join(","))}"` : "",
+    options.compactColumns?.length ? `data-compact-columns="${escapeHtml(options.compactColumns.join(","))}"` : ""
+  ].filter(Boolean).join(" ");
+  return `<div class="table-wrap"><table${tableAttributes ? ` ${tableAttributes}` : ""}>
     <thead><tr>${headers.map(renderTableHeading).join("")}</tr></thead>
     <tbody>
       ${rows.map((row) => `<tr>${headers.map((header) => `<td data-label="${escapeHtml(header.label || header.key || "Value")}">${header.render ? header.render(row) : escapeHtml(row[header.key])}</td>`).join("")}</tr>`).join("")}
@@ -809,6 +2235,53 @@ function renderSafeReportInline(value) {
 function renderReportDrilldownPanel(report) {
   if (!report || report.type !== "lead_utilization_report") return "";
   return `<div class="note"><strong>Retired report.</strong> This historical report used an unvalidated utilisation judgement and is not operational.</div>`;
+}
+
+function renderReportControls(report = {}) {
+  const controls = report.controls;
+  if (!controls?.action) return "";
+  return `<form class="report-controls" method="get" action="${escapeHtml(controls.action)}">
+    ${controls.salesperson ? `<input type="hidden" name="reportSalesperson" value="${escapeHtml(controls.salesperson)}" />` : ""}
+    <label>From date
+      <input type="date" name="dateFrom" value="${escapeHtml(controls.dateFrom || "")}" />
+    </label>
+    <label>To date
+      <input type="date" name="dateTo" value="${escapeHtml(controls.dateTo || "")}" />
+    </label>
+    <label>Calls in the attempt plan
+      <input type="number" min="2" max="10" name="requiredAttempts" value="${escapeHtml(controls.requiredAttempts || 4)}" />
+    </label>
+    <label>Waiting days after the last call
+      <input type="number" min="0" max="30" name="graceDays" value="${escapeHtml(controls.graceDays ?? 3)}" />
+    </label>
+    <button type="submit">Update report</button>
+  </form>`;
+}
+
+function renderReportChart(title, rows = []) {
+  if (!rows.length) return "";
+  const maximum = Math.max(1, ...rows.map((row) => Number(row.value || 0)));
+  return `<section class="report-chart">
+    <h2>${escapeHtml(title)}</h2>
+    <div class="report-bars">${rows.map((row) => {
+      const value = Number(row.value || 0);
+      const width = Math.max(value > 0 ? 1.5 : 0, (value / maximum) * 100);
+      return `<div class="report-bar-row">
+        <div class="report-bar-label"><strong>${escapeHtml(row.label)}</strong><span>${escapeHtml(value)}</span></div>
+        <div class="report-bar-track"><span class="report-bar-fill ${escapeHtml(row.tone || "neutral")}" style="width:${width}%"></span></div>
+        ${row.explanation ? `<p>${escapeHtml(row.explanation)}</p>` : ""}
+      </div>`;
+    }).join("")}</div>
+  </section>`;
+}
+
+function renderReportCharts(report = {}) {
+  const charts = report.charts || {};
+  if (!(charts.status?.length || charts.attempts?.length)) return "";
+  return `<div class="report-chart-grid">
+    ${renderReportChart("What happened to the records", charts.status || [])}
+    ${renderReportChart("How many calls are visible", charts.attempts || [])}
+  </div>`;
 }
 
 function renderEmptyState(message) {
@@ -1038,12 +2511,196 @@ function renderEvidenceProofCards(items) {
   </div>`;
 }
 
+function renderPerformanceEvidenceTable(result = {}) {
+  const rows = result.rows || [];
+  const evidenceRef = (row) => `<span class="mono">${escapeHtml(row.evidenceRef || "Unavailable")}</span>`;
+  const performanceEvidenceUrl = (metric, filters = {}) => `/drilldown?${new URLSearchParams({
+    metric,
+    ...filters,
+    ...(result.returnView ? { returnView: result.returnView } : {}),
+    ...(result.period?.startDate ? { performanceFrom: result.period.startDate } : {}),
+    ...(result.period?.endDate ? { performanceTo: result.period.endDate } : {})
+  }).toString()}`;
+  const acquisitionSourceCell = (row) => `${escapeHtml(row.acquisitionSource || "Unknown")}${
+    row.acquisitionSourceProven
+      ? ""
+      : `<br /><span class="muted small">Source not proven</span>`
+  }`;
+  const callStatus = (row) => row.callObservationStatus === "exact_call_observed"
+    ? badge("Exact call observed", "success")
+    : badge("Allocated lead with no recorded call", "warning");
+  const conversionStatus = (row) => {
+    if (row.observedConversionStatus === "observed_converted") return badge("Approved order observed", "success");
+    if (row.observedConversionStatus === "no_approved_order_observed") return badge("No approved order observed", "neutral");
+    return badge("Not scored", "warning");
+  };
+  if (result.recordType === "salesperson_summary") {
+    return table([
+      { label: "Evidence", render: evidenceRef },
+      { label: "Salesperson", key: "salesperson" },
+      { label: "Manager", key: "manager" },
+      { label: "Sent Leads", render: (row) => `<span class="mono">${formatNumber(row.sentAllocationEvents)}</span>` },
+      { label: "Unique Leads", render: (row) => `<span class="mono">${formatNumber(row.uniqueCustomers)}</span>` },
+      { label: "Approved Sales", render: (row) => `<span class="mono">${formatNumber(row.approvedSales)}</span>` },
+      { label: "Allocated / Self", render: (row) => `${formatNumber(row.companySourcedSales)} / ${formatNumber(row.selfSourcedSales)}` },
+      { label: "Exact Calls Observed", render: (row) => `<span class="mono">${formatNumber(row.customersCalledAfterAllocation)}</span>` },
+      { label: "Scoring", render: (row) => `${escapeHtml(row.salesCoverageStatus || "Unknown")}<br /><span class="muted small">${escapeHtml(row.callCoverageStatus || "Unknown")}</span>` }
+    ], rows, "No salespeople receiving leads match this drill-down.");
+  }
+  if (result.recordType === "allocation_event") {
+    return table([
+      { label: "Evidence", render: evidenceRef },
+      { label: "Sent", render: (row) => `<span class="mono">${escapeHtml([row.sentDate, row.sentTime].filter(Boolean).join(" "))}</span>` },
+      { label: "Salesperson", key: "salesperson" },
+      { label: "Manager", key: "manager" },
+      { label: "Allocation source", key: "source" },
+      { label: "Allocation", key: "allocationName" },
+      { label: "Lead import date", render: (row) => row.leadImportDate ? `<span class="mono">${escapeHtml(row.leadImportDate)}</span>` : `<span class="muted small">${escapeHtml(row.leadImportDateStatus || "Unavailable")}</span>` },
+      { label: "Lead age", key: "leadAgeBucket" }
+    ], rows, "No privacy-safe allocation events match this drill-down.");
+  }
+  if (result.recordType === "repeat_allocation_event") {
+    return table([
+      { label: "Evidence", render: evidenceRef },
+      { label: "First sent", render: (row) => `<span class="mono">${escapeHtml(row.firstSentDate || "Unavailable")}</span>` },
+      { label: "Repeat sent", render: (row) => `<span class="mono">${escapeHtml([row.repeatSentDate, row.repeatSentTime].filter(Boolean).join(" "))}</span>` },
+      { label: "Repeat number", render: (row) => `<span class="mono">${formatNumber(row.repeatNumber)}</span>` },
+      { label: "Salesperson", key: "salesperson" },
+      { label: "Manager", key: "manager" },
+      { label: "Allocation source", key: "source" },
+      { label: "Allocation", key: "allocationName" }
+    ], rows, "No privacy-safe repeat allocation events match this drill-down.");
+  }
+  if (result.recordType === "allocated_lead") {
+    return table([
+      { label: "Evidence", render: evidenceRef },
+      { label: "First sent", render: (row) => `<span class="mono">${escapeHtml(row.firstSentDate || "Unavailable")}</span>` },
+      { label: "Sent events", render: (row) => `<span class="mono">${formatNumber(row.sentEventCount)}</span>` },
+      { label: "Recipients", render: (row) => `${formatNumber(row.recipientCount)}<br /><span class="muted small">${escapeHtml((row.recipients || []).join(", "))}</span>` },
+      { label: "Allocation sources", render: (row) => escapeHtml((row.sources || []).join(", ")) },
+      { label: "Observed call", render: (row) => row.anyExactCallObserved ? badge("Observed", "success") : badge("Not observed", "warning") }
+    ], rows, "No privacy-safe allocated leads match this drill-down.");
+  }
+  if (result.recordType === "allocation_pair") {
+    return table([
+      { label: "Evidence", render: evidenceRef },
+      ...(result.privacyMode === "local_manager_identifiers" ? [
+        { label: "Business Name", key: "companyName", columnKey: "business_name", description: "The business name from the governed allocation record, included so this row can be audited locally." },
+        { label: "Customer ID", render: (row) => `<span class="mono">${escapeHtml(row.customerId || "Unavailable")}</span>`, description: "The governed customer identifier used to reconcile this allocation evidence." }
+      ] : []),
+      { label: "First sent", render: (row) => `<span class="mono">${escapeHtml([row.firstSentDate, row.firstSentTime].filter(Boolean).join(" "))}</span>` },
+      { label: "Salesperson", key: "salesperson" },
+      { label: "Manager", key: "manager" },
+      { label: "Allocation source", key: "source" },
+      { label: "Sent events", render: (row) => `<span class="mono">${formatNumber(row.sentEventCount)}</span>` },
+      { label: "Call observation", render: (row) => `${callStatus(row)}${row.firstObservedCallDate ? `<br /><span class="muted small">First observed ${escapeHtml(row.firstObservedCallDate)}</span>` : ""}` },
+      { label: "Observed sales", render: (row) => `${conversionStatus(row)}${row.exactApprovedOrders !== null && row.exactApprovedOrders !== undefined ? `<br /><span class="muted small">${formatNumber(row.exactApprovedOrders)} orders · ${Number(row.exactApprovedValue || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" })}</span>` : ""}` }
+    ], rows, "No customer-recipient allocation pairs match this drill-down.", {
+      key: `performance-drilldown-${result.metric}`,
+      compactColumns: result.privacyMode === "local_manager_identifiers"
+        ? ["business_name", "customer_id", "salesperson", "manager", "call_observation", "observed_sales"]
+        : ["evidence", "salesperson", "manager", "call_observation", "observed_sales"]
+    });
+  }
+  if (result.recordType === "approved_sale") {
+    return table([
+      { label: "Order / invoice", render: (row) => `<span class="mono">${escapeHtml(row.orderNumber || "Unavailable")}</span>` },
+      { label: "Business", key: "businessName" },
+      { label: "Customer ID", render: (row) => `<span class="mono">${escapeHtml(row.customerId || "Unavailable")}</span>` },
+      { label: "Approved", render: (row) => `<span class="mono">${escapeHtml(row.approvalDate || "Unavailable")}</span>` },
+      { label: "Seller", key: "seller" },
+      { label: "Acquisition source", render: acquisitionSourceCell },
+      { label: "Lead classification", key: "leadSourceClassification" },
+      { label: "Approved amount", render: (row) => Number(row.approvedValue || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" }) },
+      {
+        label: "Lead-source proof",
+        render: (row) => row.leadSourceProofStatus === "exact_governed_history_pre_sale_seller_allocation"
+          ? `<a class="allocation-link" href="${escapeHtml(performanceEvidenceUrl("performance.exactAllocationLink", { orderNumber: row.orderNumber }))}">
+              ${badge("Company Sourced", "success")}
+              <span>Exact seller allocation in governed history<br /><strong>View pre-sale allocation</strong></span>
+            </a>`
+          : row.leadSourceProofStatus === "exact_weekly_pre_sale_seller_allocation"
+            ? `<a class="allocation-link" href="${escapeHtml(performanceEvidenceUrl("performance.weeklyAllocationLink", { orderNumber: row.orderNumber }))}">
+                ${badge("Company Sourced", "success")}
+                <span>Exact customer and full-seller allocation before approval<br /><strong>View weekly allocation proof</strong></span>
+              </a>`
+          : row.leadSourceProofStatus === "no_exact_pre_sale_seller_allocation_in_combined_sources"
+            ? `${badge("Self Sourced", "notice")}<br /><span class="muted small">No exact pre-sale seller allocation in the combined reports</span>`
+            : `${badge("Proof unavailable", "warning")}<br /><span class="muted small">Historical classification proof did not reconcile</span>`
+      },
+      {
+        label: "Weekly allocation match",
+        render: (row) => row.weeklyAllocationMatchStatus === "matched_in_selected_week"
+          ? `<a class="allocation-link" href="${escapeHtml(performanceEvidenceUrl("performance.weeklyAllocationLink", { orderNumber: row.orderNumber }))}">
+              ${badge("Matched", "success")}
+              <span>${escapeHtml(row.allocationSource)} · ${escapeHtml(row.firstAllocationDate)}<br /><strong>View selected-week match</strong></span>
+            </a>`
+          : `${badge("Not in weekly log", "neutral")}<br /><span class="muted small">Cannot downgrade governed history</span>`
+      }
+    ], rows, "No approved-sale evidence matches this drill-down.");
+  }
+  if (result.recordType === "historical_allocation_link") {
+    return table([
+      { label: "Order / invoice", render: (row) => `<span class="mono">${escapeHtml(row.orderNumber || "Unavailable")}</span>` },
+      { label: "Business", key: "businessName" },
+      { label: "Customer ID", render: (row) => `<span class="mono">${escapeHtml(row.customerId || "Unavailable")}</span>` },
+      { label: "Approved", render: (row) => `<span class="mono">${escapeHtml(row.approvalDate || "Unavailable")}</span>` },
+      { label: "Seller", key: "seller" },
+      { label: "Approved amount", render: (row) => Number(row.approvedValue || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" }) },
+      { label: "Acquisition source", render: acquisitionSourceCell },
+      { label: "Lead classification", key: "leadSourceClassification" },
+      { label: "Allocation item", render: (row) => `<span class="mono">${escapeHtml(row.allocationItemId || "Unavailable")}</span>` },
+      { label: "History ID", render: (row) => `<span class="mono">${escapeHtml(row.allocationHistoryId || "Unavailable")}</span>` },
+      { label: "Allocated to", key: "allocationRecipient" },
+      { label: "Manager", key: "allocationManager" },
+      { label: "Effective start", render: (row) => `<span class="mono">${escapeHtml(row.allocationEffectiveStart || "Unavailable")}</span>` },
+      { label: "Inactivated", render: (row) => `<span class="mono">${escapeHtml(row.allocationInactivatedAt || "Still active / unavailable")}</span>` },
+      { label: "Active at sale", render: (row) => row.allocationActiveAtSale ? badge("Yes", "success") : badge("No", "neutral") },
+      { label: "Description", key: "allocationDescription" },
+      { label: "Governing rule", render: (row) => `<span class="evidence-summary">${escapeHtml(row.linkRule || "Unavailable")}</span>` }
+    ], rows, "No authoritative historical allocation proof matches this order.");
+  }
+  if (result.recordType === "weekly_allocation_link") {
+    return table([
+      { label: "Order / invoice", render: (row) => `<span class="mono">${escapeHtml(row.orderNumber || "Unavailable")}</span>` },
+      { label: "Business", key: "businessName" },
+      { label: "Customer ID", render: (row) => `<span class="mono">${escapeHtml(row.customerId || "Unavailable")}</span>` },
+      { label: "Approved", render: (row) => `<span class="mono">${escapeHtml(row.approvalDate || "Unavailable")}</span>` },
+      { label: "Seller", key: "seller" },
+      { label: "Approved amount", render: (row) => Number(row.approvedValue || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD" }) },
+      { label: "Lead classification", key: "leadSourceClassification" },
+      { label: "Allocation item", render: (row) => `<span class="mono">${escapeHtml(row.allocationItemId || "Unavailable")}</span>` },
+      { label: "Allocated to", key: "allocationRecipient" },
+      { label: "Manager", key: "allocationManager" },
+      { label: "Allocation sent", render: (row) => `<span class="mono">${escapeHtml([row.allocationSentDate, row.allocationSentTime].filter(Boolean).join(" ") || "Unavailable")}</span>` },
+      { label: "Allocation source", key: "allocationSource" },
+      { label: "Allocation", key: "allocationName" },
+      { label: "Weekly-match rule", render: (row) => `<span class="evidence-summary">${escapeHtml(row.linkRule || "Unavailable")}</span>` }
+    ], rows, "No selected-week allocation match exists for this order.");
+  }
+  if (result.recordType === "duplicate_allocation") {
+    return table([
+      { label: "Evidence", render: evidenceRef },
+      { label: "Sent", render: (row) => `<span class="mono">${escapeHtml([row.sentDate, row.sentTime].filter(Boolean).join(" "))}</span>` },
+      { label: "Salesperson", key: "salesperson" },
+      { label: "Manager", key: "manager" },
+      { label: "Allocation source", key: "source" },
+      { label: "Allocation", key: "allocationName" },
+      { label: "Reason", key: "exclusionReason" }
+    ], rows, "No privacy-safe logical duplicate evidence matches this drill-down.");
+  }
+  return `<div class="empty">No supported privacy-safe evidence table is available.</div>`;
+}
+
 function renderDrilldownPage(result) {
   const rows = result.rows || [];
+  const isPerformance = result.kind === "performanceAggregate";
+  const isIdentifiedPerformance = isPerformance && result.privacyMode === "local_manager_identifiers";
   const baseParams = {
     metric: result.metric,
     ...(result.filterState?.query || {}),
     ...(result.filters?.salesperson ? { salesperson: result.filters.salesperson } : {}),
+    ...(result.filters?.manager ? { manager: result.filters.manager } : {}),
     ...(result.filters?.source ? { source: result.filters.source } : {}),
     ...(result.filters?.customerId ? { customerId: result.filters.customerId } : {}),
     ...(result.filters?.createdBy ? { createdBy: result.filters.createdBy } : {}),
@@ -1060,7 +2717,20 @@ function renderDrilldownPage(result) {
     ...(result.filters?.sort ? { sort: result.filters.sort } : {}),
     ...(result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? { minImportAgeDays: result.filters.minImportAgeDays } : {}),
     ...(result.filters?.maxAttempts !== null && result.filters?.maxAttempts !== undefined ? { maxAttempts: result.filters.maxAttempts } : {}),
-    ...(result.filters?.businessSegment ? { businessSegment: result.filters.businessSegment } : {})
+    ...(result.filters?.businessSegment ? { businessSegment: result.filters.businessSegment } : {}),
+    ...(result.filters?.acquisitionSource ? { acquisitionSource: result.filters.acquisitionSource } : {}),
+    ...(result.filters?.approvalDate ? { approvalDate: result.filters.approvalDate } : {}),
+    ...(result.filters?.sentDate ? { sentDate: result.filters.sentDate } : {}),
+    ...(result.filters?.classification ? { classification: result.filters.classification } : {}),
+    ...(result.filters?.leadAgeBucket ? { leadAgeBucket: result.filters.leadAgeBucket } : {}),
+    ...(result.filters?.callObservationStatus ? { callObservationStatus: result.filters.callObservationStatus } : {}),
+    ...(result.filters?.conversionStatus ? { conversionStatus: result.filters.conversionStatus } : {}),
+    ...(result.filters?.allocationFrequency ? { allocationFrequency: result.filters.allocationFrequency } : {}),
+    ...(result.filters?.orderNumber ? { orderNumber: result.filters.orderNumber } : {}),
+    ...(result.reconciliation?.metric ? { reconcile: result.reconciliation.metric } : {}),
+    ...(result.returnView ? { returnView: result.returnView } : {}),
+    ...(isPerformance && result.period?.startDate ? { performanceFrom: result.period.startDate } : {}),
+    ...(isPerformance && result.period?.endDate ? { performanceTo: result.period.endDate } : {})
   };
   const pageUrl = (extra = {}) => `/drilldown?${new URLSearchParams({
     ...baseParams,
@@ -1081,6 +2751,7 @@ function renderDrilldownPage(result) {
   const filters = [
     ...(result.filterSummary?.activeFilters || []).map((entry) => `${entry.label}: ${entry.display}`),
     result.filters?.salesperson ? `Salesperson: ${result.filters.salesperson}` : "",
+    result.filters?.manager ? `Manager team: ${result.filters.manager}` : "",
     result.filters?.source ? `Source: ${result.filters.source}` : "",
     result.filters?.customerId ? `Customer ID: ${result.filters.customerId}` : "",
     result.filters?.createdBy ? `Created by: ${result.filters.createdBy}` : "",
@@ -1097,15 +2768,30 @@ function renderDrilldownPage(result) {
     result.filters?.sort ? `Order: ${result.filters.sort}` : "",
     result.filters?.minImportAgeDays !== null && result.filters?.minImportAgeDays !== undefined ? `Record age older than: ${result.filters.minImportAgeDays} days` : "",
     result.filters?.maxAttempts !== null && result.filters?.maxAttempts !== undefined ? `Attempts: ${result.filters.maxAttempts}` : "",
-    result.filters?.businessSegmentLabel ? `Business: ${result.filters.businessSegmentLabel}` : ""
+    result.filters?.businessSegmentLabel ? `Business: ${result.filters.businessSegmentLabel}` : "",
+    result.filters?.acquisitionSource ? `Acquisition source: ${result.filters.acquisitionSource}` : "",
+    result.filters?.approvalDate ? `Approval date: ${result.filters.approvalDate}` : "",
+    result.filters?.sentDate ? `Sent date: ${result.filters.sentDate}` : "",
+    result.filters?.classification ? `Lead classification: ${result.filters.classification}` : "",
+    result.filters?.leadAgeBucket ? `Lead age: ${result.filters.leadAgeBucket}` : "",
+    result.filters?.callObservationStatus ? `Call observation: ${result.filters.callObservationStatus}` : "",
+    result.filters?.conversionStatus ? `Observed conversion: ${result.filters.conversionStatus}` : "",
+    result.filters?.allocationFrequency ? `Allocation frequency: ${result.filters.allocationFrequency}` : "",
+    result.filters?.orderNumber ? `Order / invoice: ${result.filters.orderNumber}` : "",
+    isPerformance && result.period?.label ? `Performance period: ${result.period.label}` : ""
   ].filter(Boolean);
   const visibleStart = result.count ? (result.offset || 0) + 1 : 0;
   const visibleEnd = result.count ? (result.offset || 0) + result.displayedCount : 0;
   const isReattempt = result.kind === "reattempt";
   const isSystemAudio = result.kind === "systemAudio";
   const isHarvest = result.kind === "harvest";
+  const reconciliationPanel = isPerformance && result.reconciliation
+    ? `<div class="note" style="margin-bottom:12px;"><strong>Figure reconciliation</strong><p class="muted small">${formatNumber(result.reconciliation.numerator)} Sales From Allocated Leads ÷ ${formatNumber(result.reconciliation.denominator)} classified Approved Sales = ${formatRatioPercent(result.reconciliation.value)}. ${formatRatioPercent(result.reconciliation.sourceCoverage)} of Approved Sales are classified${result.reconciliation.attributionWithheldSales ? `; ${formatNumber(result.reconciliation.attributionWithheldSales)} unresolved sale${result.reconciliation.attributionWithheldSales === 1 ? "" : "s"} create${result.reconciliation.attributionWithheldSales === 1 ? "s" : ""} a possible range of ${formatRatioPercent(result.reconciliation.lowerBound)}–${formatRatioPercent(result.reconciliation.upperBound)}. ${result.reconciliation.comparable ? "This remains comparable because unresolved attribution is below 3%." : "This is provisional and excluded from source-share comparisons because unresolved attribution is 3% or more."}` : " with no unresolved attribution."}</p></div>`
+    : "";
 
-  const rowTable = isLead
+  const rowTable = isPerformance
+    ? renderPerformanceEvidenceTable(result)
+    : isLead
     ? table([
       { label: "Day", key: "day" },
       { label: "Customer ID", render: (row) => customerIdCell(row) },
@@ -1186,8 +2872,8 @@ function renderDrilldownPage(result) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(result.title)} - Sales Dashboard</title>
     <style>
-      ${COLUMN_HELP_STYLES}
       @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700;800&display=swap");
+      ${COLUMN_HELP_STYLES}
       :root {
         --background: #080A0F;
         --surface: #0D1117;
@@ -1294,6 +2980,16 @@ function renderDrilldownPage(result) {
       }
       .data-link { border-bottom: 1px solid rgba(86, 214, 229, 0.32); }
       .proof-link { display: block; margin-top: 5px; font-size: 12px; }
+      .allocation-link {
+        display: inline-flex;
+        align-items: flex-start;
+        gap: 7px;
+        color: var(--muted-foreground);
+        text-decoration: none;
+        line-height: 1.35;
+      }
+      .allocation-link strong { color: var(--accent); font-size: 12px; }
+      .allocation-link:hover strong { color: var(--foreground); }
       .badge {
         display: inline-flex;
         align-items: center;
@@ -1319,6 +3015,7 @@ function renderDrilldownPage(result) {
         .topbar, .page-title { flex-direction: column; }
         .page-brand { min-width: 0; width: 190px; }
       }
+      ${PANELIFY_THEME_STYLES}
     </style>
   </head>
   <body>
@@ -1327,14 +3024,14 @@ function renderDrilldownPage(result) {
         <div class="page-title">
           <a class="page-brand" href="/#overview"><img data-brand-logo src="/branding/logo" alt="Countrywide Austral" /></a>
           <div>
-            <p class="page-kicker">Drill-down proof</p>
+            <p class="page-kicker">${isIdentifiedPerformance ? "Local manager source evidence" : isPerformance ? "Privacy-safe source evidence" : "Drill-down proof"}</p>
             <h1>${escapeHtml(result.title)}</h1>
             <p class="muted">${escapeHtml(result.description)}</p>
             <p class="muted small">${escapeHtml(filters.length ? filters.join(" | ") : "No extra filters")} | Showing ${formatNumber(visibleStart)}-${formatNumber(visibleEnd)} of ${formatNumber(result.count)} records.</p>
           </div>
         </div>
         <div class="drill-actions">
-          <a class="button-link" href="/#overview">Dashboard</a>
+          <a class="button-link" href="${isPerformance ? escapeHtml(`${result.returnView === "lead_results" ? "/lead-results-dashboard" : "/"}?${new URLSearchParams({ ...(result.returnView === "lead_results" ? {} : { view: "performance" }), performanceFrom: result.period?.startDate || "", performanceTo: result.period?.endDate || "" }).toString()}#${result.returnView === "lead_results" ? "lead-results-summary" : "performance-summary"}`) : "/#overview"}">Dashboard</a>
           <a class="button-link" href="${escapeHtml(apiPath)}">JSON</a>
           <a class="button-link" href="${escapeHtml(fullJsonPath)}">Full JSON</a>
         </div>
@@ -1342,9 +3039,11 @@ function renderDrilldownPage(result) {
       <section class="panel">
         <div class="stack" style="margin-bottom: 12px;">
           <span class="badge">${escapeHtml(result.metric)}</span>
-          <span class="badge">${escapeHtml(isLead ? "Matched-record proof" : isReattempt ? "Reattempt proof" : isSystemAudio ? "System audio proof" : isHarvest ? "Lead harvest proof" : "Call-row proof")}</span>
-          <span class="badge">Ignored: ${escapeHtml(result.excludedRawFields.join(", "))}</span>
+          <span class="badge">${escapeHtml(isIdentifiedPerformance ? "Local identifiers included" : isPerformance ? "Privacy-safe evidence breakdown" : isLead ? "Matched-record proof" : isReattempt ? "Reattempt proof" : isSystemAudio ? "System audio proof" : isHarvest ? "Lead harvest proof" : "Call-row proof")}</span>
+          <span class="badge">Ignored: ${escapeHtml((result.excludedRawFields || result.excludedFields || []).join(", "))}</span>
         </div>
+        ${isPerformance && result.limitations?.length ? `<div class="empty" style="margin-bottom:12px;">${result.limitations.map((item) => escapeHtml(item)).join("<br />")}</div>` : ""}
+        ${reconciliationPanel}
         <div class="drill-actions" style="margin-bottom: 12px;">
           ${result.previousOffset !== null && result.previousOffset !== undefined ? `<a class="button-link" href="${escapeHtml(pageUrl({ offset: result.previousOffset }))}">Previous</a>` : ""}
           ${result.nextOffset !== null && result.nextOffset !== undefined ? `<a class="button-link" href="${escapeHtml(pageUrl({ offset: result.nextOffset }))}">Next</a>` : ""}
@@ -1352,6 +3051,7 @@ function renderDrilldownPage(result) {
         ${rowTable}
       </section>
     </main>
+    ${TABLE_COLUMNS_SCRIPT}
   </body>
 </html>`;
 }
@@ -1750,7 +3450,7 @@ function renderProcessingStatePanel(data, persistence = {}, intelligenceTotals =
       <div class="guardrails" style="margin-top: 12px;">
         <div class="note">
           <h3>Deterministic boundary</h3>
-          <p class="muted small">Allowed: literal machine audio, explicit no-answer/voicemail, direct customer wrong-number wording, and direct customer opt-out wording. These are triage matches, not quality or performance decisions.</p>
+          <p class="muted small">Allowed: literal machine audio, explicit no-answer/voicemail, direct customer wrong-number wording, direct customer not-interested wording, and direct customer opt-out wording. These are triage matches, not quality or performance decisions.</p>
         </div>
         <div class="note">
           <h3>Guardrail</h3>
@@ -3497,8 +5197,8 @@ function renderEvaluationStudioPage(analysis, options = {}) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Evaluation Studio - Sales Dashboard</title>
     <style>
-      ${COLUMN_HELP_STYLES}
       @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700;800&display=swap");
+      ${COLUMN_HELP_STYLES}
       :root {
         --background: #080A0F;
         --surface: #0D1117;
@@ -4115,6 +5815,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
         .table-wrap td { display: grid; grid-template-columns: minmax(110px, 34%) minmax(0, 1fr); gap: 10px; padding: 8px 0; overflow-wrap: anywhere; }
         .table-wrap td::before { content: attr(data-label); color: var(--muted-foreground); font-size: 10px; font-weight: 800; text-transform: uppercase; }
       }
+      ${PANELIFY_THEME_STYLES}
     </style>
   </head>
   <body>
@@ -4154,6 +5855,7 @@ function renderEvaluationStudioPage(analysis, options = {}) {
       ${renderEvaluationStudio(persistence, data, options)}
     </main>
     ${renderStudioUtilityScript()}
+    ${TABLE_COLUMNS_SCRIPT}
   </body>
 </html>`;
 }
@@ -4173,42 +5875,56 @@ function businessSegmentLabel(segment) {
 
 const DASHBOARD_VIEW_META = Object.freeze({
   overview: {
+    icon: "◫",
     label: "Overview",
     kicker: "Manager overview",
     title: "Sales Dashboard",
     description: "Call activity, reporting context, and the operating signals that need attention first."
   },
   opportunities: {
+    icon: "↗",
     label: "Opportunities",
     kicker: "Evidence-backed action",
     title: "Sales Opportunity Action Centre",
     description: "See evaluation readiness first, then drill into supported opportunity stages and the customer actions that need attention."
   },
   follow_up: {
+    icon: "↻",
     label: "Follow-Up",
     kicker: "Literal reattempt evidence",
     title: "Reattempt Activity",
     description: "Inspect matched call attempts and literal no-contact evidence. Semantic callback and follow-up decisions are unavailable."
   },
   reviews: {
+    icon: "!",
     label: "Alerts & Reviews",
     kicker: "Manager workflow",
     title: "Alerts & Manager Review",
     description: "Triage active alerts and record manager confirmation, correction, dismissal, or escalation."
   },
   intelligence: {
+    icon: "◎",
     label: "Intelligence",
     kicker: "Restricted transcript evidence",
     title: "Literal Transcript Triage",
     description: "Inspect raw transcript facts, restricted literal triage, and provenance. Semantic evaluation and automated scoring are unavailable."
   },
   performance: {
+    icon: "◇",
     label: "Performance & Cohorts",
     kicker: "Governed commercial evidence",
     title: "Performance & Cohorts",
     description: "Compare workload, approved-sales productivity, execution timing, and matured allocation cohorts with explicit attribution limits."
   },
+  lead_results: {
+    icon: "LR",
+    label: "Lead Results Dashboard",
+    kicker: "Complete governed results",
+    title: "Lead Result Dashboard",
+    description: "Review the workbook-equivalent lead results, manager evidence, recognition prompts, and complete Performance Rankings in one scrollable page."
+  },
   records: {
+    icon: "▤",
     label: "Records & Reports",
     kicker: "Audit and evidence",
     title: "Records & Reports",
@@ -4219,6 +5935,7 @@ const DASHBOARD_VIEW_META = Object.freeze({
 function normalizeDashboardView(value) {
   const key = String(value || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
   if (key === "leads") return "harvest";
+  if (key === "lead_result" || key === "lead_results_dashboard") return "lead_results";
   return Object.prototype.hasOwnProperty.call(DASHBOARD_VIEW_META, key) ? key : "overview";
 }
 
@@ -4310,8 +6027,8 @@ function renderCallPage(call, options = {}) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Call ${escapeHtml(callId)} - Sales Dashboard</title>
     <style>
-      ${COLUMN_HELP_STYLES}
       @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700;800&display=swap");
+      ${COLUMN_HELP_STYLES}
       :root {
         --background: #080A0F;
         --surface: #0D1117;
@@ -4426,6 +6143,7 @@ function renderCallPage(call, options = {}) {
       .commercial-summary details summary { cursor: pointer; font-weight: 760; }
       .commercial-summary ul { display: grid; gap: 7px; margin: 9px 0 0; padding-left: 20px; }
       @media (max-width: 860px) { .topbar, .call-title, .grid-2, .audit-grid { grid-template-columns: 1fr; flex-direction: column; } .form-grid, .turn { grid-template-columns: 1fr; } .call-brand { min-width: 0; width: 190px; } table { min-width: 0; table-layout: fixed; } }
+      ${PANELIFY_THEME_STYLES}
     </style>
   </head>
   <body>
@@ -4461,8 +6179,12 @@ function renderCallPage(call, options = {}) {
             { item: "LLM review state", value: llmReviewState(intelligenceAudit || call) },
             { item: "Manager review state", value: hasManagerReview ? `${reviewStatusLabel(latestManagerReview.reviewStatus)} | Manager-reviewed` : "Unreviewed" },
             ...(latestManagerReview?.corrections?.length ? [{ item: "Manager-corrected fields", value: latestManagerReview.corrections.map((correction) => `${correction.fieldName}: ${correction.managerCorrectedValue}`).join(" | ") }] : []),
+            { item: "Business relationship", value: call.businessSegmentLabel || businessSegmentLabel(call.businessSegment) },
             { item: "Order history", value: call.orderHistoryLabel || (Number(call.orderCount || 0) > 0 ? "Previous Sales History" : "No Sales History") },
-            { item: "Business relationship", value: [call.businessRelationshipRule, call.businessRelationshipEvidenceTier, call.businessRelationshipInvoiceNumber || call.businessRelationshipOrderNumber].filter(Boolean).join(" | ") },
+            { item: "Relationship evidence", value: `${call.businessRelationshipEvidenceTier || "fallback"} | ${call.businessRelationshipRule || "order_count_fallback"}` },
+            ...(call.businessRelationshipBoundaryAt ? [{ item: "First-sale boundary used", value: call.businessRelationshipBoundaryAt }] : []),
+            ...(call.businessRelationshipInvoiceNumber ? [{ item: "Invoice number", value: call.businessRelationshipInvoiceNumber }] : []),
+            { item: "Relationship reason", value: call.businessRelationshipExplanation || "Mandatory binary fallback policy applied." },
             { item: "Semantic follow-up evaluation", value: "Unavailable" },
             { item: "AI assistant literal phrase", value: call.aiVoiceAssistantDetected ? "Detected; handling not scored" : "Not detected" },
             { item: "System audio subtype", value: call.systemAudioDetected ? call.systemAudioSubtypeLabel || call.systemAudioSubtype : "Not detected" },
@@ -4572,6 +6294,7 @@ function renderCallPage(call, options = {}) {
         </div>
       </section>` : `<section class="panel"><div class="empty">Use a call link from a drill-down page or the explorer.</div></section>`}
     </main>
+    ${TABLE_COLUMNS_SCRIPT}
   </body>
 </html>`;
 }
@@ -4714,6 +6437,466 @@ function renderSalesOpportunityActionCentre(centre = {}, options = {}) {
   </div>`;
 }
 
+const LEAD_CHART_COLORS = Object.freeze([
+  "#8B5CF6",
+  "#A66BFF",
+  "#E851B9",
+  "#60A5FA",
+  "#34D399",
+  "#FBBF24",
+  "#747C91"
+]);
+
+function chartPercent(value, maximum = 100) {
+  const numeric = Number(value);
+  const max = Number(maximum);
+  if (!Number.isFinite(numeric) || !Number.isFinite(max) || max <= 0) return 0;
+  return Math.max(0, Math.min(100, (numeric / max) * 100));
+}
+
+function renderChartRow(row, options = {}) {
+  const value = Number(options.value?.(row) || 0);
+  const maximum = Number(options.maximum || 0);
+  const width = chartPercent(value, maximum);
+  const reference = Number(options.reference?.(row));
+  const referenceWidth = Number.isFinite(reference) ? chartPercent(reference, maximum) : null;
+  const status = options.status?.(row) || "";
+  const lowSample = options.lowSample?.(row);
+  const classes = ["lead-chart-row", lowSample ? "low-sample" : "", status === "not_scored" ? "not-scored" : ""]
+    .filter(Boolean)
+    .join(" ");
+  const content = `
+    <div class="lead-chart-row-head">
+      <span class="lead-chart-label">${escapeHtml(options.label?.(row) || "Unknown")}</span>
+      <strong class="lead-chart-value mono">${options.valueLabel?.(row) || formatNumber(value)}</strong>
+    </div>
+    <span class="lead-chart-track" aria-hidden="true"><span class="lead-chart-fill ${escapeHtml(options.tone || "violet")}" style="--chart-width:${width.toFixed(2)}%"></span>${referenceWidth === null ? "" : `<span class="lead-chart-reference" style="--reference-left:${referenceWidth.toFixed(2)}%"></span>`}</span>
+    ${options.detail ? `<span class="lead-chart-detail">${options.detail(row)}</span>` : ""}`;
+  const href = options.href?.(row) || "";
+  return `<li class="${classes}">${href
+    ? `<a class="lead-chart-row-link" href="${escapeHtml(href)}">${content}</a>`
+    : content}</li>`;
+}
+
+function renderChartList(rows = [], options = {}) {
+  if (!rows.length) return `<div class="empty">${escapeHtml(options.emptyMessage || "No chart data is available.")}</div>`;
+  const visibleLimit = Math.max(1, Number(options.visibleLimit || 6));
+  const visible = rows.slice(0, visibleLimit);
+  const remaining = rows.slice(visibleLimit);
+  const renderRows = (items) => `<ul class="lead-chart-list">${items.map((row) => renderChartRow(row, options)).join("")}</ul>`;
+  return `${renderRows(visible)}${remaining.length ? `<details class="lead-chart-more"><summary>Show ${formatNumber(remaining.length)} additional sources</summary>${renderRows(remaining)}</details>` : ""}`;
+}
+
+function renderDailyAllocationChart(dailyRows = [], sourceRows = [], options = {}) {
+  if (!dailyRows.length) return `<div class="empty">No daily allocation events are available.</div>`;
+  const visibleSources = sourceRows
+    .filter((row) => Number(row.sentAllocationEvents || 0) > 0)
+    .slice(0, 5)
+    .map((row, index) => ({ source: row.source, index }));
+  const visibleKeys = new Set(visibleSources.map((row) => row.source));
+  const hasOther = dailyRows.some((day) => (
+    (day.sources || []).some((source) => !visibleKeys.has(source.source))
+  ));
+  const legend = [
+    ...visibleSources,
+    ...(hasOther ? [{ source: "Other sources", index: 5 }] : [])
+  ];
+  const maximum = Math.max(...dailyRows.map((row) => Number(row.sentAllocationEvents || 0)), 1);
+  const dayLabel = (value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleDateString("en-AU", { weekday: "short", day: "numeric" });
+  };
+  return `<figure class="lead-chart-figure">
+    <figcaption class="sr-only">Deduplicated sent allocation events by allocation source and sent date.</figcaption>
+    <div class="lead-chart-legend" aria-label="Allocation source legend">${legend.map((item) => `<span><i class="series-${item.index}" aria-hidden="true"></i>${escapeHtml(item.source)}</span>`).join("")}</div>
+    <div class="daily-allocation-chart" style="--daily-column-count:${dailyRows.length}">
+      ${dailyRows.map((day) => {
+        const segments = visibleSources.map((visible) => {
+          const source = (day.sources || []).find((item) => item.source === visible.source);
+          return {
+            source: visible.source,
+            count: Number(source?.sentAllocationEvents || 0),
+            index: visible.index
+          };
+        });
+        if (hasOther) {
+          segments.push({
+            source: "Other sources",
+            count: (day.sources || [])
+              .filter((source) => !visibleKeys.has(source.source))
+              .reduce((sum, source) => sum + Number(source.sentAllocationEvents || 0), 0),
+            index: 5
+          });
+        }
+        const height = chartPercent(day.sentAllocationEvents, maximum);
+        const content = `
+          <strong class="mono">${formatNumber(day.sentAllocationEvents)}</strong>
+          <div class="daily-allocation-track" aria-label="${escapeHtml(`${day.date}: ${formatNumber(day.sentAllocationEvents)} sent allocation events`)}">
+            <div class="daily-allocation-stack" style="--column-height:${height.toFixed(2)}%">
+              ${segments.filter((segment) => segment.count > 0).map((segment) => `<span class="series-${segment.index}" style="--segment-grow:${segment.count}" title="${escapeHtml(`${segment.source}: ${formatNumber(segment.count)}`)}"></span>`).join("")}
+            </div>
+          </div>
+          <span>${escapeHtml(dayLabel(day.date))}</span>`;
+        const href = options.href?.(day) || "";
+        return href
+          ? `<a class="daily-allocation-column" href="${escapeHtml(href)}">${content}</a>`
+          : `<div class="daily-allocation-column">${content}</div>`;
+      }).join("")}
+    </div>
+    <details class="lead-chart-more daily-allocation-details">
+      <summary>View exact daily source quantities</summary>
+      <ul>${dailyRows.map((day) => `<li><strong>${escapeHtml(dayLabel(day.date))} · ${formatNumber(day.sentAllocationEvents)} sent events</strong><span>${(day.sources || []).map((source) => `${escapeHtml(source.source)} ${formatNumber(source.sentAllocationEvents)}`).join(" · ")}</span></li>`).join("")}</ul>
+    </details>
+  </figure>`;
+}
+
+function renderLeadAgeChart(rows = [], total = 0, options = {}) {
+  if (!rows.length || !total) return `<div class="empty">No valid allocation-age distribution is available.</div>`;
+  let cursor = 0;
+  const stops = rows.map((row, index) => {
+    const start = cursor;
+    cursor = Math.min(100, cursor + Number(row.share || 0));
+    if (index === rows.length - 1) cursor = 100;
+    return `${LEAD_CHART_COLORS[index % LEAD_CHART_COLORS.length]} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;
+  });
+  return `<figure class="lead-age-figure">
+    <div class="lead-age-donut" style="--donut-fill:conic-gradient(${stops.join(",")})" aria-hidden="true">
+      <div><strong class="mono">${formatNumber(total)}</strong><span>sent events</span></div>
+    </div>
+    <figcaption>
+      <ul class="lead-age-legend">${rows.map((row, index) => {
+        const content = `<i style="--legend-color:${LEAD_CHART_COLORS[index % LEAD_CHART_COLORS.length]}" aria-hidden="true"></i><span>${escapeHtml(row.label)}</span><strong class="mono">${formatNumber(row.sentAllocationEvents)}</strong><small>${formatPercent(row.share)}</small>`;
+        const href = options.href?.(row) || "";
+        return `<li>${href ? `<a href="${escapeHtml(href)}">${content}</a>` : content}</li>`;
+      }).join("")}</ul>
+    </figcaption>
+  </figure>`;
+}
+
+function renderLeadUsage(usage = {}, totals = {}, allocationFrequency = [], options = {}) {
+  const stages = [
+    { label: "Raw rows", value: totals.rawAllocationRows },
+    { label: "Sent events", value: totals.deduplicatedSentEvents },
+    { label: "Customer-recipient pairs", value: usage.uniqueCustomerRecipientPairs },
+    { label: "Unique leads", value: usage.uniqueCustomers }
+  ];
+  const maximum = Math.max(...stages.map((stage) => Number(stage.value || 0)), 1);
+  return `<div class="lead-usage-layout">
+    <figure class="lead-usage-funnel">
+      <figcaption class="sr-only">Allocation rows retained through deduplication and unique lead grouping.</figcaption>
+      ${stages.map((stage, index) => {
+        const content = `
+        <div><span>${escapeHtml(stage.label)}</span><strong class="mono">${formatNumber(stage.value)}</strong></div>
+        <span class="lead-usage-track" aria-hidden="true"><span class="series-${Math.min(index, 4)}" style="--usage-width:${chartPercent(stage.value, maximum).toFixed(2)}%"></span></span>`;
+        const href = options.stageHref?.(stage) || "";
+        return href
+          ? `<a class="lead-usage-stage" href="${escapeHtml(href)}">${content}</a>`
+          : `<div class="lead-usage-stage">${content}</div>`;
+      }).join("")}
+    </figure>
+    <div class="lead-usage-signals">
+      <a href="${escapeHtml(options.repeatHref || "#lead-usage")}"><span>Repeat sends, same recipient</span><strong class="mono">${formatNumber(usage.repeatSentEventsSameRecipient)}</strong></a>
+      <a href="${escapeHtml(options.crossRecipientHref || "#lead-usage")}"><span>Cross-recipient leads</span><strong class="mono">${formatNumber(usage.crossRecipientCustomers)}</strong></a>
+      <a href="${escapeHtml(options.duplicateHref || "#lead-usage")}"><span>Duplicate rows excluded</span><strong class="mono">${formatNumber(usage.logicalDuplicateRows)}</strong></a>
+      <div><span>Conflicting source pairs</span><strong class="mono">${formatNumber(usage.conflictingSourcePairs)}</strong></div>
+    </div>
+    <div class="allocation-frequency">
+      <h3>Sent-event frequency per customer-recipient pair</h3>
+      ${renderChartList(allocationFrequency, {
+        label: (row) => row.label,
+        value: (row) => row.customerRecipientPairs,
+        valueLabel: (row) => `${formatNumber(row.customerRecipientPairs)} · ${formatPercent(row.share)}`,
+        maximum: Math.max(...allocationFrequency.map((row) => Number(row.customerRecipientPairs || 0)), 1),
+        tone: "blue",
+        visibleLimit: 4,
+        href: (row) => options.frequencyHref?.(row) || ""
+      })}
+    </div>
+  </div>`;
+}
+
+function renderPerformanceRangeForm(report = {}) {
+  const selectedStart = report.period?.startDate || report.availablePeriod?.startDate || "";
+  const selectedEnd = report.period?.endDate || report.availablePeriod?.endDate || "";
+  const minimum = report.availablePeriod?.startDate || "";
+  const maximum = report.availablePeriod?.endDate || "";
+  if (!minimum || !maximum) return "";
+  return `<form class="performance-range-form" action="/" method="get" aria-label="Performance reporting period">
+    <input type="hidden" name="view" value="performance" />
+    <label><span>From</span><input type="date" name="performanceFrom" value="${escapeHtml(selectedStart)}" min="${escapeHtml(minimum)}" max="${escapeHtml(maximum)}" required /></label>
+    <label><span>To</span><input type="date" name="performanceTo" value="${escapeHtml(selectedEnd)}" min="${escapeHtml(minimum)}" max="${escapeHtml(maximum)}" required /></label>
+    <button class="button secondary" type="submit">Apply range</button>
+    <a class="button secondary" href="/?view=performance#performance-summary">Reset</a>
+    <span class="muted small">Australia/Sydney allocation dates · available ${escapeHtml(minimum)} to ${escapeHtml(maximum)}</span>
+  </form>`;
+}
+
+function renderLeadResultRangeForm(state = {}) {
+  const report = state.report || {};
+  const selectedStart = report.period?.startDate || report.availablePeriod?.startDate || "";
+  const selectedEnd = report.period?.endDate || report.availablePeriod?.endDate || "";
+  const minimum = report.availablePeriod?.startDate || "";
+  const maximum = report.availablePeriod?.endDate || "";
+  const completeRanges = state.completeRanges || [];
+  if (!minimum || !maximum) return "";
+  const selectedQuery = new URLSearchParams({ performanceFrom: selectedStart, performanceTo: selectedEnd });
+  return `<div class="lead-results-range-control">
+    <form class="performance-range-form" action="/lead-results-dashboard" method="get" aria-label="Lead Results reporting period">
+      <label><span>From</span><input type="date" name="performanceFrom" value="${escapeHtml(selectedStart)}" min="${escapeHtml(minimum)}" max="${escapeHtml(maximum)}" required /></label>
+      <label><span>To</span><input type="date" name="performanceTo" value="${escapeHtml(selectedEnd)}" min="${escapeHtml(minimum)}" max="${escapeHtml(maximum)}" required /></label>
+      <button class="button secondary" type="submit">Display complete range</button>
+      <a class="button secondary" href="/lead-results-dashboard#lead-results-summary">Reset</a>
+      ${state.available ? `<a class="button" href="/exports/lead-results-dashboard.xlsx?${escapeHtml(selectedQuery.toString())}">Export selected range</a>` : `<span class="button disabled" aria-disabled="true" title="Export is available only after the selected period passes every completeness check.">Export unavailable</span>`}
+      <span class="muted small">Australia/Sydney dates · configured ${escapeHtml(minimum)} to ${escapeHtml(maximum)}</span>
+    </form>
+    <div class="complete-range-presets" aria-label="Complete governed ranges">
+      <span class="muted small">Complete governed ranges:</span>
+      ${completeRanges.length ? completeRanges.map((range) => `<a class="filter-chip" href="${escapeHtml(`/lead-results-dashboard?${new URLSearchParams({ performanceFrom: range.startDate, performanceTo: range.endDate }).toString()}#lead-results-summary`)}"><span>${escapeHtml(range.label)}</span></a>`).join("") : `<span class="muted small">None currently overlap the configured allocation source.</span>`}
+    </div>
+  </div>`;
+}
+
+function renderLeadResultGuidance(guidance = {}) {
+  return `<div class="lead-result-guidance">
+    <div><strong>How to read</strong><p class="muted small">${escapeHtml(guidance.howToRead || "Use this as descriptive manager evidence.")}</p></div>
+    <div><strong>What this chart shows</strong><p class="muted small">${escapeHtml(guidance.whatItShows || "Governed selected-period evidence.")}</p></div>
+    <div class="warning"><strong>What to know</strong><p class="small">${escapeHtml(guidance.whatToKnow || "Review the evidence boundary before interpreting the result.").replace(/\n/g, "<br />")}</p></div>
+  </div>`;
+}
+
+function renderLeadResultPanel(title, rows = [], { team = false, empty = "No eligible result for this period.", rowContent, rowHref } = {}) {
+  return `<section class="lead-result-compact-panel ${team ? "team" : "individual"}">
+    <h3>${escapeHtml(title)}</h3>
+    ${rows.length ? `<ol>${rows.map((row) => {
+      const content = rowContent(row);
+      const href = rowHref?.(row) || "";
+      return `<li>${href ? `<a href="${escapeHtml(href)}">${content}</a>` : `<div>${content}</div>`}</li>`;
+    }).join("")}</ol>` : `<p class="muted small">${escapeHtml(empty)}</p>`}
+  </section>`;
+}
+
+function renderLeadResultsDashboard(state = {}) {
+  const report = state.report || {};
+  if (!state.configured) {
+    return `<section class="panel" id="lead-results-summary">
+      <div class="panel-header"><div><p class="page-kicker">Local configuration</p><h2>Lead Result Dashboard</h2><p class="muted small">Configure the governed weekly allocation sources and read-only Carma evidence contract to enable this page.</p></div>${badge("Not configured", "warning")}</div>
+      <div class="panel-body"><div class="empty">No Lead Results source is configured.</div></div>
+    </section>`;
+  }
+  if (!state.available || !state.model) {
+    const reasons = state.completeness?.unavailableReasons || [report.error || "The selected range is incomplete."];
+    return `<section class="panel" id="lead-results-summary">
+      <div class="panel-header"><div><p class="page-kicker">Completeness gate</p><h2>Lead Result Dashboard unavailable</h2><p class="muted small">The selected period is not displayed because zero or partial evidence would be misleading.</p></div>${badge("Incomplete range", "critical")}</div>
+      ${renderLeadResultRangeForm(state)}
+      <div class="panel-body"><div class="empty"><strong>Select a fully governed range.</strong><br />${reasons.map(escapeHtml).join("<br />")}</div></div>
+      <div class="panel-body guardrails">
+        ${Object.entries(state.completeness?.checks || {}).map(([key, passed]) => `<div class="note"><h3>${escapeHtml(humanizeSlug(key))}</h3><p class="muted small">${passed ? "Passed" : "Not satisfied"}</p></div>`).join("")}
+      </div>
+    </section>`;
+  }
+
+  const payload = publicLeadResultDashboard(state);
+  const model = state.model;
+  const totals = payload.totals;
+  const views = payload.performanceViews || {};
+  const managerRows = payload.managerRows || [];
+  const rankings = payload.rankings || [];
+  const selectedRange = {
+    performanceFrom: payload.period.startDate,
+    performanceTo: payload.period.endDate,
+    returnView: "lead_results"
+  };
+  const evidenceHref = (metric, filters = {}) => drilldownUrl(metric, { ...selectedRange, ...filters });
+  const currency = (value) => Number(value || 0).toLocaleString("en-AU", { style: "currency", currency: "AUD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const share = (value) => formatRatioPercent(Number(value || 0));
+  const sourceCoverageDetail = (row) => {
+    const coverage = share(row.sourceCoverage);
+    if (!Number(row.attributionWithheldSales ?? row.withheld)) return `Complete · ${coverage} classified`;
+    const range = `${share(row.allocatedLeadShareLowerBound)}–${share(row.allocatedLeadShareUpperBound)}`;
+    return `${row.sourceShareComparable ? "High coverage" : "Provisional"} · ${coverage} classified · possible range ${range}`;
+  };
+  const managerShareRows = [...managerRows].sort((a, b) => Number(b.allocatedLeadShare || 0) - Number(a.allocatedLeadShare || 0));
+  const managerLoadRows = [...managerRows].sort((a, b) => Number(b.leadsPerActiveSalesperson || 0) - Number(a.leadsPerActiveSalesperson || 0));
+  const managerBacklogRows = [...managerRows].sort((a, b) => Number(b.noExactCallObserved || 0) - Number(a.noExactCallObserved || 0));
+  const leaderHref = (row, team = false, reconcile = true) => evidenceHref("performance.approvedOrders", {
+    ...(team ? { manager: row.manager } : { seller: row.salesperson || row.displayName }),
+    ...(reconcile ? { reconcile: "allocatedLeadShare" } : {})
+  });
+  const attentionContent = (row, team = false) => `<strong>${escapeHtml(team ? `${row.manager} team` : row.displayName)}</strong><span>${(row.concerns?.length ? row.concerns : ["Review the underlying selected-period evidence."]).map(escapeHtml).join("<br />")}</span>`;
+  const trophyHref = (row, team = false) => {
+    if (!row.candidate || row.candidate.startsWith("No eligible")) return "";
+    const personOrManager = team
+      ? { manager: row.candidate.replace(/ team$/i, "") }
+      : { seller: row.candidate };
+    if (/Self-Sourcing/i.test(row.trophy)) return evidenceHref("performance.approvedOrders", { ...personOrManager, classification: "Self Sourced" });
+    if (/Utilisation|Follow-Up/i.test(row.trophy)) return evidenceHref("performance.called", team ? { manager: personOrManager.manager } : { salesperson: row.candidate });
+    return evidenceHref("performance.approvedOrders", { ...personOrManager, ...(/Company-Supplied Sales Share|Versatility/i.test(row.trophy) ? { reconcile: "allocatedLeadShare" } : {}) });
+  };
+  const trophyContent = (row) => `<strong>${escapeHtml(row.trophy)}</strong><span>${escapeHtml(row.candidate)} · ${escapeHtml(row.metric)}</span><small>${escapeHtml(row.context)}${row.runnersUp ? ` Runners-up: ${escapeHtml(row.runnersUp)}.` : ""}</small>`;
+
+  return `<div class="workspace-flow lead-results-workspace">
+    <section class="panel lead-results-hero" id="lead-results-summary">
+      <div class="panel-header">
+        <div><p class="page-kicker">Lead result dashboard</p><h2>${escapeHtml(payload.period.label)}</h2><p class="muted small">Workbook-equivalent weekly allocation workload and Approved Sales evidence. Generated ${escapeHtml(formatDateTime(payload.generatedAt))}.</p></div>
+        <div class="stack">${badge("Complete governed range", "success")}${badge("Carma read-only", "neutral")}${badge(payload.dataQuality.callCoverageComplete ? "Call scoring available" : "Call scoring withheld", payload.dataQuality.callCoverageComplete ? "success" : "warning")}</div>
+      </div>
+      ${renderLeadResultRangeForm(state)}
+      <div class="panel-body"><div class="note warning"><h3>Evidence boundary</h3><p class="muted small">Sales From Allocated Leads require the exact customer, exact seller, and an allocation before an explicit approval timestamp, with no allocation-age limit. Weekly Sent Leads are separate workload context. ${payload.dataQuality.callCoverageComplete ? `Leads Uncalled is limited to the governed reporting window ending ${escapeHtml(payload.dataQuality.callEvidenceThrough || payload.period.endDate)}.` : `Allocated Leads With No Recorded Call is an operational review backlog through ${escapeHtml(payload.dataQuality.callEvidenceThrough || "the displayed cutoff")}, not authoritative proof that no call occurred.`}</p></div></div>
+      <div class="panel-body metrics lead-result-kpis">
+        ${metricCard("Total Sent Leads", formatNumber(totals.sentLeads), "Deduplicated allocation workload events", "info", evidenceHref("performance.sentEvents"))}
+        ${metricCard("Unique Leads Sent", formatNumber(totals.uniqueLeadsSent), "Exact customer-recipient allocation pairs", "good", evidenceHref("performance.allocationPairs"))}
+        ${metricCard("Approved Sales", formatNumber(totals.approvedSales), "Complete governed selected-period population", "good", evidenceHref("performance.approvedOrders"))}
+        ${metricCard("Approved Sales Value", currency(totals.approvedSalesValue), "CRM approved amount; not payment, profit, or recognised revenue", "info", evidenceHref("performance.approvedOrders"))}
+        ${metricCard("Sales From Allocated Leads % of Classified Sales", share(totals.allocatedLeadShare), `${formatNumber(totals.allocatedLeadSales)} of ${formatNumber(totals.classifiedSales)} classified Approved Sales · ${sourceCoverageDetail(totals)}`, "info", evidenceHref("performance.approvedOrders", { reconcile: "allocatedLeadShare" }))}
+        ${metricCard("Sales From Allocated Leads", formatNumber(totals.allocatedLeadSales), "Exact seller pre-sale allocation evidence", "good", evidenceHref("performance.approvedOrders", { classification: "Company Sourced" }))}
+        ${metricCard("Self Sourced Sales", formatNumber(totals.selfSourcedSales), "Approved Sales without qualifying exact pre-sale seller allocation", "warning", evidenceHref("performance.approvedOrders", { classification: "Self Sourced" }))}
+        ${metricCard("Salespeople Receiving Leads", formatNumber(totals.salespeopleReceivingLeads), "Recipients with at least one valid Sent Lead in the selected period", "info", evidenceHref("performance.salespeople"))}
+      </div>
+    </section>
+
+    <section class="panel" id="lead-results-call-activity">
+      <div class="panel-header"><div><p class="page-kicker">Weekly call exports</p><h2>Call Activity &amp; Workload Context</h2><p class="muted small">Deduplicated selected-period calls. Duration does not prove live-human contact; calls per sale is not conversion.</p></div>${badge(payload.dataQuality.callDurationCoverageComplete ? "Duration coverage complete" : "Duration coverage incomplete", payload.dataQuality.callDurationCoverageComplete ? "success" : "warning")}</div>
+      <div class="panel-body metrics">
+        ${metricCard("Weekly Calls", formatNumber(totals.weeklyCallCount), `${formatNumber(totals.weeklyOutboundCallCount)} outbound`, "info")}
+        ${metricCard("Average Call Time", totals.weeklyAverageCallDurationSeconds === null ? "Unavailable" : `${Number(totals.weeklyAverageCallDurationSeconds).toFixed(1)}s`, "Mean call_duration_seconds", "info")}
+        ${metricCard("Total Call Time", `${(Number(totals.weeklyTotalCallDurationSeconds || 0) / 3600).toFixed(1)}h`, "Selected reporting period", "neutral")}
+        ${metricCard("Short Calls", formatNumber(totals.weeklyShortCallCount), `More than zero and under ${formatNumber(payload.dataQuality.shortCallSeconds)} seconds`, "warning")}
+        ${metricCard("Long Calls", formatNumber(totals.weeklyLongCallCount), `At least ${formatNumber(payload.dataQuality.longCallSeconds / 60)} minutes`, "good")}
+        ${metricCard("Zero-Duration Calls", formatNumber(totals.weeklyZeroDurationCalls), "Recorded call_duration_seconds equals zero", "warning")}
+        ${metricCard("Calls per Approved Sale", totals.weeklyCallsPerApprovedSale === null ? "—" : Number(totals.weeklyCallsPerApprovedSale).toFixed(1), "Workload ratio only; not causal conversion", "neutral")}
+      </div>
+    </section>
+
+    <section class="panel" id="lead-results-manager-charts">
+      <div class="panel-header"><div><p class="page-kicker">Manager analysis</p><h2>Manager Team Results</h2><p class="muted small">Teal sections are manager-team results. Every team rate divides aggregated team totals; salesperson percentages are never averaged.</p></div>${badge(`${formatNumber(managerRows.length)} teams`, "notice")}</div>
+      <div class="lead-result-chart-grid">
+        <article><h3>Company Supplied Share of Sales by Manager</h3>${renderChartList(managerShareRows, { label: (row) => row.manager, value: (row) => row.allocatedLeadShare || 0, valueLabel: (row) => share(row.allocatedLeadShare), maximum: 1, visibleLimit: Math.max(1, managerRows.length), tone: "blue", href: (row) => evidenceHref("performance.approvedOrders", { manager: row.manager, reconcile: "allocatedLeadShare" }), detail: (row) => `<span>${formatNumber(row.allocatedLeadSales)} of ${formatNumber(row.classifiedSales)} classified sales · ${escapeHtml(sourceCoverageDetail(row))} · ${formatNumber(row.sent)} weekly Sent Leads</span>` })}${renderLeadResultGuidance(payload.chartGuidance.efficiency)}</article>
+        <article><h3>Weekly Lead Allocation vs Company Supplied Sales</h3>${renderChartList(managerShareRows, { label: (row) => row.manager, value: (row) => row.allocatedSalesShare || 0, valueLabel: (row) => `${share(row.leadShare)} / ${share(row.allocatedSalesShare)}`, maximum: 1, visibleLimit: Math.max(1, managerRows.length), tone: "pink", href: (row) => evidenceHref("performance.approvedOrders", { manager: row.manager }), detail: () => `<span>Weekly lead allocation share / Company supplied sales share</span>` })}${renderLeadResultGuidance(payload.chartGuidance.shares)}</article>
+        <article><h3>Sent Leads per Salesperson Receiving Leads</h3>${renderChartList(managerLoadRows, { label: (row) => row.manager, value: (row) => row.leadsPerActiveSalesperson || 0, reference: (row) => row.companyObservedPerRecipientAverage, valueLabel: (row) => Number(row.leadsPerActiveSalesperson || 0).toFixed(1), maximum: Math.max(...managerLoadRows.map((row) => Number(row.leadsPerActiveSalesperson || 0)), 1), visibleLimit: Math.max(1, managerRows.length), tone: "blue", href: (row) => evidenceHref("performance.salespeople", { manager: row.manager }), detail: (row) => `<span>${formatNumber(row.sent)} Sent Leads across ${formatNumber(row.activeSalespeople)} recipients · company reference ${Number(row.companyObservedPerRecipientAverage || 0).toFixed(1)}</span>` })}${renderLeadResultGuidance(payload.chartGuidance.active)}</article>
+        <article><h3>${escapeHtml(payload.dataQuality.uncalledLabel)} by Team</h3>${renderChartList(managerBacklogRows, { label: (row) => row.manager, value: (row) => row.noExactCallObserved || 0, valueLabel: (row) => formatNumber(row.noExactCallObserved), maximum: Math.max(...managerBacklogRows.map((row) => Number(row.noExactCallObserved || 0)), 1), visibleLimit: Math.max(1, managerRows.length), tone: "pink", href: (row) => evidenceHref("performance.noCallObserved", { manager: row.manager }), detail: (row) => `<span>${formatNumber(row.noExactCallObserved)} of ${formatNumber(row.unique)} pairs · ${payload.dataQuality.callCoverageComplete ? "reporting-window uncalled" : "recorded-call review backlog"}</span>` })}${renderLeadResultGuidance(payload.chartGuidance.callBacklog)}</article>
+      </div>
+    </section>
+
+    <section class="panel" id="lead-results-manager-summary">
+      <div class="panel-header"><div><h2>Manager Summary</h2><p class="muted small">Counts, weighted source shares, observed recipient load, and call-review backlog for each exact Manager label.</p></div></div>
+      ${table([
+        { label: "Manager", render: (row) => `<strong>${escapeHtml(row.manager)}</strong>` },
+        { label: "Salespeople receiving leads", render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.salespeople", { manager: row.manager }))}">${formatNumber(row.activeSalespeople)}</a>` },
+        { label: "Weekly Sent Leads", render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.sentEvents", { manager: row.manager }))}">${formatNumber(row.sent)}</a>` },
+        { label: "Unique Leads", render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.allocationPairs", { manager: row.manager }))}">${formatNumber(row.unique)}</a>` },
+        { label: "Approved Sales", render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { manager: row.manager }))}">${formatNumber(row.sales)}</a>` },
+        { label: "Sales From Allocated Leads", render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { manager: row.manager, classification: "Company Sourced" }))}">${formatNumber(row.allocatedLeadSales)}</a>` },
+        { label: "Sales From Allocated Leads % of Classified Sales", render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { manager: row.manager, reconcile: "allocatedLeadShare" }))}">${share(row.allocatedLeadShare)}</a><br /><span class="muted small">${escapeHtml(sourceCoverageDetail(row))}</span>` },
+        { label: payload.dataQuality.uncalledLabel, render: (row) => `<a class="data-link" href="${escapeHtml(evidenceHref("performance.noCallObserved", { manager: row.manager }))}">${formatNumber(row.noExactCallObserved)}</a>` },
+        { label: "Manager own sales", render: (row) => row.managerOwnSales ? `<a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { seller: row.manager }))}">${formatNumber(row.managerOwnSales)}</a>` : "0" }
+      ], managerRows, "No manager rows are available for this complete period.")}
+    </section>
+
+    <section class="panel" id="lead-results-performance-views">
+      <div class="panel-header"><div><p class="page-kicker">Performance and recognition prompts</p><h2>Performance &amp; Trophies</h2><p class="muted small">Blue panels show individual salesperson results; teal panels show manager-team results. These are deterministic human-review prompts, never automatic personnel actions.</p></div></div>
+      <div class="lead-result-panel-grid">
+        ${renderLeadResultPanel("Salesperson Results Worthy of Investigation", views.salespeopleResultsWorthyOfInvestigation || [], { rowContent: (row) => attentionContent(row, false), rowHref: (row) => leaderHref(row, false) })}
+        ${renderLeadResultPanel("Team Results Worthy of Investigation", views.teamResultsWorthyOfInvestigation || [], { team: true, rowContent: (row) => attentionContent(row, true), rowHref: (row) => leaderHref(row, true) })}
+        ${renderLeadResultPanel("Lead Burners — High Allocation / Weak Company-Supplied Sales Mix", views.leadBurnersByResult || [], { rowContent: (row) => `<strong>${escapeHtml(row.displayName)}</strong><span>${formatNumber(row.sent)} Sent Leads · ${share(row.allocatedLeadShare)} of classified sales from allocated leads</span><small>Investigation prompt only; selected-week leads are not a causal conversion denominator.</small>`, rowHref: (row) => leaderHref(row, false) })}
+        ${renderLeadResultPanel("Lead Burners — Highest Uncalled %", views.leadBurnersByUncalled || [], { rowContent: (row) => `<strong>${escapeHtml(row.displayName)}</strong><span>${share(row.uncalledRate)} · ${formatNumber(row.noExactCallObserved)} of ${formatNumber(row.unique)} allocated pairs</span><small>Only shown when the governed reporting-window call gate passes; minimum 25 allocated pairs.</small>`, rowHref: (row) => evidenceHref("performance.noCallObserved", { salesperson: row.salesperson }) })}
+        ${renderLeadResultPanel("Individual Trophy Candidates", views.salespersonTrophies || [], { rowContent: trophyContent, rowHref: (row) => trophyHref(row, false) })}
+        ${renderLeadResultPanel("Team Trophy Candidates", views.teamTrophies || [], { team: true, rowContent: trophyContent, rowHref: (row) => trophyHref(row, true) })}
+      </div>
+    </section>
+
+    <section class="panel" id="lead-results-checks">
+      <div class="panel-header"><div><h2>Completeness &amp; Interpretation Checks</h2><p class="muted small">The selected screen and export are available only while all required checks pass.</p></div>${badge("All required checks passed", "success")}</div>
+      <div class="panel-body guardrails">${Object.entries(payload.completeness.checks).map(([key, passed]) => `<div class="note"><h3>${escapeHtml(humanizeSlug(key))}</h3><p class="muted small">${passed ? "Passed" : "Not satisfied"}</p></div>`).join("")}</div>
+      <div class="panel-body"><p class="muted small">Company-supplied lead call scoring: ${payload.dataQuality.callCoverageComplete ? "available" : "withheld because a genuine call identity, timestamp or weekday-coverage gate is incomplete"}. Self-sourcing attempts without a Customer ID: ${formatNumber(payload.dataQuality.unlinkedSelfSourcingCallAttempts)}; these are separate activity, not company-supplied lead calls or Self-Sourced Sales. Blocking call identity issues: ${formatNumber(payload.dataQuality.missingCallJoinKeys)}. Empty weekend dates are treated as no weekend activity.</p></div>
+    </section>
+
+    <section class="panel performance-rankings" id="performance-rankings">
+      <div class="panel-header"><div><p class="page-kicker">Complete workbook table</p><h2>Performance Rankings</h2><p class="muted small">All observed recipients are included. Sorting changes only the table view and never creates an automated personnel band, decision, or action.</p></div>${badge(`${formatNumber(rankings.length)} results`, "notice")}</div>
+      <div class="panel-body"><div class="note"><p class="muted small">${payload.previousPeriod ? `Compared with ${escapeHtml(payload.previousPeriod.startDate)} to ${escapeHtml(payload.previousPeriod.endDate)} where both periods meet the sample gates.` : "Baseline period: no compatible fully prior governed snapshot is available."} Prior-period figures have no row-level drilldown because retained snapshots contain aggregates, not source evidence.</p></div></div>
+      <div class="table-wrap lead-result-rankings-wrap">
+        <table data-sortable-table>
+          <thead><tr>${[
+            ["Salesperson", "text"], ["Manager", "text"], ["Weekly Sent Leads", "number"], ["Unique Leads Sent", "number"], [payload.dataQuality.uncalledLabel, "number"], ["Weekly Calls", "number"], ["Average Call Time", "number"], ["Median Call Time", "number"], ["Short Calls", "number"], ["Long Calls", "number"], ["Calls per Approved Sale", "number"], ["Reallocations", "number"], ["Approved Sales", "number"], ["Sales Value", "number"], ["Sales From Allocated Leads % of Classified Sales", "number"], ["Sales From Allocated Leads", "number"], ["Self-Sourced Sales", "number"], ["Prior Sent Leads", "number"], ["Prior Approved Sales", "number"], ["Prior Sales From Allocated Leads % of Classified Sales", "number"], ["Change in Sales From Allocated Leads %", "number"], ["Company-Supplied Sales Share Outcome", "text"], ["Source Attribution Withheld", "number"], ["Source Attribution Status", "text"]
+          ].map(([label, type], index) => `<th scope="col"><button type="button" class="sort-button" data-sort-column="${index}" data-sort-type="${type}">${escapeHtml(label)}<span aria-hidden="true">↕</span></button></th>`).join("")}</tr></thead>
+          <tbody>${rankings.map((row) => `<tr>
+            <td data-sort-value="${escapeHtml(row.salesperson)}"><strong>${escapeHtml(row.salesperson)}</strong></td>
+            <td data-sort-value="${escapeHtml(row.manager)}">${escapeHtml(row.manager)}</td>
+            <td data-sort-value="${row.sentLeads}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.sentEvents", { salesperson: row.salesperson }))}">${formatNumber(row.sentLeads)}</a></td>
+            <td data-sort-value="${row.uniqueLeads}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.allocationPairs", { salesperson: row.salesperson }))}">${formatNumber(row.uniqueLeads)}</a></td>
+            <td data-sort-value="${row.noExactCallObserved}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.noCallObserved", { salesperson: row.salesperson }))}">${formatNumber(row.noExactCallObserved)}</a></td>
+            <td data-sort-value="${row.weeklyCallCount}">${formatNumber(row.weeklyCallCount)}</td>
+            <td data-sort-value="${row.weeklyAverageCallDurationSeconds ?? -1}">${row.weeklyAverageCallDurationSeconds === null ? "—" : `${Number(row.weeklyAverageCallDurationSeconds).toFixed(1)}s`}</td>
+            <td data-sort-value="${row.weeklyMedianCallDurationSeconds ?? -1}">${row.weeklyMedianCallDurationSeconds === null ? "—" : `${Number(row.weeklyMedianCallDurationSeconds).toFixed(1)}s`}</td>
+            <td data-sort-value="${row.weeklyShortCallCount}">${formatNumber(row.weeklyShortCallCount)}</td>
+            <td data-sort-value="${row.weeklyLongCallCount}">${formatNumber(row.weeklyLongCallCount)}</td>
+            <td data-sort-value="${row.weeklyCallsPerApprovedSale ?? -1}">${row.weeklyCallsPerApprovedSale === null ? "—" : Number(row.weeklyCallsPerApprovedSale).toFixed(1)}</td>
+            <td data-sort-value="${row.reallocations}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.repeatSends", { salesperson: row.salesperson }))}">${formatNumber(row.reallocations)}</a></td>
+            <td data-sort-value="${row.approvedSales}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { seller: row.salesperson }))}">${formatNumber(row.approvedSales)}</a></td>
+            <td data-sort-value="${row.approvedSalesValue}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { seller: row.salesperson }))}">${currency(row.approvedSalesValue)}</a></td>
+            <td data-sort-value="${row.allocatedLeadShare}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { seller: row.salesperson, reconcile: "allocatedLeadShare" }))}">${share(row.allocatedLeadShare)}</a><br /><span class="muted small">${escapeHtml(sourceCoverageDetail(row))}</span></td>
+            <td data-sort-value="${row.allocatedLeadSales}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { seller: row.salesperson, classification: "Company Sourced" }))}">${formatNumber(row.allocatedLeadSales)}</a></td>
+            <td data-sort-value="${row.selfSourcedSales}"><a class="data-link" href="${escapeHtml(evidenceHref("performance.approvedOrders", { seller: row.salesperson, classification: "Self Sourced" }))}">${formatNumber(row.selfSourcedSales)}</a></td>
+            <td data-sort-value="${row.priorSentLeads ?? -1}" title="Historical aggregate only; no row-level evidence retained.">${row.priorSentLeads === null ? "—" : formatNumber(row.priorSentLeads)}</td>
+            <td data-sort-value="${row.priorApprovedSales ?? -1}" title="Historical aggregate only; no row-level evidence retained.">${row.priorApprovedSales === null ? "—" : formatNumber(row.priorApprovedSales)}</td>
+            <td data-sort-value="${row.priorAllocatedLeadShare ?? -1}" title="Historical aggregate only; no row-level evidence retained.">${row.priorAllocatedLeadShare === null ? "—" : share(row.priorAllocatedLeadShare)}</td>
+            <td data-sort-value="${row.change ?? -999}" title="Derived from current governed evidence and the prior retained aggregate.">${row.change === null ? "—" : `${row.change >= 0 ? "+" : ""}${(row.change * 100).toFixed(1)} pp`}</td>
+            <td data-sort-value="${escapeHtml(row.result)}">${escapeHtml(row.result)}</td>
+            <td data-sort-value="${row.attributionWithheldSales}">${formatNumber(row.attributionWithheldSales)}</td>
+            <td data-sort-value="${escapeHtml(row.sourceAttributionStatus)}">${row.sourceAttributionStatus === "Complete" ? badge("Complete", "success") : row.sourceAttributionStatus === "High coverage" ? badge("High coverage", "notice") : badge("Provisional", "warning")}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>
+      <div class="panel-body"><p class="muted small">This table is governed manager evidence. It must not drive automatic discipline, pay, lead removal, compliance, or CRM action. ${payload.dataQuality.callCoverageComplete ? "Leads Uncalled is limited to the governed reporting window." : "Allocated Leads With No Recorded Call remains an operational review backlog, not authoritative ‘not called’."}</p></div>
+    </section>
+  </div>`;
+}
+
+function renderSalesActivityHeatmap(cells = [], options = {}) {
+  const dimensionLabel = options.dimensionLabel || "Acquisition source";
+  const accessibleDimensionLabel = options.accessibleDimensionLabel
+    || dimensionLabel.toLowerCase();
+  if (!cells.length) {
+    return `<div class="empty">No covered approved-sale ${escapeHtml(accessibleDimensionLabel)}-by-date activity is available for this period.</div>`;
+  }
+  const dates = Array.from(new Set(cells.map((cell) => cell.approvalDate))).sort();
+  const sourceTotals = new Map();
+  cells.forEach((cell) => {
+    sourceTotals.set(cell.source, (sourceTotals.get(cell.source) || 0) + Number(cell.approvedOrders || 0));
+  });
+  const sources = Array.from(sourceTotals.keys()).sort((a, b) => (
+    sourceTotals.get(b) - sourceTotals.get(a) || a.localeCompare(b)
+  ));
+  const byKey = new Map(cells.map((cell) => [`${cell.source}|${cell.approvalDate}`, cell]));
+  const maximum = Math.max(...cells.map((cell) => Number(cell.approvedOrders || 0)), 1);
+  const dateLabel = (value) => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isNaN(date.getTime())
+      ? value
+      : date.toLocaleDateString("en-AU", { weekday: "short", day: "numeric" });
+  };
+  return `<div class="sales-heatmap-wrap">
+    <div class="sales-activity-heatmap" role="table" aria-label="${escapeHtml(`Approved orders by ${accessibleDimensionLabel} and approval date`)}" style="--heatmap-columns:${dates.length}">
+      <div class="heatmap-corner" role="columnheader">${escapeHtml(dimensionLabel)}</div>
+      ${dates.map((date) => `<div class="heatmap-date" role="columnheader"><span>${escapeHtml(dateLabel(date))}</span><small>${escapeHtml(date)}</small></div>`).join("")}
+      ${sources.map((source) => `
+        <div class="heatmap-source" role="rowheader"><span>${escapeHtml(source)}</span><strong class="mono">${formatNumber(sourceTotals.get(source))}</strong></div>
+        ${dates.map((date) => {
+          const cell = byKey.get(`${source}|${date}`);
+          if (!cell) return `<div class="heatmap-cell empty-cell" role="cell"><span>0</span></div>`;
+          const intensity = 0.12 + (Number(cell.approvedOrders || 0) / maximum) * 0.78;
+          const content = `<strong class="mono">${formatNumber(cell.approvedOrders)}</strong><small>${escapeHtml(options.currency?.(cell.approvedValue) || formatNumber(cell.approvedValue))}</small>`;
+          const href = options.href?.(cell) || "";
+          return href
+            ? `<a class="heatmap-cell" role="cell" href="${escapeHtml(href)}" style="--heat-intensity:${intensity.toFixed(3)}" aria-label="${escapeHtml(`${source}, ${date}: ${formatNumber(cell.approvedOrders)} approved orders, ${options.currency?.(cell.approvedValue) || formatNumber(cell.approvedValue)}`)}">${content}</a>`
+            : `<div class="heatmap-cell" role="cell" style="--heat-intensity:${intensity.toFixed(3)}">${content}</div>`;
+        }).join("")}
+      `).join("")}
+    </div>
+  </div>`;
+}
+
 function renderPerformanceCohorts(report = {}) {
   if (!report.configured) {
     return `<section class="panel" id="performance-summary">
@@ -4724,6 +6907,7 @@ function renderPerformanceCohorts(report = {}) {
   if (!report.available) {
     return `<section class="panel" id="performance-summary">
       <div class="panel-header"><div><p class="page-kicker">Source validation</p><h2>Performance & Cohorts unavailable</h2><p class="muted small">The report failed closed before calculating a personnel comparison.</p></div>${badge("Unavailable", "critical")}</div>
+      ${renderPerformanceRangeForm(report)}
       <div class="panel-body"><div class="empty">${escapeHtml(report.error || "Performance source validation failed.")}</div></div>
     </section>`;
   }
@@ -4732,41 +6916,221 @@ function renderPerformanceCohorts(report = {}) {
   const rows = report.comparison?.rows || [];
   const cohortWindows = report.cohortWindows || [];
   const dataQuality = report.dataQuality || {};
+  const uncalledLabel = dataQuality.callCoverageComplete
+    ? "Leads Uncalled Within Reporting Window"
+    : "Allocated Leads With No Recorded Call by Evidence Cutoff";
   const history = report.history || [];
+  const approvedSalesHistory = report.approvedSalesHistory || {};
+  const approvedSalesHistoryRows = approvedSalesHistory.rows || [];
+  const leadAnalytics = report.leadAnalytics || {};
+  const sourceAllocationRows = leadAnalytics.sourceAllocationRows || [];
+  const approvedSalesSourceRows = leadAnalytics.approvedSalesByAcquisitionSource || [];
+  const leadUsage = leadAnalytics.usage || {};
+  const leadLinkage = leadAnalytics.linkage || {};
+  const conversionRows = sourceAllocationRows.filter((row) => (
+    Number(row.uniqueCustomerRecipientPairs || 0) > 0
+  ));
   const currency = (value) => Number(value || 0).toLocaleString("en-AU", {
     style: "currency",
     currency: "AUD",
     minimumFractionDigits: 0,
     maximumFractionDigits: 2
   });
+  const exactCurrency = (value) => Number(value || 0).toLocaleString("en-AU", {
+    style: "currency",
+    currency: "AUD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
   const statusLabel = (row) => {
-    if (row.comparisonStatus === "role_review") return badge("Role review", "warning");
     if (!row.comparisonEligible) return badge("Low sample", "neutral");
-    return badge(`Rank ${formatNumber(row.comparisonRank)}`, "notice");
+    return badge("Full sample", "notice");
   };
   const cohortValue = (window) => window.status === "measured"
     ? formatPercent(window.conversionRate)
     : "Not mature";
+  const conversionMaximum = 100;
+  const approvedSalesMaximum = Math.max(
+    ...approvedSalesSourceRows.map((row) => Number(row.approvedOrders || 0)),
+    1
+  );
+  const selectedRange = {
+    performanceFrom: report.period?.startDate || "",
+    performanceTo: report.period?.endDate || ""
+  };
+  const performanceDrilldown = (metric, filters = {}) => drilldownUrl(metric, {
+    ...selectedRange,
+    ...filters
+  });
 
   return `<div class="workspace-flow">
     <section class="panel" id="performance-summary">
       <div class="panel-header">
         <div>
-          <p class="page-kicker">Same-week productivity proxy</p>
+          <p class="page-kicker">Lead allocation and observed outcomes</p>
           <h2>${escapeHtml(report.period?.label || "Configured period")}</h2>
-          <p class="muted small">Approved orders in the period divided by deduplicated sent allocation events. This is not proof that those allocations or calls caused the sales.</p>
+          <p class="muted small">Allocation source, volume, age, reuse and exact customer-recipient approvals for the current reporting period. One-week approval rates remain immature.</p>
         </div>
-        <div class="stack">${badge("Deterministic", "success")}${badge("Carma read-only", "neutral")}${badge("Exact IDs / labels", "notice")}</div>
+        <div class="stack">${badge("Deterministic", "success")}${badge("Carma read-only", "neutral")}${badge(report.comparison?.salesCoverageStatus === "verified" ? "Sales coverage verified" : "Sales coverage not verified", report.comparison?.salesCoverageStatus === "verified" ? "success" : "warning")}</div>
+      </div>
+      ${renderPerformanceRangeForm(report)}
+      <div class="panel-body metrics">
+        ${metricCard("Sent allocation events", formatNumber(totals.deduplicatedSentEvents), `${formatNumber(totals.logicalDuplicateRows)} logical duplicate rows excluded`, "info", performanceDrilldown("performance.sentEvents"))}
+        ${metricCard("Distinct allocated leads", formatNumber(leadUsage.uniqueCustomers), `${formatNumber(leadUsage.uniqueCustomerRecipientPairs)} exact customer-recipient pairs`, "info", performanceDrilldown("performance.distinctLeads"))}
+        ${metricCard("Approved orders in period", report.comparison?.salesCoverageStatus === "verified" ? formatNumber(leadLinkage.approvedOrdersInPeriod) : "Not scored", report.comparison?.salesCoverageStatus === "verified" ? "Validated all-approved-sales population" : "Sales coverage is not verified", "good", performanceDrilldown("performance.approvedOrders"))}
+        ${metricCard("Observed approval rate", leadAnalytics.conversionWindowStatus === "observed_same_week_immature" ? formatPercent(leadLinkage.observedConversionRate) : "Not scored", leadAnalytics.conversionWindowStatus === "observed_same_week_immature" ? `${formatNumber(leadLinkage.exactSourceLinkedConvertedCustomerRecipientPairs)} exact converted pairs / ${formatNumber(leadLinkage.sourceEligibleCustomerRecipientPairs)} source-eligible pairs · one-week immature` : "Not scored until approved-sales coverage is verified", "info", performanceDrilldown("performance.observedConversion", { conversionStatus: "observed_converted" }))}
+        ${metricCard("Selected-week linked value", leadAnalytics.conversionWindowStatus === "observed_same_week_immature" ? currency(leadLinkage.exactSourceLinkedApprovedValue) : "Not scored", "CRM approved amount exactly matched to the selected weekly allocation log; not payment, profit or recognised revenue", "info", performanceDrilldown("performance.linkedSales"))}
+        ${metricCard("Repeat sent events", formatNumber(leadUsage.repeatSentEventsSameRecipient), `${formatNumber(leadUsage.crossRecipientCustomers)} customers reached more than one recipient; usage signals, not proven waste`, "info", performanceDrilldown("performance.repeatSends"))}
+        ${metricCard("Exact call observed", formatNumber(leadAnalytics.callObservation?.observedCalledCustomerRecipientPairs), "Customer-recipient pairs with an exact post-allocation call in the supplied call export", "good", performanceDrilldown("performance.called"))}
+        ${metricCard(uncalledLabel, formatNumber(leadAnalytics.callObservation?.noExactCallObservedCustomerRecipientPairs), dataQuality.callCoverageComplete ? "No exact customer-recipient call was recorded inside the governed reporting window" : "Unresolved in the incomplete call supplement; not proof that no call occurred", "warning", performanceDrilldown("performance.noCallObserved"))}
+      </div>
+      <div class="panel-body"><div class="note"><h3>Local manager surface</h3><p class="muted small">This workspace has no authentication or role-based access control. Keep it local; publishing remains disabled until access control and privacy review are added.</p></div></div>
+    </section>
+
+    <div class="lead-chart-grid lead-chart-grid-primary" id="lead-source-mix">
+      <section class="panel lead-chart-panel" id="lead-source-flow">
+        <div class="panel-header">
+          <div><p class="page-kicker">Allocation rhythm</p><h2>Lead Allocation by Source</h2><p class="muted small">Deduplicated sent events by allocation <code>DataSource</code> and observed date. The five largest source values are shown separately; remaining exact values are grouped only here. Absent dates are not treated as zero.</p></div>
+          ${badge(`${formatNumber(totals.deduplicatedSentEvents)} events`, "notice")}
+        </div>
+        <div class="panel-body">${renderDailyAllocationChart(leadAnalytics.dailyAllocations || [], sourceAllocationRows, {
+          href: (day) => performanceDrilldown("performance.sentEvents", { sentDate: day.date })
+        })}</div>
+      </section>
+
+      <section class="panel lead-chart-panel" id="lead-usage">
+        <div class="panel-header">
+          <div><p class="page-kicker">Quantity and reuse</p><h2>Lead Usage &amp; Reuse</h2><p class="muted small">Source-record quantities that surface repeat use and cross-recipient handling for investigation. They do not independently prove wastage.</p></div>
+          ${badge("Usage signals", "neutral")}
+        </div>
+        <div class="panel-body">${renderLeadUsage(leadUsage, totals, leadAnalytics.allocationFrequency || [], {
+          stageHref: (stage) => stage.label === "Sent events"
+            ? performanceDrilldown("performance.sentEvents")
+            : stage.label === "Customer-recipient pairs"
+              ? performanceDrilldown("performance.allocationPairs")
+              : stage.label === "Unique leads"
+                ? performanceDrilldown("performance.distinctLeads")
+                : "",
+          repeatHref: performanceDrilldown("performance.repeatSends"),
+          crossRecipientHref: performanceDrilldown("performance.crossRecipient"),
+          duplicateHref: performanceDrilldown("performance.duplicateRows"),
+          frequencyHref: (row) => performanceDrilldown("performance.allocationPairs", {
+            allocationFrequency: row.key || row.frequency || row.label
+          })
+        })}</div>
+      </section>
+    </div>
+
+    <div class="lead-chart-grid" id="lead-source-outcomes">
+      <section class="panel lead-chart-panel" id="lead-conversion">
+        <div class="panel-header">
+          <div><p class="page-kicker">One-week observation</p><h2>Observed Source Conversion</h2><p class="muted small">Exact customer plus exact recipient seller approved after first allocation and by period end. Rows remain ordered by allocation volume; bars use a shared 0–100% scale.</p></div>
+          ${leadAnalytics.conversionWindowStatus === "observed_same_week_immature" ? badge("Immature cohort", "warning") : badge("Not scored", "warning")}
+        </div>
+        <div class="panel-body">
+          ${leadAnalytics.conversionWindowStatus === "observed_same_week_immature" ? renderChartList(conversionRows, {
+            label: (row) => row.source,
+            value: (row) => row.observedConversionRate,
+            valueLabel: (row) => row.observedConversionRate === null
+              ? "Not scored"
+              : formatPercent(row.observedConversionRate),
+            maximum: conversionMaximum,
+            tone: "pink",
+            visibleLimit: 7,
+            lowSample: (row) => Number(row.uniqueCustomerRecipientPairs || 0) < 100,
+            status: (row) => row.observedConversionRate === null ? "not_scored" : "",
+            href: (row) => performanceDrilldown("performance.observedConversion", { source: row.source }),
+            detail: (row) => row.observedConversionRate === null
+              ? `<span>Conflicting source values · ${formatNumber(row.uniqueCustomerRecipientPairs)} pairs excluded from the source-rate denominator</span>`
+              : `<span>${formatNumber(row.exactConvertedCustomerRecipientPairs)} converted customer-recipient pairs / ${formatNumber(row.uniqueCustomerRecipientPairs)} pairs · ${formatNumber(row.exactApprovedOrders)} approved orders · ${currency(row.exactApprovedValue)}${Number(row.uniqueCustomerRecipientPairs || 0) < 100 ? " · low sample" : ""}</span>`
+          }) : `<div class="empty">Observed source conversion is not scored because reconciled all-approved-sales coverage does not span the reporting period.</div>`}
+        </div>
+        <div class="panel-body lead-chart-boundary"><p class="muted small">Later approvals may increase these rates. This chart is not a mature source-quality ranking and does not establish that an allocation or call caused a sale.</p></div>
+      </section>
+
+      <section class="panel lead-chart-panel" id="lead-sales-source">
+        <div class="panel-header">
+          <div><p class="page-kicker">Approved-sale distribution</p><h2>Approved Sales by Acquisition Source</h2><p class="muted small">Recorded Carma acquisition channels for approved orders in the period; missing or unproven channels display as <strong>Source not recorded</strong>. This taxonomy remains separate from lead classification and allocation <code>DataSource</code>.</p></div>
+          ${report.comparison?.salesCoverageStatus === "verified" ? badge(`${formatNumber(leadLinkage.approvedOrdersInPeriod)} orders`, "success") : badge("Not scored", "warning")}
+        </div>
+        <div class="panel-body">
+          ${renderChartList(approvedSalesSourceRows, {
+            label: (row) => row.source,
+            value: (row) => row.approvedOrders,
+            valueLabel: (row) => `${formatNumber(row.approvedOrders)} · ${formatPercent(row.orderShare)}`,
+            maximum: approvedSalesMaximum,
+            tone: "blue",
+            visibleLimit: 7,
+            href: (row) => performanceDrilldown("performance.approvedOrders", { acquisitionSource: row.source }),
+            detail: (row) => `<span>${currency(row.approvedValue)} CRM approved amount</span>`,
+            emptyMessage: report.comparison?.salesCoverageStatus === "verified"
+              ? "No approved-sale acquisition sources are available."
+              : "Approved sales by acquisition source is not scored until coverage is verified."
+          })}
+        </div>
+      </section>
+    </div>
+
+    <section class="panel lead-chart-panel" id="sales-activity-heatmap">
+      <div class="panel-header">
+        <div><p class="page-kicker">What sold, and when</p><h2>Sales Activity by Lead Classification</h2><p class="muted small">Approved-order quantity by reconciled Company Sourced/Self Sourced classification and approval date. Select any populated cell to inspect the local manager evidence.</p></div>
+        ${report.comparison?.salesCoverageStatus === "verified" ? badge("Classification × approval date", "notice") : badge("Not scored", "warning")}
+      </div>
+      <div class="panel-body">${renderSalesActivityHeatmap(leadAnalytics.salesHeatmap || [], {
+        currency,
+        dimensionLabel: "Lead classification",
+        href: (cell) => performanceDrilldown("performance.salesHeatmap", {
+          classification: cell.source,
+          approvalDate: cell.approvalDate
+        })
+      })}</div>
+      <div class="panel-body lead-chart-boundary"><p class="muted small">Classification combines complete governed Carma history with positive exact customer-and-full-seller proof from the configured weekly allocation export. A missing weekly match never downgrades Company Sourced. Acquisition channel remains separately visible above.</p></div>
+    </section>
+
+    <section class="panel" id="lead-call-observation">
+      <div class="panel-header">
+        <div><p class="page-kicker">Lead execution evidence</p><h2>Allocation-to-Call Observation</h2><p class="muted small">Exact customer plus exact allocation recipient calls observed at or after first allocation in the selected period.</p></div>
+        ${badge(leadAnalytics.callObservation?.status === "complete_exact_join_evidence" ? "Exact joins observed" : "Incomplete supplement", "warning")}
       </div>
       <div class="panel-body metrics">
-        ${metricCard("Sent allocation events", formatNumber(totals.deduplicatedSentEvents), `${formatNumber(totals.logicalDuplicateRows)} logical duplicate rows excluded`, "info", "/api/performance-cohorts")}
-        ${metricCard("Unique customer-recipient pairs", formatNumber(totals.uniqueCustomerRecipientPairs), "Customer identity uses CustomerID only", "info", "/api/performance-cohorts")}
-        ${metricCard("Matched approved sales", formatNumber(totals.matchedApprovedSales), `${formatNumber(totals.unmatchedApprovedSales)} approved orders lack an exact allocation-recipient label match`, "good", "/api/performance-cohorts")}
-        ${metricCard("Team approved-sales proxy", formatPercent(totals.approvedSalesPerSentEvent), "Approved sales / sent allocation events", "good", "/api/performance-cohorts")}
-        ${metricCard("Approved value ex GST", currency(totals.approvedSalesValue), "Approved-sale amount; not payment, profit or recognised revenue", "info", "/api/performance-cohorts")}
-        ${metricCard("Comparable salespeople", formatNumber(report.comparison?.eligibleRows), `Minimum ${formatNumber(report.comparison?.minimumAllocations)} sent events; low-sample and role-review rows remain visible`, "neutral", "/api/performance-cohorts")}
+        ${metricCard("Exact call observed", formatNumber(leadAnalytics.callObservation?.observedCalledCustomerRecipientPairs), "Positive exact-match evidence in the supplied call export", "good", performanceDrilldown("performance.called"))}
+        ${metricCard(uncalledLabel, formatNumber(leadAnalytics.callObservation?.noExactCallObservedCustomerRecipientPairs), dataQuality.callCoverageComplete ? "No exact customer-recipient call was recorded inside the governed reporting window" : "Unresolved in this supplement; click to inspect the affected allocation pairs", "warning", performanceDrilldown("performance.noCallObserved"))}
+        ${metricCard("Authoritative not called", leadAnalytics.callObservation?.authoritativeNotCalledCustomerRecipientPairs === null ? "Not scored" : formatNumber(leadAnalytics.callObservation.authoritativeNotCalledCustomerRecipientPairs), "Requires a reconciled, closed-window call extraction manifest", "neutral")}
+        ${metricCard("Observation through", leadAnalytics.callObservation?.observationThrough || "Unavailable", "Latest valid call date in the supplied supplement", "info")}
       </div>
+      <div class="panel-body"><div class="note"><h3>Important boundary</h3><p class="muted small">${escapeHtml(leadAnalytics.callObservation?.limitation || (dataQuality.callCoverageComplete ? "Leads Uncalled is confined to the governed reporting window." : "A missing exact recorded call is not proof that no call occurred."))}</p></div></div>
     </section>
+
+    <div class="lead-chart-grid" id="lead-inventory">
+      <section class="panel lead-chart-panel" id="lead-age">
+        <div class="panel-header">
+          <div><p class="page-kicker">Inventory age</p><h2>Lead Age at Allocation</h2><p class="muted small">Allocation events grouped by calendar days from <code>LeadImportDate_Date</code> to the sent date. No customer-create-date fallback is applied.</p></div>
+          ${dataQuality.leadImportDateColumnPresent ? badge("Source dated", "neutral") : badge("Date unavailable", "warning")}
+        </div>
+        <div class="panel-body">${renderLeadAgeChart(leadAnalytics.leadAgeBuckets || [], totals.deduplicatedSentEvents, {
+          href: (row) => performanceDrilldown("performance.leadAge", { leadAgeBucket: row.key })
+        })}</div>
+      </section>
+
+      <section class="panel lead-chart-panel" id="lead-source-volume">
+        <div class="panel-header">
+          <div><p class="page-kicker">Source quantity</p><h2>Allocation Volume by Source</h2><p class="muted small">Every exact allocation source remains available. Bars show deduplicated sent-event quantity; distinct pair and customer counts remain visible beneath each value.</p></div>
+          ${dataQuality.allocationSourceColumnPresent ? badge(`${formatNumber(sourceAllocationRows.length)} source values`, "neutral") : badge("Source unavailable", "warning")}
+        </div>
+        <div class="panel-body">
+          ${renderChartList(sourceAllocationRows.filter((row) => Number(row.sentAllocationEvents || 0) > 0), {
+            label: (row) => row.source,
+            value: (row) => row.sentAllocationEvents,
+            valueLabel: (row) => formatNumber(row.sentAllocationEvents),
+            maximum: Math.max(...sourceAllocationRows.map((row) => Number(row.sentAllocationEvents || 0)), 1),
+            tone: "violet",
+            visibleLimit: 7,
+            href: (row) => performanceDrilldown("performance.sentEvents", { source: row.source }),
+            detail: (row) => `<span>${formatNumber(row.uniqueCustomerRecipientPairs)} customer-recipient pairs · ${formatNumber(row.uniqueCustomers)} distinct customers</span>`
+          })}
+        </div>
+      </section>
+    </div>
 
     <section class="panel" id="cohort-conversion">
       <div class="panel-header">
@@ -4787,26 +7151,25 @@ function renderPerformanceCohorts(report = {}) {
 
     <section class="panel performance-comparison" id="salesperson-comparison">
       <div class="panel-header">
-        <div><h2>Fair Salesperson Comparison</h2><p class="muted small">All recipients are visible. Rank applies only to source labels with at least ${formatNumber(report.comparison?.minimumAllocations)} sent events and no administrative-role flag.</p></div>
+        <div><h2>Fair Salesperson Comparison</h2><p class="muted small">All source recipients are shown alphabetically. A minimum of ${formatNumber(report.comparison?.minimumAllocations)} sent events marks a fuller sample; it does not create a rank or performance band.</p></div>
         ${badge(`${formatNumber(rows.length)} rows`, "neutral")}
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            ${["Status", "Salesperson", "Manager", "Sent events", "Unique customers", "Approved sales", "Sales proxy", "Value / sent", "Call coverage", "Within 24h", "Reallocation"].map((label) => renderTableHeading(label)).join("")}
+            ${["Sample", "Salesperson", "Manager", "Sent events", "Unique customers", "Approved sales", "Sales proxy", "Call coverage", "Within 24h", "Reallocation"].map((label) => renderTableHeading(label)).join("")}
           </tr></thead>
-          <tbody>${rows.map((row) => `<tr class="${row.comparisonStatus === "role_review" ? "warning-row" : ""}">
-            <td data-label="Status">${statusLabel(row)}</td>
-            <td data-label="Salesperson"><strong>${escapeHtml(row.salesperson)}</strong><br /><span class="muted small">${escapeHtml(humanizeSlug(row.relativeToTeam))}</span></td>
-            <td data-label="Manager">${escapeHtml(row.manager)}</td>
-            <td data-label="Sent events">${formatNumber(row.sentAllocationEvents)}</td>
-            <td data-label="Unique customers">${formatNumber(row.uniqueCustomers)}</td>
-            <td data-label="Approved sales">${formatNumber(row.approvedSales)}<br /><span class="muted small">${currency(row.approvedSalesValue)}</span></td>
-            <td data-label="Sales proxy"><strong>${formatPercent(row.approvedSalesPerSentEvent)}</strong><br /><span class="muted small">${formatPercent(row.approvedSalesPerUniqueCustomer)} per unique customer</span></td>
-            <td data-label="Value / sent">${currency(row.valuePerSentEvent)}</td>
-            <td data-label="Call coverage">${formatPercent(row.observedCallCoverageRate)}</td>
-            <td data-label="Within 24h">${formatPercent(row.callWithin24HoursRate)}</td>
-            <td data-label="Reallocation">${formatNumber(row.reallocationEvents)}<br /><span class="muted small">${formatPercent(row.reallocationRate)}</span></td>
+          <tbody>${rows.map((row) => `<tr>
+            <td data-label="Sample">${statusLabel(row)}</td>
+            <td data-label="Salesperson"><strong>${escapeHtml(row.salesperson)}</strong><br /><span class="muted small">Personnel role not verified</span></td>
+            <td data-label="Manager">${escapeHtml((row.managers || [row.manager]).join(", "))}</td>
+            <td data-label="Sent events"><a class="data-link" href="${escapeHtml(performanceDrilldown("performance.sentEvents", { salesperson: row.salesperson }))}">${formatNumber(row.sentAllocationEvents)}</a></td>
+            <td data-label="Unique customers"><a class="data-link" href="${escapeHtml(performanceDrilldown("performance.distinctLeads", { salesperson: row.salesperson }))}">${formatNumber(row.uniqueCustomers)}</a></td>
+            <td data-label="Approved sales"><a class="data-link" href="${escapeHtml(performanceDrilldown("performance.approvedOrders", { seller: row.salesperson }))}">${formatNumber(row.approvedSales)}</a><br /><span class="muted small"><a class="data-link" href="${escapeHtml(performanceDrilldown("performance.approvedOrders", { seller: row.salesperson, classification: "Company Sourced" }))}">${formatNumber(row.companySourcedSales)} Company</a> / <a class="data-link" href="${escapeHtml(performanceDrilldown("performance.approvedOrders", { seller: row.salesperson, classification: "Self Sourced" }))}">${formatNumber(row.selfSourcedSales)} Self</a> · ${currency(row.approvedSalesValue)}</span></td>
+            <td data-label="Sales proxy">${row.salesCoverageStatus === "verified" ? `<a class="data-link" href="${escapeHtml(performanceDrilldown("performance.approvedOrders", { seller: row.salesperson }))}"><strong>${formatPercent(row.approvedSalesPerSentEvent)}</strong></a><br /><span class="muted small">${formatPercent(row.approvedSalesPerUniqueCustomer)} per unique customer</span>` : `<strong>Not scored</strong><br /><span class="muted small">Sales coverage unverified</span>`}</td>
+            <td data-label="Call coverage">${row.callCoverageStatus === "measured" ? `<a class="data-link" href="${escapeHtml(performanceDrilldown("performance.called", { salesperson: row.salesperson }))}">${formatPercent(row.observedCallCoverageRate)}</a>` : `<strong>Not scored</strong><br /><a class="data-link muted small" href="${escapeHtml(performanceDrilldown("performance.called", { salesperson: row.salesperson }))}">${formatNumber(row.customersCalledAfterAllocation)} observed</a>`}</td>
+            <td data-label="Within 24h">${row.callCoverageStatus === "measured" ? formatPercent(row.callWithin24HoursRate) : "Not scored"}</td>
+            <td data-label="Reallocation"><a class="data-link" href="${escapeHtml(performanceDrilldown("performance.repeatSends", { salesperson: row.salesperson }))}">${formatNumber(row.reallocationEvents)}</a><br /><span class="muted small">${formatPercent(row.reallocationRate)}</span></td>
           </tr>`).join("")}</tbody>
         </table>
       </div>
@@ -4814,34 +7177,87 @@ function renderPerformanceCohorts(report = {}) {
     </section>
 
     <section class="panel" id="performance-history">
-      <div class="panel-header"><div><h2>Historical Context</h2><p class="muted small">Earlier Carma workbooks remain visible as context. Different allocation denominators are not silently merged into the current raw-log series.</p></div>${badge(`${formatNumber(history.length)} snapshots`, "neutral")}</div>
+      <div class="panel-header"><div><h2>Approved-Sales Evidence Coverage</h2><p class="muted small">Only the reconciled, unfiltered all-customer extraction runs below can supply current conversion denominators. New-customer-only reports and Campaign Quantity snapshots are excluded.</p></div>${badge(`${formatNumber(history.length)} denominator runs`, "success")}</div>
       ${table([
         { label: "Period", render: (row) => escapeHtml(row.period) },
-        { label: "Method", render: (row) => escapeHtml(row.method || "Not recorded") },
-        { label: "Leads", render: (row) => formatNumber(row.leads) },
-        { label: "Approved sales", render: (row) => formatNumber(row.approvedSales) },
-        { label: "Proxy", render: (row) => formatPercent(row.proxyRate) },
-        { label: "Comparability", render: (row) => row.comparableToCurrent ? badge("Comparable", "success") : badge("Context only", "warning") },
-        { label: "Source", render: (row) => escapeHtml(row.sourceLabel || "Local Carma report") }
-      ], history, "No historical summary snapshots are configured.")}
+        { label: "Extracted rows", render: (row) => formatNumber(row.approvedSales) },
+        { label: "Observed orders", render: (row) => formatNumber(row.observedApprovedSales) },
+        { label: "Observed approved value", render: (row) => exactCurrency(row.approvedSalesValue) },
+        { label: "Reconciliation", render: (row) => row.coverageStatus === "reconciled" ? badge("Reconciled", "success") : badge("Not eligible", "warning") },
+        { label: "Source", render: (row) => escapeHtml(row.sourceLabel || "Carma approved-sales extraction") }
+      ], history, "No governed all-approved-sales extraction coverage is available.")}
+      ${approvedSalesHistory.available ? `<div class="panel-body"><h3>Long-range Carma report history</h3><p class="muted small">This separate historical context retains both Carma report modes at order level: all approved sales and the exact subset returned by “Show only new customers”. It does not replace the denominator coverage above.</p></div>${table([
+        { label: "Period", render: (row) => escapeHtml(row.period) },
+        { label: "All approved orders", render: (row) => formatNumber(row.allApprovedOrders) },
+        { label: "Carma marked new", render: (row) => `${formatNumber(row.newCustomerOrders)}<br /><span class="muted small">${row.newCustomerShare === null ? "n/a" : `${formatNumber(row.newCustomerShare)}% of orders`}</span>` },
+        { label: "All approved value", render: (row) => currency(row.allApprovedValue) },
+        { label: "Marked-new value", render: (row) => currency(row.newCustomerApprovedValue) },
+        { label: "Classification quality", render: (row) => row.classificationQuality === "exact_report_membership_historical_marker_sparse" ? badge("Historical marker sparse", "warning") : badge("Exact report membership", "success") },
+        { label: "Reconciliation", render: (row) => row.reconciliationStatus.startsWith("exact_order_subset_reconciled") ? badge(row.matchedOrderFieldVariations ? `Reconciled · ${formatNumber(row.matchedOrderFieldVariations)} source variations` : "Reconciled", row.matchedOrderFieldVariations ? "notice" : "success") : badge("Not reconciled", "warning") }
+      ], approvedSalesHistoryRows, "No classified approved-sales history is available.")}` : `<div class="panel-body"><p class="muted small">${escapeHtml(approvedSalesHistory.error || "The order-level all/new-customer history is not configured.")}</p></div>`}
+      ${approvedSalesHistory.available ? `<div class="panel-body"><div class="note"><h3>Important historical boundary</h3><p class="muted small">${escapeHtml(approvedSalesHistory.definitions?.nonMembershipMeaning || "A false new-customer marker is not independent proof of an existing customer.")}. Carma’s marker changes sharply from ${escapeHtml(approvedSalesHistory.definitions?.historicalMarkerCliffStart || "the observed boundary")}; sparse earlier periods stay flagged rather than being presented as clean historical truth.</p></div></div>` : ""}
     </section>
 
     <section class="panel" id="performance-quality">
-      <div class="panel-header"><div><h2>Data Quality & Interpretation</h2><p class="muted small">The report fails closed on required allocation fields and discloses unresolved cross-system identity and date-window differences.</p></div>${badge(dataQuality.dateWindowMismatch ? "Date mismatch disclosed" : "Dates aligned", dataQuality.dateWindowMismatch ? "warning" : "success")}</div>
+      <div class="panel-header"><div><h2>Data Quality & Interpretation</h2><p class="muted small">The report fails closed on required allocation fields and discloses unresolved cross-system identity and date-window differences.</p></div>${dataQuality.callCoverageComplete ? badge(dataQuality.dateWindowMismatch ? "Extra call dates disclosed" : "Call dates covered", dataQuality.dateWindowMismatch ? "warning" : "success") : badge("Call timing not scored", "warning")}</div>
       <div class="panel-body guardrails">
         <div class="note"><h3>Source windows</h3><p class="muted small">Allocation dates: ${(dataQuality.allocationDates || []).map(escapeHtml).join(", ") || "none"}<br />Call dates: ${(dataQuality.callDates || []).map(escapeHtml).join(", ") || "none"}</p></div>
-        <div class="note"><h3>Personnel identity</h3><p class="muted small">${escapeHtml(dataQuality.salespersonIdentityRule || "Exact source labels only.")}<br />Shared allocation/call user IDs: ${formatNumber(dataQuality.sharedUserIds)}.</p></div>
+        <div class="note"><h3>Personnel identity</h3><p class="muted small">${escapeHtml(dataQuality.salespersonIdentityRule || "Exact source labels only.")}<br />Shared allocation/call user IDs: ${formatNumber(dataQuality.sharedUserIds)}. Multi-manager recipient labels: ${formatNumber(dataQuality.multipleManagerSalespeople)}.</p></div>
         <div class="note"><h3>Stable joins</h3><p class="muted small">Customer linkage uses exact CustomerID/customer_id only. Phone, fuzzy-name and partial-ID matching are prohibited.</p></div>
-        <div class="note"><h3>Commercial meaning</h3><p class="muted small">Approved sales and approved value are CRM source facts. They do not establish call causation, payment, fulfilment, profit or recognised revenue.</p></div>
+        <div class="note"><h3>Lead chart inputs</h3><p class="muted small">Unknown-source sent events: ${formatNumber(leadUsage.unknownSourceSentEvents)}. Conflicting source pairs / conflicting logical rows: ${formatNumber(leadUsage.conflictingSourcePairs)} / ${formatNumber(leadUsage.logicalDimensionConflictRows)}.<br />Lead-import dates valid / missing / invalid / future / conflicting: ${formatNumber(dataQuality.validLeadImportDateEvents)} / ${formatNumber(dataQuality.missingLeadImportDateEvents)} / ${formatNumber(dataQuality.invalidLeadImportDateEvents)} / ${formatNumber(dataQuality.futureLeadImportDateEvents)} / ${formatNumber(dataQuality.conflictingLeadImportDateEvents)}.</p></div>
+        <div class="note"><h3>Scoring gates</h3><p class="muted small">Sales coverage: ${escapeHtml(dataQuality.approvedSalesCoverageStatus || "not verified")}. Company-supplied lead call timing: ${dataQuality.callCoverageComplete ? "measured; blank-customer self-sourcing attempts and empty weekends do not block" : "not scored because a genuine identity, timestamp or weekday-coverage issue remains"}. Invalid allocation/call/sale timestamps: ${formatNumber(dataQuality.invalidAllocationTimestamps)} / ${formatNumber(dataQuality.invalidCallTimestamps)} / ${formatNumber(dataQuality.invalidSalesTimestamps)}. Missing call IDs/blocking identity issues: ${formatNumber(dataQuality.missingCallIds)} / ${formatNumber(dataQuality.missingCallJoinKeys)}. Separate customer-ID-free self-sourcing attempts: ${formatNumber(dataQuality.unlinkedSelfSourcingCallAttempts)}.</p></div>
+        <div class="note"><h3>Source fingerprints</h3><p class="muted small">Allocation ${escapeHtml(shortHash(report.provenance?.allocationLogSha256))} · Calls ${escapeHtml(shortHash(report.provenance?.callExportSha256))} · Carma ${escapeHtml(shortHash(report.provenance?.carmaEvidenceSha256))} · History ${escapeHtml(shortHash(report.provenance?.approvedSalesHistorySha256))}. Local paths and raw customer rows are not exposed.</p></div>
       </div>
       <div class="panel-body"><details><summary>Definitions and limitations</summary><dl class="definition-list">${Object.entries(report.definitions || {}).map(([key, value]) => `<div><dt>${escapeHtml(humanizeSlug(key))}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl><ul>${(report.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details></div>
     </section>
   </div>`;
 }
 
+function pruneInactiveDashboardWorkspaces(html) {
+  let output = String(html || "");
+  const inactiveWorkspace = /<(div|section)\b(?=[^>]*\bdata-dashboard-view="[^"]+")[^>]*\bhidden(?:\s|>)[^>]*>/gi;
+  let match = inactiveWorkspace.exec(output);
+
+  while (match) {
+    const start = match.index;
+    const tagName = match[1];
+    const matchingTag = new RegExp(`<\\/?${tagName}\\b[^>]*>`, "gi");
+    matchingTag.lastIndex = start + match[0].length;
+    let depth = 1;
+    let tag = matchingTag.exec(output);
+
+    while (tag && depth > 0) {
+      if (/^<\//.test(tag[0])) {
+        depth -= 1;
+      } else if (!/\/\s*>$/.test(tag[0])) {
+        depth += 1;
+      }
+      if (depth > 0) tag = matchingTag.exec(output);
+    }
+
+    if (!tag || depth !== 0) {
+      return output;
+    }
+
+    output = `${output.slice(0, start)}${output.slice(matchingTag.lastIndex)}`;
+    inactiveWorkspace.lastIndex = start;
+    match = inactiveWorkspace.exec(output);
+  }
+
+  return output;
+}
+
 function renderDashboard(analysis, options = {}) {
   const sourceData = analysis || renderEmptyState("Set SALES_DASHBOARD_CSV_PATH or start with --csv to load a scheduled CSV export.");
   const activeView = normalizeDashboardView(options.dashboardView || options.view);
+  const performanceApiHref = `/api/performance-cohorts?${new URLSearchParams({
+    ...(options.performanceCohorts?.period?.startDate ? { performanceFrom: options.performanceCohorts.period.startDate } : {}),
+    ...(options.performanceCohorts?.period?.endDate ? { performanceTo: options.performanceCohorts.period.endDate } : {})
+  }).toString()}`;
+  const leadResultsApiHref = `/api/lead-results-dashboard?${new URLSearchParams({
+    ...(options.leadResultsDashboard?.report?.period?.startDate ? { performanceFrom: options.leadResultsDashboard.report.period.startDate } : {}),
+    ...(options.leadResultsDashboard?.report?.period?.endDate ? { performanceTo: options.leadResultsDashboard.report.period.endDate } : {})
+  }).toString()}`;
   const viewMeta = DASHBOARD_VIEW_META[activeView];
   const activeSegment = normalizeBusinessSegment(options.businessSegment || options.segment);
   const data = scopedDashboardData(sourceData, activeSegment);
@@ -4851,11 +7267,21 @@ function renderDashboard(analysis, options = {}) {
   delete filterQueryWithoutBusiness.businessSegment;
   const segmentFilters = activeSegment ? { businessSegment: activeSegment } : {};
   const workspaceAttr = (...views) => `data-dashboard-view="${views.join(" ")}"${views.includes(activeView) ? "" : " hidden"}`;
-  const workspaceHref = (view, hash = "") => dashboardFilterUrl({
-    ...globalFilterQuery,
-    ...segmentFilters,
-    view: normalizeDashboardView(view)
-  }, hash);
+  const workspaceHref = (view, hash = "") => {
+    const normalizedView = normalizeDashboardView(view);
+    if (normalizedView === "lead_results") {
+      const query = new URLSearchParams();
+      const selectedPeriod = options.leadResultsDashboard?.report?.period;
+      if (activeView === "lead_results" && selectedPeriod?.startDate) query.set("performanceFrom", selectedPeriod.startDate);
+      if (activeView === "lead_results" && selectedPeriod?.endDate) query.set("performanceTo", selectedPeriod.endDate);
+      return `/lead-results-dashboard${query.toString() ? `?${query.toString()}` : ""}${hash ? `#${hash}` : ""}`;
+    }
+    return dashboardFilterUrl({
+      ...globalFilterQuery,
+      ...segmentFilters,
+      view: normalizedView
+    }, hash);
+  };
   const withSegment = (filters = {}) => ({ ...globalFilterQuery, ...filters, ...segmentFilters });
   const dashboardSegmentHref = (segment = "") => dashboardFilterUrl({
     ...filterQueryWithoutBusiness,
@@ -4899,6 +7325,14 @@ function renderDashboard(analysis, options = {}) {
     comparison: { rows: [] },
     totals: {}
   };
+  const leadResultsDashboard = options.leadResultsDashboard || {
+    configured: performanceCohorts.configured === true,
+    available: false,
+    report: performanceCohorts,
+    completeness: { checks: {}, unavailableReasons: [] },
+    completeRanges: [],
+    model: null
+  };
 
   const salespersonRows = data.salespersonScorecards.slice(0, 18);
   const sourceRows = data.sourceMetrics.slice(0, 14);
@@ -4914,6 +7348,20 @@ function renderDashboard(analysis, options = {}) {
   const aiVoiceAssistant = data.aiVoiceAssistant || renderEmptyState("").aiVoiceAssistant;
   const aiAssistantTotals = aiVoiceAssistant.totals || {};
   const leadReattempt = data.leadReattempt || renderEmptyState("").leadReattempt;
+  const followUpOverviewParams = new URLSearchParams({
+    ...globalFilterQuery,
+    ...segmentFilters,
+    requiredAttempts: "4",
+    graceDays: "3"
+  });
+  const followUpOverviewHref = `/reports/follow-up-overview?${followUpOverviewParams.toString()}`;
+  const individualFollowUpHref = (salesperson) => `/reports/follow-up-individual?${new URLSearchParams({
+    ...globalFilterQuery,
+    ...segmentFilters,
+    reportSalesperson: salesperson,
+    requiredAttempts: "4",
+    graceDays: "3"
+  }).toString()}`;
   const leadReattemptTotals = leadReattempt.totals || {};
   const leadReattemptSalespersonRows = (leadReattempt.salespersonRows || []).slice(0, 18);
   const leadReattemptHighestRows = (leadReattempt.highestRetrySalespeople || []).slice(0, 10);
@@ -4938,6 +7386,12 @@ function renderDashboard(analysis, options = {}) {
   const newBusinessCalls = Number(sourceData.totals.newBusinessCalls || Math.max(0, totalUniqueCalls - warmBusinessCalls));
   const warmBusinessRate = Number(sourceData.rates.warmBusiness || percentOf(warmBusinessCalls, totalUniqueCalls));
   const newBusinessRate = Number(sourceData.rates.newBusiness || percentOf(newBusinessCalls, totalUniqueCalls));
+  const businessRelationship = sourceData.businessRelationship || {
+    exactCalls: 0,
+    supportingCalls: 0,
+    fallbackCalls: totalUniqueCalls,
+    unknownCalls: 0
+  };
   const sourceAge90 = sourceQualityThresholdRows.find((row) => Number(row.thresholdDays) === 90) || { thresholdDays: 90, calls: 0, rate: 0 };
   const scopeNote = activeSegment
     ? `${segmentLabel} results only. Click All Business to return to the full dashboard.`
@@ -4962,20 +7416,21 @@ function renderDashboard(analysis, options = {}) {
     reviews: [["alerts", "Alerts & reviews"]],
     team: [["salespeople", "Salespeople"], ["sources", "Sources"], ["source-quality", "Source quality"], ["ai-assistants", "AI assistants"], ["system-audio", "System audio"]],
     intelligence: [["provenance", "Provenance"], ["evaluation-results", "Evaluation results"], ["intelligence", "Call intelligence"], ["intelligence-queue", "Evidence queue"]],
-    performance: [["performance-summary", "Weekly proxy"], ["cohort-conversion", "Mature cohorts"], ["salesperson-comparison", "Salespeople"], ["performance-history", "History"], ["performance-quality", "Data quality"]],
+    performance: [["performance-summary", "Lead summary"], ["lead-source-mix", "Source & lead mix"], ["cohort-conversion", "Mature cohorts"], ["salesperson-comparison", "Salespeople"], ["performance-history", "History"], ["performance-quality", "Data quality"]],
+    lead_results: [["lead-results-summary", "Summary"], ["lead-results-manager-charts", "Manager charts"], ["lead-results-manager-summary", "Manager summary"], ["lead-results-performance-views", "Performance & trophies"], ["lead-results-checks", "Checks"], ["performance-rankings", "Performance rankings"]],
     records: [["carma-evidence", "Carma evidence"], ["explorer", "Call explorer"], ["confidence", "Data confidence"], ["history", "Imports"], ["reports", "Reports"]]
   };
   const currentSectionLinks = sectionLinksByView[activeView] || sectionLinksByView.overview;
 
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sales Dashboard</title>
     <style>
-      ${COLUMN_HELP_STYLES}
       @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700;800&display=swap");
+      ${COLUMN_HELP_STYLES}
       :root {
         --background: #080A0F;
         --surface: #0D1117;
@@ -5961,6 +8416,8 @@ function renderDashboard(analysis, options = {}) {
         padding: 0 12px 12px;
         color: var(--muted-foreground);
       }
+      .performance-comparison .warning-row { background: rgba(245, 158, 11, 0.06); }
+      .performance-comparison td strong { color: var(--foreground); }
       @media (max-width: 1080px) {
         .layout { grid-template-columns: minmax(0, 1fr); }
         aside {
@@ -6001,23 +8458,30 @@ function renderDashboard(analysis, options = {}) {
         .action-queue-grid, .opportunity-funnel, .opportunity-facts { grid-template-columns: 1fr; }
         .opportunity-record-head { flex-direction: column; }
         .opportunity-cohort-table .table-wrap { overflow: visible; }
-        .opportunity-cohort-table table, .opportunity-cohort-table tbody, .opportunity-cohort-table tr, .opportunity-cohort-table td { display: block; width: 100%; min-width: 0; }
-        .opportunity-cohort-table thead { display: none; }
-        .opportunity-cohort-table tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
-        .opportunity-cohort-table td { display: grid; grid-template-columns: minmax(110px, 0.8fr) minmax(0, 1fr); gap: 10px; border-bottom: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
-        .opportunity-cohort-table td::before { content: attr(data-label); color: var(--muted-foreground); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+        .performance-comparison .table-wrap { overflow: visible; }
+        .opportunity-cohort-table table, .opportunity-cohort-table tbody, .opportunity-cohort-table tr, .opportunity-cohort-table td,
+        .performance-comparison table, .performance-comparison tbody, .performance-comparison tr, .performance-comparison td { display: block; width: 100%; min-width: 0; }
+        .opportunity-cohort-table thead, .performance-comparison thead { display: none; }
+        .opportunity-cohort-table tr, .performance-comparison tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+        .opportunity-cohort-table td, .performance-comparison td { display: grid; grid-template-columns: minmax(110px, 0.8fr) minmax(0, 1fr); gap: 10px; border-bottom: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
+        .opportunity-cohort-table td::before, .performance-comparison td::before { content: attr(data-label); color: var(--muted-foreground); font-size: 10px; font-weight: 800; text-transform: uppercase; }
       }
+      ${PANELIFY_THEME_STYLES}
     </style>
   </head>
   <body data-dashboard-view="${escapeHtml(activeView)}">
     <div class="layout">
-      <aside>
+      <aside aria-label="Application navigation">
         <div class="brand">
-          <div class="brand-logo"><img data-brand-logo src="/branding/logo" alt="Countrywide Austral" /></div>
-          <div>
-            <div class="brand-title">Sales Dashboard</div>
-            <p class="brand-subtitle">Manager reporting, lead utilisation, and call evidence.</p>
+          <div class="brand-identity">
+            <span class="brand-monogram" aria-hidden="true">SD</span>
+            <div class="brand-logo"><img data-brand-logo src="/branding/logo" alt="Countrywide Austral" /></div>
+            <div>
+              <div class="brand-title">Sales Dashboard</div>
+              <p class="brand-subtitle">Manager reporting and evidence.</p>
+            </div>
           </div>
+          <button class="sidebar-collapse" type="button" data-sidebar-toggle aria-label="Collapse navigation" aria-expanded="true"><span class="sidebar-collapse-mark" aria-hidden="true"></span></button>
           <details class="brand-settings">
             <summary>Branding settings</summary>
             <div class="brand-tools">
@@ -6030,17 +8494,36 @@ function renderDashboard(analysis, options = {}) {
           </details>
         </div>
         <div class="product-switcher" aria-label="Product areas">
-          <a class="active" href="${escapeHtml(workspaceHref(activeView, "overview"))}" aria-current="page">Sales Dashboard</a>
-          <a href="/evaluation-studio">Evaluation Studio</a>
+          <a class="active" href="${escapeHtml(workspaceHref(activeView, "overview"))}" aria-current="page"><span class="nav-icon" aria-hidden="true">S</span><span class="nav-text">Sales Dashboard</span></a>
+          <a href="/evaluation-studio"><span class="nav-icon" aria-hidden="true">E</span><span class="nav-text">Evaluation Studio</span></a>
         </div>
         <nav aria-label="Sales Dashboard workspaces">
-          <span class="nav-label">Workspaces</span>
-          ${Object.entries(DASHBOARD_VIEW_META).map(([key, meta]) => `<a class="${key === activeView ? "active" : ""}" href="${escapeHtml(workspaceHref(key, key === "overview" ? "overview" : ""))}" ${key === activeView ? 'aria-current="page"' : ""}>${escapeHtml(meta.label)}</a>`).join("")}
+          <span class="nav-label">Workspace</span>
+          ${Object.entries(DASHBOARD_VIEW_META).map(([key, meta]) => `<a class="${key === activeView ? "active" : ""}" href="${escapeHtml(workspaceHref(key, key === "overview" ? "overview" : ""))}" ${key === activeView ? 'aria-current="page"' : ""}><span class="nav-icon" aria-hidden="true">${escapeHtml(meta.icon)}</span><span class="nav-text">${escapeHtml(meta.label)}</span></a>`).join("")}
           <span class="nav-label">On this page</span>
-          ${currentSectionLinks.map(([id, label]) => `<a href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`).join("")}
+          ${currentSectionLinks.map(([id, label]) => `<a class="on-page-link" href="#${escapeHtml(id)}"><span class="nav-icon" aria-hidden="true">&middot;</span><span class="nav-text">${escapeHtml(label)}</span></a>`).join("")}
         </nav>
       </aside>
-      <main>
+      <button class="sidebar-overlay" type="button" data-sidebar-overlay aria-label="Close navigation"></button>
+      <div class="app-frame">
+        <nav class="app-topnav" aria-label="Dashboard utilities">
+          <button class="sidebar-collapse sidebar-mobile-toggle" type="button" data-sidebar-toggle aria-label="Open navigation" aria-expanded="false"><span class="sidebar-collapse-mark" aria-hidden="true"></span></button>
+          <div class="topnav-context">
+            <span>Sales Dashboard / ${escapeHtml(viewMeta.label)}</span>
+            <strong>${escapeHtml(viewMeta.kicker)}</strong>
+          </div>
+          <form class="top-search" method="get" action="/drilldown" role="search">
+            <input type="hidden" name="metric" value="calls.unique" />
+            <span class="search-mark" aria-hidden="true"></span>
+            <input type="search" name="customerId" aria-label="Search exact customer ID" placeholder="Search exact customer ID" />
+            <button type="submit">Search</button>
+          </form>
+          <div class="topnav-actions">
+            <a class="topnav-link" href="${activeView === "performance" ? escapeHtml(performanceApiHref) : activeView === "lead_results" ? escapeHtml(leadResultsApiHref) : "#filters"}">${["performance", "lead_results"].includes(activeView) ? "Data API" : "Filters"}</a>
+            <a class="topnav-link" href="/evaluation-studio">Evaluation Studio</a>
+          </div>
+        </nav>
+        <main>
         <header class="topbar" id="overview">
           <div>
             <p class="page-kicker">${escapeHtml(viewMeta.kicker)}</p>
@@ -6051,17 +8534,18 @@ function renderDashboard(analysis, options = {}) {
             </nav>
           </div>
           <div class="stack">
-            ${hasAnyData ? badge("CSV loaded", "success") : badge("No CSV loaded", "warning")}
+            ${!["performance", "lead_results"].includes(activeView) ? (hasAnyData ? badge("CSV loaded", "success") : badge("No CSV loaded", "warning")) : ""}
             ${carmaEvidence.available ? badge("Carma linked read-only", "success") : badge("Carma not linked", "neutral")}
             ${activeView === "performance" ? badge(performanceCohorts.available ? "Performance data ready" : "Performance data unavailable", performanceCohorts.available ? "success" : "warning") : ""}
+            ${activeView === "lead_results" ? badge(leadResultsDashboard.available ? "Complete Lead Results ready" : "Complete Lead Results unavailable", leadResultsDashboard.available ? "success" : "warning") : ""}
             ${activeSegment ? badge(`${segmentLabel} view`, "notice") : ""}
-            ${badge(formatDateRange(data.dateRange), "neutral")}
+            ${badge(["performance", "lead_results"].includes(activeView) ? (performanceCohorts.period?.label || "No performance period") : formatDateRange(data.dateRange), "neutral")}
           </div>
         </header>
 
-        ${renderDatasetBanner(sourceData, persistence)}
+        ${!["performance", "lead_results"].includes(activeView) ? renderDatasetBanner(sourceData, persistence) : ""}
 
-        ${hasAnyData && activeView !== "performance" ? renderGlobalFilters(data, { dashboardView: activeView }) : ""}
+        ${hasAnyData && !["performance", "lead_results"].includes(activeView) ? renderGlobalFilters(data, { dashboardView: activeView }) : ""}
 
         ${["overview", "intelligence"].includes(activeView) ? renderProcessingStatePanel(data, persistence, intelligenceTotals) : ""}
 
@@ -6069,11 +8553,15 @@ function renderDashboard(analysis, options = {}) {
           ${renderEvaluationStudioDashboardSummary(persistence)}
         </div>
 
-        ${!hasAnyData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
-        ${hasAnyData && !hasData ? `<section class="panel"><div class="panel-body"><div class="empty">No calls match the selected filters. Clear filters or broaden the date range before interpreting performance.</div></div></section>` : ""}
+        ${!["performance", "lead_results"].includes(activeView) && !hasAnyData ? `<section class="panel"><div class="panel-body"><div class="empty">${escapeHtml(data.emptyMessage)}</div></div></section>` : ""}
+        ${!["performance", "lead_results"].includes(activeView) && hasAnyData && !hasData ? `<section class="panel"><div class="panel-body"><div class="empty">No calls match the selected filters. Clear filters or broaden the date range before interpreting performance.</div></div></section>` : ""}
 
         <div class="workspace-flow" ${workspaceAttr("performance")}>
           ${renderPerformanceCohorts(performanceCohorts)}
+        </div>
+
+        <div class="workspace-flow" ${workspaceAttr("lead_results")}>
+          ${renderLeadResultsDashboard(leadResultsDashboard)}
         </div>
 
         <div class="workspace-flow" ${workspaceAttr("opportunities")}>
@@ -6128,19 +8616,19 @@ function renderDashboard(analysis, options = {}) {
             </div>
             <div class="segment-actions">
               <a class="filter-link ${activeSegment ? "" : "selected"}" href="${escapeHtml(dashboardSegmentHref(""))}">All Business</a>
-              ${badge("OrderCount based", "neutral")}
+              ${badge("Binary event-time policy", "neutral")}
             </div>
           </div>
           <div class="panel-body segment-split">
             <a class="segment-card accent ${activeSegment === "new" ? "selected" : ""}" href="${escapeHtml(dashboardSegmentHref("new"))}" aria-current="${activeSegment === "new" ? "true" : "false"}">
               <span>New Business</span>
               <strong class="mono">${formatNumber(newBusinessCalls)}</strong>
-              <small>${formatPercent(newBusinessRate)} of unique calls | No Sales History</small>
+              <small>${formatPercent(newBusinessRate)} of unique calls | No prior sale established before call</small>
             </a>
             <a class="segment-card primary ${activeSegment === "warm" ? "selected" : ""}" href="${escapeHtml(dashboardSegmentHref("warm"))}" aria-current="${activeSegment === "warm" ? "true" : "false"}">
               <span>Warm Business</span>
               <strong class="mono">${formatNumber(warmBusinessCalls)}</strong>
-              <small>${formatPercent(warmBusinessRate)} of unique calls | Previous Sales History</small>
+              <small>${formatPercent(warmBusinessRate)} of unique calls | Prior invoice/order established</small>
             </a>
             <div class="segment-track" aria-label="New Business and Warm Business call split">
               <span class="segment-fill new" style="width: ${Math.max(0, Math.min(100, newBusinessRate)).toFixed(1)}%;"></span>
@@ -6179,16 +8667,20 @@ function renderDashboard(analysis, options = {}) {
               <span>Semantic decisions</span><strong class="mono">0</strong><small>Unavailable until an exact evaluator passes frozen promotion.</small>
             </a>
           </div>
+          <p class="muted small">${formatNumber(businessRelationship.exactCalls || 0)} calls use exact invoice/order timing, ${formatNumber(businessRelationship.supportingCalls || 0)} use dated supporting evidence, and ${formatNumber(businessRelationship.fallbackCalls || 0)} use the labelled binary fallback. Unknown calls: 0.</p>
         </section>
 
         <div class="workspace-flow" ${workspaceAttr("follow_up")}>
         <section class="panel" id="lead-reattempts">
           <div class="panel-header">
             <div>
-              <h2>Lead Reattempt Behaviour</h2>
-              <p class="muted small">Matched customer/contact call counts plus restricted literal no-contact evidence. These measures describe outreach activity, not lead quality or salesperson performance.</p>
+              <h2>Lead Reattempt Behaviour &amp; Salesperson Evidence</h2>
+              <p class="muted small">Matched customer/contact call counts plus restricted literal no-contact evidence. The separate report applies a four-attempt policy and a three-day observation window without turning ambiguous calls into findings.</p>
             </div>
-            ${linkedBadge(`${formatNumber(leadReattemptTotals.leadsTouched || 0)} matched records`, leadReattemptTotals.leadsTouched ? "success" : "warning", drilldownUrl("reattempt.leadsTouched", withSegment()))}
+            <div class="drill-actions">
+              ${linkedBadge(`${formatNumber(leadReattemptTotals.leadsTouched || 0)} matched records`, leadReattemptTotals.leadsTouched ? "success" : "warning", drilldownUrl("reattempt.leadsTouched", withSegment()))}
+              <a class="button-link" href="${escapeHtml(followUpOverviewHref)}">Open defensible overview report</a>
+            </div>
           </div>
           <div class="panel-body metrics">
             ${metricCard("Personal retry rate", formatPercent(leadReattemptTotals.personalRetryRate), `${formatNumber(leadReattemptTotals.personallyRetriedLeads || 0)} records retried by same salesperson`, "good", drilldownUrl("reattempt.personalRetried", withSegment()))}
@@ -6208,7 +8700,7 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel-header">
             <div>
               <h2>Reattempt Behaviour By Salesperson</h2>
-              <p class="muted small">Click any percentage to inspect the exact customer IDs and call IDs behind the rate.</p>
+              <p class="muted small">Click a metric for exact-ID proof, or generate the individual report only when a manager needs the complete evidence chain.</p>
             </div>
           </div>
           ${table([
@@ -6222,7 +8714,8 @@ function renderDashboard(analysis, options = {}) {
             { label: "Ambiguous excluded", render: (row) => dataLink("reattempt.oneDialNeedsReview", formatNumber(row.oneDialNeedsReviewLeads), withSegment({ salesperson: row.salesperson })) },
             { label: "No later by anyone", render: (row) => dataLink("reattempt.noLaterCallByAnyone", formatPercent(row.noLaterCallByAnyoneRate), withSegment({ salesperson: row.salesperson })) },
             { label: "Avg calls/lead", render: (row) => dataLink("reattempt.leadsTouched", formatDecimal(row.averageCallsPerLead), withSegment({ salesperson: row.salesperson })) },
-            { label: "Max attempts", render: (row) => dataLink("reattempt.maxAttemptsOnOneLead", formatNumber(row.maxAttemptsOnOneLead), withSegment({ salesperson: row.salesperson, maxAttempts: row.maxAttemptsOnOneLead })) }
+            { label: "Max attempts", render: (row) => dataLink("reattempt.maxAttemptsOnOneLead", formatNumber(row.maxAttemptsOnOneLead), withSegment({ salesperson: row.salesperson, maxAttempts: row.maxAttemptsOnOneLead })) },
+            { label: "Individual report", render: (row) => `<a class="button-link" href="${escapeHtml(individualFollowUpHref(row.salesperson))}">Generate</a>` }
           ], leadReattemptSalespersonRows, "No matched reattempt rows are available.")}
         </section>
 
@@ -6346,7 +8839,7 @@ function renderDashboard(analysis, options = {}) {
             ${badge(selfSourcingAttribution?.conclusion?.longHeldRecordsAreMajority ? "Long-held records are the majority" : "Long-held records are not the majority", selfSourcingAttribution?.conclusion?.longHeldRecordsAreMajority ? "warning" : "neutral")}
           </div>
           <div class="panel-body metrics">
-            ${metricCard("New Business calls", formatNumber(selfSourcingAttribution?.totals?.newBusinessCalls || 0), "OrderCount = 0 only", "info", drilldownUrl("calls.newBusiness", withSegment({ businessSegment: "new" })))}
+            ${metricCard("New Business calls", formatNumber(selfSourcingAttribution?.totals?.newBusinessCalls || 0), "Event-time relationship policy", "info", drilldownUrl("calls.newBusiness", withSegment({ businessSegment: "new" })))}
             ${metricCard("Records >90 days", formatNumber(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.longHeldRecordCalls || 0), `${formatPercent(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.longHeldRecordRate || 0)} of New Business calls`, "risk", drilldownUrl("source.newBusinessRecordOlderThan", withSegment({ businessSegment: "new", minImportAgeDays: 90 })))}
             ${metricCard("Confirmed imports >90 days", formatNumber(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.confirmedLegacyImportCalls || 0), `${formatPercent(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.confirmedLegacyImportRate || 0)} have a valid import date`, "warning", drilldownUrl("source.newBusinessImportedOlderThan", withSegment({ businessSegment: "new", minImportAgeDays: 90 })))}
             ${metricCard("SP-created >90 days", formatNumber(selfSourcingAttribution?.thresholds?.find((row) => row.thresholdDays === 90)?.salespersonCreatedLongHeldCalls || 0), "Manual salesperson creation, not online-source proof", "info", drilldownUrl("source.manualCreated", withSegment({ businessSegment: "new", createdByType: "SP", minImportAgeDays: 90 })))}
@@ -6503,7 +8996,7 @@ function renderDashboard(analysis, options = {}) {
           <div class="panel-header">
             <div>
               <h2>Restricted Literal Transcript Triage</h2>
-              <p class="muted small">Database-backed literal matches only: machine/no-answer/voicemail, direct customer wrong-number wording, and direct customer opt-out wording. No semantic outcome, follow-up, quality, or lead score is created.</p>
+              <p class="muted small">Database-backed literal matches only: machine/no-answer/voicemail, direct customer wrong-number wording, direct customer not-interested wording, and direct customer opt-out wording. No semantic outcome, follow-up, quality, or lead score is created.</p>
             </div>
             ${linkedBadge(`${formatNumber(intelligenceTotals.callsIndexed)} calls indexed`, intelligenceTotals.callsIndexed ? "success" : "warning", queueFilterUrl({ intelligenceQueue: "all", wasteRisk: "" }))}
           </div>
@@ -6785,7 +9278,8 @@ function renderDashboard(analysis, options = {}) {
         </section>
         </div>
         </div>
-      </main>
+        </main>
+      </div>
     </div>
     <script>
       (() => {
@@ -6872,9 +9366,94 @@ function renderDashboard(analysis, options = {}) {
           reader.readAsDataURL(file);
         });
       })();
+      (() => {
+        const body = document.body;
+        const toggles = Array.from(document.querySelectorAll("[data-sidebar-toggle]"));
+        const overlay = document.querySelector("[data-sidebar-overlay]");
+        const desktop = window.matchMedia("(min-width: 1101px)");
+        const setExpandedState = () => {
+          const expanded = desktop.matches
+            ? !body.classList.contains("sidebar-collapsed")
+            : body.classList.contains("sidebar-open");
+          toggles.forEach((toggle) => {
+            toggle.setAttribute("aria-expanded", String(expanded));
+            toggle.setAttribute("aria-label", desktop.matches
+              ? (expanded ? "Collapse navigation" : "Expand navigation")
+              : (expanded ? "Close navigation" : "Open navigation"));
+          });
+        };
+        try {
+          if (desktop.matches && window.localStorage.getItem("sales-dashboard-sidebar") === "collapsed") {
+            body.classList.add("sidebar-collapsed");
+          }
+        } catch {}
+        const toggleSidebar = () => {
+          if (desktop.matches) {
+            body.classList.toggle("sidebar-collapsed");
+            try {
+              window.localStorage.setItem(
+                "sales-dashboard-sidebar",
+                body.classList.contains("sidebar-collapsed") ? "collapsed" : "expanded"
+              );
+            } catch {}
+          } else {
+            body.classList.toggle("sidebar-open");
+          }
+          setExpandedState();
+        };
+        toggles.forEach((toggle) => toggle.addEventListener("click", toggleSidebar));
+        if (overlay) overlay.addEventListener("click", () => {
+          body.classList.remove("sidebar-open");
+          setExpandedState();
+        });
+        document.querySelectorAll("aside nav a, .product-switcher a").forEach((link) => {
+          link.addEventListener("click", () => {
+            if (!desktop.matches) body.classList.remove("sidebar-open");
+          });
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && body.classList.contains("sidebar-open")) {
+            body.classList.remove("sidebar-open");
+            setExpandedState();
+          }
+        });
+        desktop.addEventListener("change", () => {
+          body.classList.remove("sidebar-open");
+          setExpandedState();
+        });
+        setExpandedState();
+      })();
+      (() => {
+        document.querySelectorAll("[data-sortable-table]").forEach((table) => {
+          const body = table.tBodies[0];
+          if (!body) return;
+          table.querySelectorAll("[data-sort-column]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const column = Number(button.dataset.sortColumn || 0);
+              const type = button.dataset.sortType || "text";
+              const nextDirection = button.getAttribute("aria-sort") === "ascending" ? "descending" : "ascending";
+              table.querySelectorAll("[data-sort-column]").forEach((other) => other.removeAttribute("aria-sort"));
+              button.setAttribute("aria-sort", nextDirection);
+              const direction = nextDirection === "ascending" ? 1 : -1;
+              const rows = Array.from(body.rows);
+              rows.sort((left, right) => {
+                const leftValue = left.cells[column]?.dataset.sortValue || left.cells[column]?.textContent || "";
+                const rightValue = right.cells[column]?.dataset.sortValue || right.cells[column]?.textContent || "";
+                if (type === "number") return (Number(leftValue) - Number(rightValue)) * direction;
+                return leftValue.localeCompare(rightValue, "en-AU", { numeric: true, sensitivity: "base" }) * direction;
+              });
+              rows.forEach((row) => body.appendChild(row));
+            });
+          });
+        });
+      })();
     </script>
+    ${TABLE_COLUMNS_SCRIPT}
   </body>
 </html>`;
+  return activeView === "performance"
+    ? pruneInactiveDashboardWorkspaces(html)
+    : html;
 }
 
 function renderReportPage(report, options = {}) {
@@ -6887,8 +9466,8 @@ function renderReportPage(report, options = {}) {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(reportTitle)} - Sales Dashboard</title>
     <style>
-      ${COLUMN_HELP_STYLES}
       @import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700;800&display=swap");
+      ${COLUMN_HELP_STYLES}
       :root {
         --background: #080A0F;
         --surface: #0D1117;
@@ -7053,14 +9632,61 @@ function renderReportPage(report, options = {}) {
         font-weight: 760;
         padding-top: 14px;
       }
+      .report-controls {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(140px, 1fr)) auto;
+        gap: 10px;
+        align-items: end;
+        margin: 14px 0 20px;
+        padding: 14px;
+        border: 1px solid var(--border-subtle);
+        border-radius: 8px;
+        background: var(--surface-elevated);
+      }
+      .report-controls label { display: grid; gap: 6px; color: var(--muted-foreground); font-size: 12px; font-weight: 700; }
+      .report-controls input {
+        width: 100%;
+        min-height: 38px;
+        padding: 8px 10px;
+        color: var(--foreground);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font: inherit;
+      }
+      .report-controls button {
+        min-height: 38px;
+        padding: 8px 14px;
+        color: #080A0F;
+        background: var(--primary);
+        border: 0;
+        border-radius: 6px;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+      }
+      .report-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 4px 0 20px; }
+      .report-chart { min-width: 0; padding: 16px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-elevated); }
+      .report-chart h2 { margin: 0 0 14px; }
+      .report-bars { display: grid; gap: 12px; }
+      .report-bar-label { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+      .report-bar-label span { font-family: "Geist Mono", Consolas, monospace; color: var(--foreground); }
+      .report-bar-track { height: 9px; overflow: hidden; border-radius: 999px; background: var(--surface); margin-top: 5px; }
+      .report-bar-fill { display: block; height: 100%; border-radius: inherit; background: var(--muted-foreground); }
+      .report-bar-fill.warning { background: var(--warning); }
+      .report-bar-fill.notice { background: var(--accent); }
+      .report-bar-fill.success { background: var(--success); }
+      .report-bar-row p { margin: 5px 0 0; font-size: 12px; line-height: 1.4; }
       @media (max-width: 760px) {
         main { width: min(100vw - 24px, 1180px); padding: 12px 0 32px; }
         .topbar, .page-title { flex-direction: column; }
         .page-brand { min-width: 0; width: 190px; }
         .metadata { grid-template-columns: 1fr; }
+        .report-controls, .report-chart-grid { grid-template-columns: 1fr; }
         table { min-width: 0; table-layout: fixed; }
         td { overflow-wrap: anywhere; }
       }
+      ${PANELIFY_THEME_STYLES}
     </style>
   </head>
   <body>
@@ -7085,6 +9711,8 @@ function renderReportPage(report, options = {}) {
         </div>
         <div class="report-content">
           ${renderReportDrilldownPanel(report)}
+          ${renderReportControls(report)}
+          ${renderReportCharts(report)}
           ${renderReportContent(report.content || report.summary || "")}
         </div>
         <details>
@@ -7093,6 +9721,7 @@ function renderReportPage(report, options = {}) {
         </details>
       </section>` : `<section class="panel"><p>Use the Reports Library to open an existing report.</p></section>`}
     </main>
+    ${TABLE_COLUMNS_SCRIPT}
   </body>
 </html>`;
 }

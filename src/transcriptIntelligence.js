@@ -3,7 +3,7 @@
 const crypto = require("crypto");
 const { clean } = require("./transcriptEvaluator");
 
-const EXTRACTION_VERSION = "call_intelligence.literal_triage.v3";
+const EXTRACTION_VERSION = "call_intelligence.literal_triage.v4";
 const STABLE_LEAD_PRIORITY = ["customer_id", "AllocatedLeadID", "ContactId", "FoundContactID", "FoundCustomerID"];
 
 function hash(value) {
@@ -97,6 +97,17 @@ function restrictedEventsAndFlags(call = {}) {
     }
   }
 
+  if (clean(call.localOutcome) === "not_interested") {
+    const evidence = exactEvidence(call, "literal_not_interested");
+    if (evidence) {
+      events.push(literalEvent(call, "not_interested", evidence, {
+        speaker: "customer",
+        rawValue: "not_interested",
+        normalizedValue: "not_interested"
+      }));
+    }
+  }
+
   if (clean(call.localOutcome) === "opt_out") {
     const evidence = exactEvidence(call, "opt_out");
     if (evidence) riskFlags.push(literalRiskFlag(call, evidence));
@@ -121,6 +132,7 @@ function buildCallIntelligence(call = {}, options = {}) {
   const managerReviewRequired = riskFlags.length > 0;
   const literalTerminalOrMachineAudio = events.some((event) => [
     "wrong_number",
+    "not_interested",
     "voicemail_left_or_detected",
     "no_answer_detected",
     "system_audio_detected"
@@ -180,6 +192,7 @@ function buildCallIntelligence(call = {}, options = {}) {
 
 function contactOutcome(events = []) {
   if (events.some((event) => event.eventType === "wrong_number")) return "wrong_number";
+  if (events.some((event) => event.eventType === "not_interested")) return "not_interested";
   if (events.some((event) => event.eventType === "voicemail_left_or_detected")) return "voicemail";
   if (events.some((event) => event.eventType === "system_audio_detected")) return "system_audio";
   if (events.some((event) => event.eventType === "no_answer_detected")) return "no_answer";

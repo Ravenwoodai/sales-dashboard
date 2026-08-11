@@ -1,6 +1,7 @@
 "use strict";
 
 const { clean, isMissing } = require("./transcriptEvaluator");
+const { businessRelationshipFor } = require("./businessRelationship");
 const {
   SOURCE_TIMEZONE_LABEL,
   formatSourceDateTimeParts,
@@ -333,7 +334,7 @@ function subjectMatchesDate(subject, filterState = {}) {
 function subjectMatchesFilters(subject, filterState = {}, context = {}) {
   const state = filterState.schemaVersion ? filterState : normalizeFilterState(filterState);
   if (state.businessSegment) {
-    const segment = subject.businessSegment || (Number(subject?.row?.OrderCount || 0) > 0 ? "warm" : "new");
+    const segment = subject.businessSegment || businessRelationshipFor(subject?.row || subject).segment;
     if (segment !== state.businessSegment) return false;
   }
   if (!subjectMatchesDate(subject, state)) return false;

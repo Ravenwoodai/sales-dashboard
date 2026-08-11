@@ -1,7 +1,8 @@
 "use strict";
 
-const { clean, isMissing, toInt } = require("./transcriptEvaluator");
+const { clean, isMissing } = require("./transcriptEvaluator");
 const { sourceAttributionFor } = require("./sourceQuality");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 const LONG_HELD_THRESHOLDS = [90, 365];
 
@@ -20,10 +21,7 @@ function recordKeyFor(item) {
 }
 
 function buildSelfSourcingAttributionModel(items = [], options = {}) {
-  const newBusiness = items.filter((item) => {
-    const orderCount = toInt(item.row?.OrderCount);
-    return (orderCount === null ? 0 : orderCount) === 0;
-  });
+  const newBusiness = items.filter((item) => businessRelationshipFor(item.row).segment === "new");
   const totalNewBusinessCalls = newBusiness.length;
   const totals = {
     newBusinessCalls: totalNewBusinessCalls,
@@ -103,7 +101,7 @@ function buildSelfSourcingAttributionModel(items = [], options = {}) {
   return {
     schemaVersion: "sales_dashboard_self_sourcing_attribution.v1",
     title: "Self-Sourcing Attribution Audit",
-    scope: "New Business calls only (OrderCount is blank, NULL, or zero).",
+    scope: "New Business calls under the event-time invoice evidence and mandatory binary fallback policy.",
     totals: {
       ...totals,
       knownRecordAgeRate: percent(totals.knownRecordAgeCalls, totalNewBusinessCalls),

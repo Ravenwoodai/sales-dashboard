@@ -1,6 +1,7 @@
 "use strict";
 
 const { clean, isMissing, toInt } = require("./transcriptEvaluator");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 const SOURCE_AGE_THRESHOLDS = [7, 30, 60, 90, 180, 365];
 
@@ -10,7 +11,7 @@ function orderCountFor(row) {
 }
 
 function businessSegmentForRow(row) {
-  return orderCountFor(row) > 0 ? "warm" : "new";
+  return businessRelationshipFor(row).segment;
 }
 
 function parseCustomerDate(value) {

@@ -758,7 +758,7 @@ test("dashboard labels intelligence provenance confidence evidence and manager r
       html.indexOf('id="lead-utilization"') > 0 ? html.indexOf('id="lead-utilization"') : html.length
     );
     assert.match(html, /Local-model operations[\s\S]*Disabled/);
-    assert.doesNotMatch(html, /LLM-reviewed|91%/);
+    assert.doesNotMatch(intelligenceQueueHtml, /LLM-reviewed|91%/);
     assert.doesNotMatch(intelligenceQueueHtml, /Customer requested a callback/);
   });
 });

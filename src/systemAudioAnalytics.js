@@ -2,7 +2,8 @@
 
 const { ENTITY_FIELDS } = require("./analysisConstants");
 const { sourceNameFor } = require("./sourceQuality");
-const { clean, isMissing, toInt } = require("./transcriptEvaluator");
+const { clean, isMissing } = require("./transcriptEvaluator");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 const FUTURE_WINDOW_MS = 48 * 60 * 60 * 1000;
 
@@ -48,8 +49,7 @@ function sourceFor(item) {
 }
 
 function businessSegmentFor(item) {
-  const value = toInt(item?.row?.OrderCount);
-  return value && value > 0 ? "warm" : "new";
+  return businessRelationshipFor(item?.row || {}).segment;
 }
 
 function businessSegmentLabel(segment) {

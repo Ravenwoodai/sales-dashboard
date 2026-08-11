@@ -3,6 +3,7 @@
 const path = require("path");
 const { readTabularFile } = require("./sourceFile");
 const { clean, isMissing, toInt } = require("./transcriptEvaluator");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 const REQUIRED_ALLOCATION_COLUMNS = [
   "LEAD CAMPAIGN",
@@ -103,8 +104,7 @@ function typeLabel(segment) {
 }
 
 function businessSegmentFor(row) {
-  const orderCount = toInt(row.OrderCount);
-  return orderCount && orderCount > 0 ? "warm" : "new";
+  return businessRelationshipFor(row).segment;
 }
 
 function stableLeadFor(row) {

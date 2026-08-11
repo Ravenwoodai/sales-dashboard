@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "weekly_lead_utilisation_orchestrator.v1",
+  "timezone": "Australia/Melbourne",
+  "carmaReportsRoot": "C:\\Users\\User\\Desktop\\Carma Reports",
+  "sources": {
+    "allocationPath": "C:\\Users\\User\\Desktop\\Carma Reports\\output\\weekly-allocation-exports\\{{periodStart}}_to_{{sourceEnd}}\\WeeklyLeadAllocationExport_{{periodStart}}_to_{{sourceEnd}}.csv",
+    "callPath": "C:\\Users\\User\\Desktop\\Carma Reports\\output\\weekly-call-exports\\{{periodStart}}_to_{{sourceEnd}}\\WeeklyCallExport_{{periodStart}}_to_{{sourceEnd}}.csv",
+    "primaryCallPath": "C:\\Weekly Report Inbox\\CompleteCallHistory.csv"
+  },
+  "acquisition": {
+    "allocationCommand": {
+      "executable": "npm.cmd",
+      "args": [
+        "run",
+        "weekly-allocation:extract",
+        "--",
+        "--start",
+        "{{periodStart}}",
+        "--end",
+        "{{sourceEnd}}"
+      ],
+      "cwd": "{{carmaReportsRoot}}"
+    },
+    "callCommand": {
+      "executable": "npm.cmd",
+      "args": [
+        "run",
+        "weekly-call:extract",
+        "--",
+        "--start",
+        "{{periodStart}}",
+        "--end",
+        "{{sourceEnd}}"
+      ],
+      "cwd": "{{carmaReportsRoot}}"
+    }
+  },
+  "carmaEvidence": {
+    "databasePath": "C:\\Governed Carma Evidence\\{{periodStart}}_to_{{sourceEnd}}\\carma-evidence.sqlite"
+  },
+  "report": {
+    "outputRoot": "{{root}}\\outputs\\weekly-lead-utilisation",
+    "logoPath": "C:\\Weekly Report Assets\\countrywide-austral-logo-black.png",
+    "trendHistoryPath": "{{root}}\\data\\store\\lead-utilisation-trend-history.json",
+    "personMinimumAllocations": 100,
+    "exclusionPolicySha256": "90dc3d4234deec6cbb5b94f584eb998f59f3f47ff96bfe97ee243d2b9a042ac9",
+    "exclusionDisplay": "Example Admin team, Example Manager team and Example Salesperson",
+    "managerTeamExclusions": [
+      "Example Admin",
+      "Example Manager"
+    ],
+    "salespersonExclusions": [
+      "Example Manager",
+      "Example Salesperson"
+    ]
+  },
+  "leadManagement": {
+    "outputRoot": "{{root}}\\outputs\\weekly-lead-management",
+    "delivery": {
+      "recipient": "replace-with-approved-recipient",
+      "command": {
+        "executable": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{{root}}\\scripts\\send-report-outlook.ps1",
+          "-Recipient",
+          "{{recipient}}",
+          "-Subject",
+          "Weekly Lead Management Report {{periodStart}} to {{periodEnd}}",
+          "-Body",
+          "Attached are the verified combined weekly Lead Management Excel and PDF reports.",
+          "-Attachments",
+          "{{xlsx}};{{pdf}}"
+        ],
+        "cwd": "{{root}}"
+      }
+    }
+  },
+  "delivery": {
+    "recipient": "replace-with-approved-recipient",
+    "command": {
+      "executable": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "{{root}}\\scripts\\send-report-outlook.ps1",
+        "-Recipient",
+        "{{recipient}}",
+        "-Subject",
+        "Lead Utilisation and Wastage Report {{periodStart}} to {{periodEnd}}",
+        "-Body",
+        "Attached are the verified weekly Lead Utilisation Excel and PDF reports.",
+        "-Attachments",
+        "{{xlsx}};{{pdf}}"
+      ],
+      "cwd": "{{root}}"
+    }
+  }
+}

@@ -2,12 +2,16 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseCsv } = require("../src/csvParser");
+const { parseCsv, parseCsvColumns } = require("../src/csvParser");
 const { alertIdFor } = require("../src/alertLifecycle");
 const { analyzeCsvText, buildFilteredAnalysis } = require("../src/analysis");
 const { evaluateCall, parseTranscriptTurns } = require("../src/transcriptEvaluator");
 const { buildCallIntelligence } = require("../src/transcriptIntelligence");
 const { classifyOneDialRecord } = require("../src/leadReattemptAnalytics");
+const {
+  EXCLUDED_PERSONNEL,
+  configurePersonnelExclusions
+} = require("../src/personnelExclusions");
 
 const header = [
   "dialled_phone_number",
@@ -90,6 +94,20 @@ test("parseCsv handles quoted commas", () => {
   const parsed = parseCsv('a,b,c\n1,"two, with comma",3\n');
   assert.deepEqual(parsed.columns, ["a", "b", "c"]);
   assert.equal(parsed.rows[0].b, "two, with comma");
+});
+
+test("parseCsvColumns materializes only selected fields while preserving quoted records", () => {
+  const parsed = parseCsvColumns(
+    'call_id,transcription_text,customer_id\n1,"Customer: line one\nAgent: line two, continued",customer-1\n',
+    ["call_id", "customer_id"]
+  );
+  assert.deepEqual(parsed.columns, ["call_id", "customer_id"]);
+  assert.deepEqual(parsed.rows, [{
+    __rowNumber: 2,
+    call_id: "1",
+    customer_id: "customer-1"
+  }]);
+  assert.equal(Object.prototype.hasOwnProperty.call(parsed.rows[0], "transcription_text"), false);
 });
 
 test("analysis ignores redacted phone and treats invalid customer date fragments as missing", () => {
@@ -1422,4 +1440,27 @@ test("call intelligence cannot promote payment intent from deterministic wording
   assert.equal(intelligence.events.some((event) => event.eventType === "payment_or_order_intent"), false);
   assert.equal(intelligence.call.nextStepExists, null);
   assert.equal(intelligence.call.leadUtilizationScore, null);
+});
+
+test("call analysis excludes configured personnel by exact normalized salesperson label", (t) => {
+  const previousExclusions = [...EXCLUDED_PERSONNEL];
+  configurePersonnelExclusions(["Admin User", "Excluded Manager", "Excluded Seller", "Excluded Supervisor"]);
+  t.after(() => configurePersonnelExclusions(previousExclusions));
+  const analysis = analyzeCsvText(csv([
+    row({ call_id: "eligible", Salesperson: "Riley Example" }),
+    row({ call_id: "admin", Salesperson: " Admin   User " }),
+    row({ call_id: "manager", Salesperson: "EXCLUDED MANAGER" }),
+    row({ call_id: "seller", Salesperson: "Excluded Seller" }),
+    row({ call_id: "supervisor", Salesperson: "Excluded Supervisor" }),
+    row({ call_id: "near-name", Salesperson: "Excluded Seller Jr" })
+  ]));
+  assert.equal(analysis.totals.excludedPersonnelRows, 4);
+  assert.deepEqual(
+    analysis.drilldownRows.map((item) => item.callId).sort(),
+    ["eligible", "near-name"]
+  );
+  assert.doesNotMatch(
+    JSON.stringify(analysis),
+    /Admin User|Excluded Manager|Excluded Seller(?! Jr)|Excluded Supervisor/i
+  );
 });

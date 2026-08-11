@@ -235,7 +235,7 @@ function buildIntelligenceGovernance(items, totals = {}) {
     semanticEvaluation: {
       status: "restricted_not_authoritative",
       operationallyPermitted: false,
-      permittedUse: "Literal terminal, machine-audio, direct-customer wrong-number, and direct-customer opt-out triage only.",
+      permittedUse: "Literal terminal, machine-audio, direct-customer wrong-number, direct-customer not-interested, and direct-customer opt-out triage only.",
       prohibitedUse: "Outcome, follow-up, complaint, interest, callback, quality, coaching, ranking, or performance decisions.",
       auditReference: "runtime/ALL_EVALUATORS_ACCURACY_AUDIT_2026-07-20.md"
     },

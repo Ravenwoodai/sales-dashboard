@@ -60,12 +60,12 @@ const METRICS = {
   },
   "calls.newBusiness": {
     title: "New Business Calls",
-    description: "Calls where OrderCount is blank, NULL, or zero, meaning No Sales History.",
+    description: "Calls made before the exact customer's first retained invoice/order boundary, or assigned New by the mandatory binary fallback.",
     kind: "call"
   },
   "calls.warmBusiness": {
     title: "Warm Business Calls",
-    description: "Calls where OrderCount is greater than zero.",
+    description: "Calls where retained evidence or the labelled fallback establishes prior sales history before the call.",
     kind: "call"
   },
   "calls.transcriptAvailable": {
@@ -292,7 +292,7 @@ const METRICS = {
   },
   "reattempt.oneDialValidOutcome": {
     title: "Literal Terminal One-Dial States",
-    description: "One-dial records with exact direct-customer wrong-number or opt-out wording.",
+    description: "One-dial records with exact direct-customer wrong-number, not-interested, or opt-out wording.",
     kind: "reattempt"
   },
   "reattempt.oneDialLiteralNoContact": {

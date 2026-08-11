@@ -551,6 +551,10 @@ const DIRECT_CUSTOMER_WRONG_NUMBER_PATTERNS = [
   /\bwrong number\b/i
 ];
 
+const DIRECT_CUSTOMER_NOT_INTERESTED_PATTERNS = [
+  /\bnot interested\b/i
+];
+
 function directCustomerProof(transcript, patterns) {
   const turns = parseRawTranscriptTurns(transcript);
   for (const turn of turns) {
@@ -681,8 +685,12 @@ function evaluateCall(row) {
     ? directCustomerProof(transcript, DIRECT_CUSTOMER_WRONG_NUMBER_PATTERNS)
     : null;
   const optOutProof = transcriptAvailable ? directCustomerProof(transcript, PATTERNS.optOut) : null;
+  const notInterestedProof = transcriptAvailable
+    ? directCustomerProof(transcript, DIRECT_CUSTOMER_NOT_INTERESTED_PATTERNS)
+    : null;
   const wrongNumber = Boolean(wrongNumberProof);
   const optOut = Boolean(optOutProof);
+  const notInterested = Boolean(notInterestedProof);
 
   const transcriptNull = !transcriptAvailable;
   const transcriptPlaceholder = noAnswer || /\bfailed transcription\b/i.test(transcript);
@@ -700,6 +708,7 @@ function evaluateCall(row) {
   if (contactClassification === "system_audio") localOutcomeCategory = "system_audio";
   else if (optOut) localOutcomeCategory = "opt_out";
   else if (wrongNumber) localOutcomeCategory = "wrong_number";
+  else if (notInterested) localOutcomeCategory = "not_interested";
   else if (contactClassification === "no_answer") localOutcomeCategory = "no_answer";
   else if (contactClassification === "voicemail") localOutcomeCategory = "voicemail";
 
@@ -744,6 +753,14 @@ function evaluateCall(row) {
       0
     ));
   }
+  if (notInterestedProof && !optOutProof) {
+    evidence.push(evidenceItem(
+      "literal_not_interested",
+      "Direct customer not-interested wording found",
+      notInterestedProof,
+      0
+    ));
+  }
   if (aiVoiceAssistant.detected) {
     evidence.push(evidenceItem(
       "ai_voice_assistant",
@@ -761,7 +778,7 @@ function evaluateCall(row) {
     authority: {
       status: "restricted",
       decisionUsePermitted: false,
-      permittedUse: "Literal machine/no-answer/voicemail, direct-customer wrong-number, and direct-customer opt-out triage only.",
+      permittedUse: "Literal machine/no-answer/voicemail, direct-customer wrong-number, direct-customer not-interested, and direct-customer opt-out triage only.",
       prohibitedUse: "Semantic outcomes, follow-up work, complaint findings, interest, quote, callback, quality, coaching, ranking, or performance decisions.",
       evidenceSource: "runtime/ALL_EVALUATORS_ACCURACY_AUDIT_2026-07-20.md"
     },
@@ -819,7 +836,7 @@ function evaluateCall(row) {
       localCategory: localOutcomeCategory,
       reviewRequired: optOut,
       confidence: null,
-      semanticStatus: ["wrong_number", "opt_out", "no_answer", "voicemail", "system_audio"].includes(localOutcomeCategory)
+      semanticStatus: ["wrong_number", "not_interested", "opt_out", "no_answer", "voicemail", "system_audio"].includes(localOutcomeCategory)
         ? "restricted_literal"
         : "not_evaluated"
     },
