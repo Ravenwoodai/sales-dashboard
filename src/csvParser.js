@@ -74,4 +74,96 @@ function parseCsv(text) {
   return { columns, rows: parsedRows };
 }
 
-module.exports = { parseCsv };
+function parseCsvColumns(text, selectedColumns = []) {
+  const requested = new Set(
+    selectedColumns.map((column) => String(column || "").trim()).filter(Boolean)
+  );
+  const rows = [];
+  let columns = [];
+  let selectedByIndex = new Map();
+  let headerValues = [];
+  let record = {};
+  let field = "";
+  let columnIndex = 0;
+  let inQuotes = false;
+  let headerParsed = false;
+  let hasSelectedValue = false;
+
+  const capturesCurrentField = () => !headerParsed || selectedByIndex.has(columnIndex);
+  const finishField = () => {
+    if (!headerParsed) {
+      headerValues.push(field);
+    } else if (selectedByIndex.has(columnIndex)) {
+      const column = selectedByIndex.get(columnIndex);
+      record[column] = field;
+      if (String(field || "").trim()) hasSelectedValue = true;
+    }
+    field = "";
+    columnIndex += 1;
+  };
+  const finishRow = () => {
+    finishField();
+    if (!headerParsed) {
+      const sourceColumns = headerValues.map((name, index) => {
+        const cleaned = index === 0 ? name.replace(/^\uFEFF/, "") : name;
+        return cleaned.trim();
+      });
+      selectedByIndex = new Map(
+        sourceColumns
+          .map((column, index) => [index, column])
+          .filter(([, column]) => requested.has(column))
+      );
+      columns = sourceColumns.filter((column) => requested.has(column));
+      headerParsed = true;
+    } else if (hasSelectedValue) {
+      record.__rowNumber = rows.length + 2;
+      rows.push(record);
+    }
+    headerValues = [];
+    record = {};
+    field = "";
+    columnIndex = 0;
+    hasSelectedValue = false;
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (inQuotes) {
+      if (char === '"' && next === '"') {
+        if (capturesCurrentField()) field += '"';
+        index += 1;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else if (capturesCurrentField()) {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+      continue;
+    }
+    if (char === ",") {
+      finishField();
+      continue;
+    }
+    if (char === "\n") {
+      finishRow();
+      continue;
+    }
+    if (char !== "\r" && capturesCurrentField()) {
+      field += char;
+    }
+  }
+
+  if (field.length > 0 || columnIndex > 0 || Object.keys(record).length > 0) {
+    finishRow();
+  }
+
+  return { columns, rows };
+}
+
+module.exports = { parseCsv, parseCsvColumns };

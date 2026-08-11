@@ -14,6 +14,7 @@ const { buildLeadHarvestModel } = require("./leadHarvestAnalytics");
 const { buildSystemAudioModel } = require("./systemAudioAnalytics");
 const { buildSelfSourcingAttributionModel } = require("./selfSourcingAttribution");
 const { buildWeeklyLeadIntelligenceModel } = require("./weeklyLeadIntelligence");
+const { isExcludedPersonnel } = require("./personnelExclusions");
 const {
   SOURCE_TIMEZONE_LABEL,
   formatSourceDateParts,
@@ -42,6 +43,11 @@ const {
   normalizeManagerReview
 } = require("./managerReview");
 const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
+const {
+  attachBusinessRelationship,
+  businessRelationshipFor,
+  classifyBusinessRelationship
+} = require("./businessRelationship");
 const IGNORED_FIELDS = [
   {
     field: "dialled_phone_number",
@@ -304,7 +310,7 @@ function orderCount(row) {
 }
 
 function businessSegmentFor(row) {
-  return orderCount(row) > 0 ? "warm" : "new";
+  return businessRelationshipFor(row).segment;
 }
 
 function businessSegmentLabel(segment) {
@@ -314,7 +320,22 @@ function businessSegmentLabel(segment) {
 }
 
 function orderHistoryLabel(row) {
-  return orderCount(row) > 0 ? "Previous Sales History" : "No Sales History";
+  return businessRelationshipFor(row).orderHistoryLabel;
+}
+
+function relationshipAuditFields(row) {
+  const relationship = businessRelationshipFor(row);
+  return {
+    businessRelationshipRule: relationship.rule,
+    businessRelationshipEvidenceTier: relationship.evidenceTier,
+    businessRelationshipEvidenceQuality: relationship.evidenceQuality,
+    businessRelationshipBoundaryAt: relationship.boundaryAt,
+    businessRelationshipInvoiceNumber: relationship.invoiceNumber,
+    businessRelationshipOrderNumber: relationship.orderNumber,
+    businessRelationshipSource: relationship.source,
+    businessRelationshipFallbackUsed: relationship.fallbackUsed,
+    businessRelationshipExplanation: relationship.explanation
+  };
 }
 
 function buildDurationStats(rows, field) {
@@ -1143,7 +1164,8 @@ function analyzeCsvText(csvText, options = {}) {
   const inputHash = crypto.createHash("sha256").update(csvText).digest("hex");
   const parsed = parseCsv(csvText);
   const missingColumns = REQUIRED_COLUMNS.filter((column) => !parsed.columns.includes(column));
-  const rawRows = parsed.rows;
+  const excludedPersonnelRows = parsed.rows.filter((row) => isExcludedPersonnel(row.Salesperson)).length;
+  const rawRows = parsed.rows.filter((row) => !isExcludedPersonnel(row.Salesperson));
   const callIdCounts = {};
   rawRows.forEach((row) => inc(callIdCounts, clean(row.call_id) || `missing:${row.__rowNumber}`));
 
@@ -1162,6 +1184,10 @@ function analyzeCsvText(csvText, options = {}) {
 
   const items = canonicalRows.map((row) => {
     const dateTime = parseDateTime(row);
+    attachBusinessRelationship(row, classifyBusinessRelationship(row, {
+      callAt: dateTime,
+      evidence: options.businessRelationshipEvidence
+    }));
     return {
       row,
       dateTime,
@@ -1186,6 +1212,7 @@ function analyzeCsvText(csvText, options = {}) {
 
   const totals = {
     rawRows: rawRows.length,
+    excludedPersonnelRows,
     uniqueCalls: canonicalRows.length,
     duplicateCallIds: duplicateCallIds.length,
     salespeople: new Set(canonicalRows.map((row) => clean(row.Salesperson)).filter(Boolean)).size,
@@ -1295,6 +1322,28 @@ function analyzeCsvText(csvText, options = {}) {
   const dateRange = buildDateRange(items, minDateTime, maxDateTime);
   const dataWindow = buildDataWindow(items, totals);
   const intelligenceGovernance = buildIntelligenceGovernance(items, totals);
+  const relationshipRules = {};
+  const relationshipEvidenceTiers = { exact: 0, supporting: 0, fallback: 0 };
+  items.forEach((item) => {
+    const relationship = businessRelationshipFor(item.row);
+    inc(relationshipRules, relationship.rule);
+    inc(relationshipEvidenceTiers, relationship.evidenceTier);
+  });
+  const businessRelationship = {
+    schemaVersion: "sales_dashboard_business_relationship.v1",
+    binaryPolicy: true,
+    unknownCalls: 0,
+    definition: "Warm means an invoice/order had already been issued to the exact customer before the call; otherwise the call is New Business.",
+    evidenceAvailable: options.businessRelationshipEvidence?.available === true,
+    evidenceStatus: options.businessRelationshipEvidence?.status || "not_configured",
+    evidenceGeneratedAt: options.businessRelationshipEvidence?.generatedAt || "",
+    evidenceCustomers: options.businessRelationshipEvidence?.totals?.customers || 0,
+    exactCalls: relationshipEvidenceTiers.exact,
+    supportingCalls: relationshipEvidenceTiers.supporting,
+    fallbackCalls: relationshipEvidenceTiers.fallback,
+    rules: relationshipRules,
+    joinRule: "exact customer_id only"
+  };
 
   const result = {
     schemaVersion: "sales_dashboard_analysis.v1",
@@ -1325,11 +1374,13 @@ function analyzeCsvText(csvText, options = {}) {
     salespersonScorecards,
     sourceMetrics,
     sourceQuality,
+    businessRelationship,
     activeDataSources: {
       callCsv: true,
       transcriptText: true,
       canonicalCallFields: true,
-      allocationImports: false
+      allocationImports: false,
+      businessRelationshipEvidence: businessRelationship.evidenceAvailable
     },
     parkedAllocation,
     aiVoiceAssistant,
@@ -1394,6 +1445,7 @@ function buildEvaluationRow(item) {
     orderHistoryLabel: orderHistoryLabel(row),
     businessSegment: segment,
     businessSegmentLabel: businessSegmentLabel(segment),
+    ...relationshipAuditFields(row),
     durationSeconds: item.evaluation.durationSeconds,
     totalSeconds: item.evaluation.totalSeconds,
     localOutcome: item.evaluation.outcome.localCategory,
@@ -1477,6 +1529,7 @@ function buildExplorerRow(item) {
     orderHistoryLabel: orderHistoryLabel(row),
     businessSegment: segment,
     businessSegmentLabel: businessSegmentLabel(segment),
+    ...relationshipAuditFields(row),
     durationSeconds: item.evaluation.durationSeconds,
     localOutcome: item.evaluation.outcome.localCategory,
     contactClassification: item.evaluation.contact.classification,

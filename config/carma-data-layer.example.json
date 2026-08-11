@@ -2,6 +2,8 @@
   "schemaVersion": "carma_data_layer_config.v1",
   "carmaReportsRoot": "C:\\Users\\User\\Desktop\\Carma Reports",
   "approvedSalesHistoryManifest": "C:\\Users\\User\\Desktop\\Carma Reports\\output\\approved-sales-history-backfill-YYYY-MM-DD\\manifest.json",
+  "approvedSalesHistoryClassifiedManifest": "C:\\Users\\User\\Desktop\\Sales Dashboard\\data\\carma\\generated\\approved-sales-history\\manifest.json",
+  "cancelledOrdersByWeekManifest": "C:\\Users\\User\\Desktop\\Carma Reports\\output\\cancelled-orders-by-week-history-YYYY-MM-DD\\manifest.json",
   "rawAllocationLogDirectory": "C:\\Users\\User\\Desktop\\Sales Dashboard\\data\\carma\\raw\\allocation-logs",
   "customerAllocationHistoryDirectory": "C:\\Users\\User\\Desktop\\Carma Reports\\output\\approved-sales-all-orders-YYYY-MM-DD-to-YYYY-MM-DD",
   "campaignAllocationsGridManifest": "C:\\Users\\User\\Desktop\\Carma Reports\\data\\reference\\campaigns\\YYYY-MM-DD_to_YYYY-MM-DD_verified\\manifest.json",

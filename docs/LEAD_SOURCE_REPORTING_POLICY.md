@@ -28,6 +28,16 @@ This classification is controlled by allocation evidence. Allocation age, the mo
 7. Possible name aliases remain review flags and do not become exact seller matches without an authoritative identity mapping.
 8. Post-sale allocations never affect the sale classification.
 
+## Safe Cross-Report Reconciliation
+
+Complete governed Carma allocation history remains the primary evidence source. The configured weekly allocation export may supplement it only when one row proves all three conditions:
+
+1. exact Customer ID;
+2. exact normalized full salesperson name matching the actual seller;
+3. allocation sent on or before sale approval.
+
+A positive match upgrades a stored `Self Sourced` result to `Company Sourced`. A missing weekly row never downgrades `Company Sourced` and never independently proves `Self Sourced`. A first-name-only label, a different salesperson, an invalid timestamp, or a post-approval allocation cannot qualify. The report must retain both the stored classification and the evidence source used for any correction.
+
 ## Separate Reporting Dimensions
 
 The sourcing-method classification must not be mixed with acquisition-source or campaign fields:

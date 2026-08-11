@@ -4462,6 +4462,7 @@ function renderCallPage(call, options = {}) {
             { item: "Manager review state", value: hasManagerReview ? `${reviewStatusLabel(latestManagerReview.reviewStatus)} | Manager-reviewed` : "Unreviewed" },
             ...(latestManagerReview?.corrections?.length ? [{ item: "Manager-corrected fields", value: latestManagerReview.corrections.map((correction) => `${correction.fieldName}: ${correction.managerCorrectedValue}`).join(" | ") }] : []),
             { item: "Order history", value: call.orderHistoryLabel || (Number(call.orderCount || 0) > 0 ? "Previous Sales History" : "No Sales History") },
+            { item: "Business relationship", value: [call.businessRelationshipRule, call.businessRelationshipEvidenceTier, call.businessRelationshipInvoiceNumber || call.businessRelationshipOrderNumber].filter(Boolean).join(" | ") },
             { item: "Semantic follow-up evaluation", value: "Unavailable" },
             { item: "AI assistant literal phrase", value: call.aiVoiceAssistantDetected ? "Detected; handling not scored" : "Not detected" },
             { item: "System audio subtype", value: call.systemAudioDetected ? call.systemAudioSubtypeLabel || call.systemAudioSubtype : "Not detected" },

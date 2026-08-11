@@ -313,6 +313,32 @@ function readXlsxWorksheet(filePath, options = {}) {
   };
 }
 
+function readXlsxWorksheetRows(filePath, options = {}) {
+  const zip = readZipEntries(filePath);
+  const workbookXml = zip.readText("xl/workbook.xml");
+  if (!workbookXml) throw new Error("XLSX workbook is missing xl/workbook.xml.");
+  const sheets = parseWorkbookSheets(workbookXml);
+  if (!sheets.length) throw new Error("XLSX workbook does not contain any sheets.");
+  const relationships = parseRelationships(zip.readText("xl/_rels/workbook.xml.rels"));
+  const requested = options.sheetName
+    ? sheets.find((sheet) => sheet.name === options.sheetName)
+    : sheets[options.sheetIndex || 0];
+  if (!requested) throw new Error(`XLSX sheet not found: ${options.sheetName || options.sheetIndex || 0}.`);
+  const target = normalizeWorkbookTarget(relationships.get(requested.id) || `worksheets/sheet${requested.sheetId || 1}.xml`);
+  const sheetXml = zip.readText(target);
+  if (!sheetXml) throw new Error(`XLSX worksheet data not found: ${target}.`);
+  const sharedStrings = parseSharedStrings(zip.readText("xl/sharedStrings.xml"));
+  const styles = parseStyles(zip.readText("xl/styles.xml"));
+
+  return {
+    sourcePath: filePath,
+    sheetName: requested.name,
+    sheets: sheets.map((sheet) => sheet.name),
+    rows: parseWorksheet(sheetXml, sharedStrings, styles)
+  };
+}
+
 module.exports = {
-  readXlsxWorksheet
+  readXlsxWorksheet,
+  readXlsxWorksheetRows
 };

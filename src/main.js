@@ -35,6 +35,10 @@ const {
   resolveCarmaEvidencePath
 } = require("./carmaEvidence");
 const {
+  loadBusinessRelationshipEvidence,
+  resolveBusinessRelationshipEvidencePath
+} = require("./businessRelationship");
+const {
   loadPerformanceCohorts,
   publicPerformanceCohorts,
   resolvePerformanceConfig
@@ -336,7 +340,8 @@ function loadAnalysis(csvPath, options = {}) {
     const analysis = analyzeCsvText(source.csvText, {
       sourceName: source.sourceName,
       sourceType: source.sourceType,
-      parkedAllocation
+      parkedAllocation,
+      businessRelationshipEvidence: options.businessRelationshipEvidence
     });
     const persistence = persistAnalysis(analysis, { csvPath, storePath });
     const intelligence = replaceImportIntelligence(analysis, {
@@ -2066,11 +2071,23 @@ function createServer(options = {}) {
   const allocationPath = options.allocationPath || resolveAllocationPath(options.argv || process.argv.slice(2), env);
   const voicemailPilotPath = options.voicemailPilotPath || resolveVoicemailPilotPath(options.argv || process.argv.slice(2), env);
   const carmaEvidencePath = resolveCarmaEvidencePath(options.argv || process.argv.slice(2), env, options);
+  const businessRelationshipEvidencePath = resolveBusinessRelationshipEvidencePath(
+    options.argv || process.argv.slice(2),
+    env,
+    options
+  );
   const performanceConfig = resolvePerformanceConfig(options.argv || process.argv.slice(2), env, options);
   const storePath = resolveStorePath(options);
   const aiConfig = resolveAiExecutionConfig(env);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
-  let state = loadAnalysis(csvPath, { storePath, allocationPath });
+  let businessRelationshipEvidence = loadBusinessRelationshipEvidence({
+    evidencePath: businessRelationshipEvidencePath
+  });
+  let state = loadAnalysis(csvPath, {
+    storePath,
+    allocationPath,
+    businessRelationshipEvidence
+  });
   let voicemailPilot = loadVoicemailPilotAttribution(voicemailPilotPath, state.analysis?.drilldownRows || []);
   let carmaEvidence = loadCarmaEvidence({
     databasePath: carmaEvidencePath,
@@ -2146,6 +2163,14 @@ function createServer(options = {}) {
         carma_evidence_read_only: carmaEvidence.readOnly,
         carma_evidence_orders: carmaEvidence.totals?.orders || 0,
         carma_evidence_exact_customer_matches: carmaEvidence.totals?.exactCustomerMatches || 0,
+        business_relationship_evidence_configured: businessRelationshipEvidence.configured,
+        business_relationship_evidence_available: businessRelationshipEvidence.available,
+        business_relationship_evidence_status: businessRelationshipEvidence.status,
+        business_relationship_evidence_customers: businessRelationshipEvidence.totals?.customers || 0,
+        business_relationship_exact_calls: state.analysis?.businessRelationship?.exactCalls || 0,
+        business_relationship_supporting_calls: state.analysis?.businessRelationship?.supportingCalls || 0,
+        business_relationship_fallback_calls: state.analysis?.businessRelationship?.fallbackCalls || 0,
+        business_relationship_unknown_calls: 0,
         performance_cohorts_configured: performanceCohorts.configured,
         performance_cohorts_available: performanceCohorts.available,
         performance_cohorts_status: performanceCohorts.status,
@@ -3709,7 +3734,14 @@ function createServer(options = {}) {
     }
 
     if (url.pathname === "/api/reload" && request.method === "POST") {
-      state = loadAnalysis(csvPath, { storePath, allocationPath });
+      businessRelationshipEvidence = loadBusinessRelationshipEvidence({
+        evidencePath: businessRelationshipEvidencePath
+      });
+      state = loadAnalysis(csvPath, {
+        storePath,
+        allocationPath,
+        businessRelationshipEvidence
+      });
       voicemailPilot = loadVoicemailPilotAttribution(voicemailPilotPath, state.analysis?.drilldownRows || []);
       carmaEvidence = loadCarmaEvidence({
         databasePath: carmaEvidencePath,

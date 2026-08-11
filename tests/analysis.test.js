@@ -933,7 +933,7 @@ test("blank transcript and OrderCount use business-safe labels without legacy di
   assert.equal(proof.localOutcome, "unknown");
   assert.equal(proof.importedNoSale, undefined);
   assert.equal(proof.importedNoSaleRaw, undefined);
-  assert.equal(proof.orderHistoryLabel, "No Sales History");
+  assert.equal(proof.orderHistoryLabel, "No Prior Sale Established");
   assert.equal(proof.businessSegment, "new");
 });
 

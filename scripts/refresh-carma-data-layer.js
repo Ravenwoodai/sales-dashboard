@@ -8,6 +8,16 @@ const { parseCsv } = require("../src/csvParser");
 const ROOT = path.join(__dirname, "..");
 const DEFAULT_CONFIG = path.join(ROOT, "data", "carma", "config.json");
 const DEFAULT_CATALOG = path.join(ROOT, "data", "carma", "catalog.json");
+const CANCELLED_ORDERS_SCHEMA_VERSION =
+  "carma_cancelled_orders_by_week_history_manifest.v1";
+const CANCELLED_ORDERS_PROCESS_VERSION =
+  "CANCELLED-ORDERS-BY-WEEK-HISTORY-1";
+const CANCELLED_ORDERS_COMBINATION_IDS = [
+  "group-publication__all-salespeople",
+  "group-publication__terminated-salespeople-only",
+  "group-week__all-salespeople",
+  "group-week__terminated-salespeople-only"
+];
 const CAMPAIGN_ALLOCATIONS_GRID_SCHEMA_VERSION =
   "carma_campaign_allocations_grid_manifest.v1";
 
@@ -53,6 +63,130 @@ function requireManifestOutput(manifestDirectory, entry, label) {
 
 function isIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
+}
+
+function cancelledOrdersByWeekSummary(manifestPath) {
+  if (!manifestPath) {
+    return {
+      authority: "primary_for_carma_cancelled_orders_by_week_report_history",
+      configured: false,
+      available: false
+    };
+  }
+  const resolvedManifestPath = requireFile(
+    manifestPath,
+    "Cancelled Orders by Week manifest"
+  );
+  const manifest = JSON.parse(fs.readFileSync(resolvedManifestPath, "utf8"));
+  if (manifest.schemaVersion !== CANCELLED_ORDERS_SCHEMA_VERSION) {
+    throw new Error("Unsupported Cancelled Orders by Week manifest schema.");
+  }
+  if (
+    manifest.processVersion !== CANCELLED_ORDERS_PROCESS_VERSION ||
+    manifest.reportName !== "Cancelled Orders by Week"
+  ) {
+    throw new Error("Cancelled Orders by Week manifest process identity is invalid.");
+  }
+  const combinations = Array.isArray(manifest.combinations)
+    ? manifest.combinations
+    : [];
+  const combinationIds = combinations.map((entry) => entry.id).sort();
+  if (
+    combinationIds.length !== CANCELLED_ORDERS_COMBINATION_IDS.length ||
+    combinationIds.some(
+      (value, index) => value !== CANCELLED_ORDERS_COMBINATION_IDS[index]
+    ) ||
+    combinations.some((entry) => entry.status !== "complete")
+  ) {
+    throw new Error("Cancelled Orders by Week combination matrix is incomplete.");
+  }
+  const validation = manifest.validation || {};
+  if (
+    validation.completeCombinationMatrix !== true ||
+    Number(validation.requestedCombinationCount) !== 4 ||
+    Number(validation.completedCombinationCount) !== 4 ||
+    Number(validation.allSalespeopleGroupingTupleDifferences?.weekOnly) !== 0 ||
+    Number(validation.allSalespeopleGroupingTupleDifferences?.publicationOnly) !== 0 ||
+    Number(validation.terminatedSalespeopleGroupingTupleDifferences?.weekOnly) !== 0 ||
+    Number(validation.terminatedSalespeopleGroupingTupleDifferences?.publicationOnly) !== 0 ||
+    Number(validation.terminatedOrdersMissingFromAllSalespeople) !== 0 ||
+    Number(validation.duplicateOrderRowsAcrossIndividualOutputs) !== 0
+  ) {
+    throw new Error("Cancelled Orders by Week reconciliation is incomplete.");
+  }
+  if (
+    manifest.boundaryProbe?.status !== "complete_empty" ||
+    Number(manifest.boundaryProbe?.weekCount) !== 0 ||
+    Number(manifest.boundaryProbe?.orderRowCount) !== 0
+  ) {
+    throw new Error("Cancelled Orders by Week historical boundary is not validated.");
+  }
+  if (
+    !isIsoDate(manifest.coverage?.oldestRequestedDate) ||
+    !isIsoDate(manifest.coverage?.oldestReturnedWeek) ||
+    !isIsoDate(manifest.coverage?.latestReturnedWeek)
+  ) {
+    throw new Error("Cancelled Orders by Week coverage dates are invalid.");
+  }
+
+  const manifestDirectory = path.dirname(resolvedManifestPath);
+  combinations.forEach((entry) => {
+    requireManifestOutput(
+      manifestDirectory,
+      entry,
+      `Cancelled Orders by Week combination ${entry.id}`
+    );
+  });
+  requireManifestOutput(
+    manifestDirectory,
+    manifest.boundaryProbe,
+    "Cancelled Orders by Week boundary probe"
+  );
+  const normalizedIndexPath = requireManifestOutput(
+    manifestDirectory,
+    manifest.normalizedIndex,
+    "Cancelled Orders by Week normalized index"
+  );
+
+  return {
+    authority: "primary_for_carma_cancelled_orders_by_week_report_history",
+    configured: true,
+    available: true,
+    sourcePath: manifestDirectory,
+    manifest: fileMeta(resolvedManifestPath),
+    schemaVersion: manifest.schemaVersion,
+    processVersion: manifest.processVersion,
+    reportName: manifest.reportName,
+    coverageStart: manifest.coverage.oldestReturnedWeek,
+    coverageEnd: manifest.coverage.latestReturnedWeek,
+    oldestRequestedDate: manifest.coverage.oldestRequestedDate,
+    boundaryReason: manifest.coverage.boundaryReason || "",
+    requestedCombinationCount: Number(validation.requestedCombinationCount),
+    completedCombinationCount: Number(validation.completedCombinationCount),
+    completeOutputCount: combinations.filter((entry) => entry.status === "complete").length,
+    emptyOutputCount: manifest.boundaryProbe.status === "complete_empty" ? 1 : 0,
+    failedOutputCount: 0,
+    totalParsedNonEmptyRowsAcrossOverlappingViews: Number(
+      manifest.totals?.totalParsedNonEmptyRowsAcrossOverlappingViews || 0
+    ),
+    allSalespeopleUniqueOrders: Number(
+      manifest.totals?.allSalespeopleUniqueOrders || 0
+    ),
+    terminatedSalespeopleUniqueOrders: Number(
+      manifest.totals?.terminatedSalespeopleUniqueOrders || 0
+    ),
+    normalizedIndex: {
+      ...fileMeta(normalizedIndexPath),
+      rowCount: Number(manifest.normalizedIndex.rowCount || 0),
+      ordersWithoutPublication: Number(
+        manifest.normalizedIndex.ordersWithoutPublication || 0
+      ),
+      ordersWithoutEdition: Number(
+        manifest.normalizedIndex.ordersWithoutEdition || 0
+      )
+    },
+    validation
+  };
 }
 
 function campaignAllocationsGridSummary(manifestPath) {
@@ -205,7 +339,25 @@ function buildCatalog(configPath, catalogPath) {
   const salesManifestPath = requireFile(config.approvedSalesHistoryManifest, "Approved-sales history manifest");
   const salesManifest = JSON.parse(fs.readFileSync(salesManifestPath, "utf8"));
   const periods = Object.values(salesManifest.periods || {}).filter((period) => period.status === "complete");
+  const classifiedManifestPath = config.approvedSalesHistoryClassifiedManifest || "";
+  const classifiedAvailable = Boolean(
+    classifiedManifestPath && fs.existsSync(classifiedManifestPath)
+  );
+  const classifiedManifest = classifiedAvailable
+    ? JSON.parse(fs.readFileSync(classifiedManifestPath, "utf8"))
+    : null;
+  const classifiedDirectory = classifiedAvailable
+    ? path.dirname(classifiedManifestPath)
+    : "";
+  const classifiedOutput = (key) => (
+    classifiedManifest?.outputs?.[key]
+      ? path.join(classifiedDirectory, classifiedManifest.outputs[key])
+      : ""
+  );
   const rawLogs = listRawAllocationLogs(config.rawAllocationLogDirectory).map(rawAllocationSummary);
+  const cancelledOrdersByWeekHistory = cancelledOrdersByWeekSummary(
+    config.cancelledOrdersByWeekManifest || ""
+  );
   const campaignAllocationsGrid = campaignAllocationsGridSummary(
     config.campaignAllocationsGridManifest || ""
   );
@@ -235,6 +387,33 @@ function buildCatalog(configPath, catalogPath) {
         completePeriodCount: periods.length,
         periodsWithoutOrderIds: periods.filter((period) => !period.containsOrderIds).map((period) => period.id)
       },
+      approvedSalesHistoryClassified: {
+        authority:
+          "primary_for_order_level_historical_approved_sales_and_carma_reported_new_customer_membership",
+        configured: Boolean(classifiedManifestPath),
+        available: classifiedAvailable,
+        sourcePath: classifiedDirectory,
+        manifest: classifiedAvailable ? fileMeta(classifiedManifestPath) : null,
+        sqlite: classifiedAvailable && fs.existsSync(classifiedOutput("sqlite"))
+          ? fileMeta(classifiedOutput("sqlite"))
+          : null,
+        periodSummaryCsv:
+          classifiedAvailable && fs.existsSync(classifiedOutput("periodSummaryCsv"))
+            ? fileMeta(classifiedOutput("periodSummaryCsv"))
+            : null,
+        schemaVersion: classifiedManifest?.schemaVersion || "",
+        coverageStart: classifiedManifest?.periods?.[0]?.startDate || "",
+        coverageEnd: classifiedManifest?.periods?.at(-1)?.endDate || "",
+        periodCount: Number(classifiedManifest?.totals?.periods || 0),
+        orderCount: Number(classifiedManifest?.totals?.orders || 0),
+        newCustomerOrderCount: Number(
+          classifiedManifest?.totals?.newCustomerOrders || 0
+        ),
+        matchingRule: classifiedManifest?.matchingRule || "",
+        historicalMarkerCliffStart:
+          classifiedManifest?.observedHistoricalMarkerCliff?.start || "",
+        nonMembershipMeaning: classifiedManifest?.nonMembershipMeaning || ""
+      },
       rawAllocationLogs: {
         authority: "primary_for_weekly_sent_allocation_events",
         dedupeRule: "CustomerID + FullName + SalesManager + DateSentToSalesperson_Date + DateSentToSalesperson_Time + AllocationName",
@@ -243,6 +422,7 @@ function buildCatalog(configPath, catalogPath) {
         totalLogicalEvents: rawLogs.reduce((sum, file) => sum + file.logicalEventCount, 0)
       },
       campaignAllocationsGrid,
+      cancelledOrdersByWeekHistory,
       optionalExtracts: optionalDirs,
       dashboardEvidenceContract: {
         authority: "validated_subset_for_dashboard_exact_customer_id_proof",
@@ -256,6 +436,10 @@ function buildCatalog(configPath, catalogPath) {
       "Campaign status is not a weekly-sent-lead denominator.",
       "Campaign Allocations grid Quantity, Actioned and Remaining are aggregate grid facts, not customer-level sent events, unique lead availability or conversion evidence.",
       "Approved sales values are Carma-approved amounts, not payment, recognised revenue, profit or call-caused conversion.",
+      "Cancelled Orders by Week proves report inclusion and grouping only; it does not by itself prove a refund, payment reversal, order deletion, recognised-revenue adjustment or cancellation cause.",
+      "Cancelled Orders report combinations overlap and must not be summed.",
+      "The is_new_customer field is exact membership in Carma's same-period new-customer-only report. A false value is not independent proof that the customer was historically existing.",
+      "Carma's historical new-customer marker becomes extremely sparse before the observed 2024 boundary and must retain its classification-quality warning.",
       "Dashboard CRM joins remain exact customer_id only."
     ]
   };
@@ -278,5 +462,6 @@ if (require.main === module) {
 module.exports = {
   buildCatalog,
   campaignAllocationsGridSummary,
+  cancelledOrdersByWeekSummary,
   rawAllocationSummary
 };

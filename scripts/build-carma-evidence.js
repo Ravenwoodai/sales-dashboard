@@ -9,17 +9,26 @@ const {
   LEAD_SOURCE_POLICY_VERSION,
   classifyLeadSource
 } = require("../src/leadSourcePolicy");
+const { CARMA_APPROVAL_TIME_SEMANTICS } = require("../src/carmaEvidence");
 
 const DEFAULT_OUTPUT_ROOT = "C:\\Users\\User\\Documents\\Codex\\2026-07-24\\build-the-smallest-possible-working-mvp\\outputs";
-const DEFAULT_OUTPUT_DIR = path.join(DEFAULT_OUTPUT_ROOT, "carma-sales-dashboard-integration-2026-07-27");
-const DEFAULT_OLD_DECISIONS = path.join(DEFAULT_OUTPUT_ROOT, "lead-source-attribution-decisions.jsonl");
-const DEFAULT_OLD_ALLOCATIONS = path.join(DEFAULT_OUTPUT_ROOT, "lead-source-allocation-history-linked.jsonl");
-const DEFAULT_NEW_DIR = path.join(DEFAULT_OUTPUT_ROOT, "sales-source-method-evidence-2026-07-13-to-2026-07-19");
-const DEFAULT_NEW_DECISIONS = path.join(DEFAULT_NEW_DIR, "source-credit-decisions-lenient.jsonl");
-const DEFAULT_NEW_ALLOCATIONS = path.join(DEFAULT_NEW_DIR, "source-credit-allocation-evidence-lenient.jsonl");
+const DEFAULT_OUTPUT_DIR = path.join(DEFAULT_OUTPUT_ROOT, "carma-sales-dashboard-integration-2026-07-29-all-approved-sales-v3");
+const DEFAULT_CURRENT_DIR = path.join(DEFAULT_OUTPUT_ROOT, "sales-source-method-evidence-2026-07-20-to-2026-07-26");
+const DEFAULT_CURRENT_DECISIONS = path.join(DEFAULT_CURRENT_DIR, "source-credit-decisions-lenient.jsonl");
+const DEFAULT_CURRENT_ALLOCATIONS = path.join(DEFAULT_CURRENT_DIR, "source-credit-allocation-evidence-lenient.jsonl");
+const DEFAULT_CURRENT_MANIFEST = path.join(DEFAULT_CURRENT_DIR, "order-evidence", "manifest.json");
+const DEFAULT_CURRENT_AUDIT = path.join(DEFAULT_CURRENT_DIR, "source-credit-audit-lenient.json");
+const DEFAULT_CURRENT_SOURCE_REPORT = path.join(DEFAULT_CURRENT_DIR, "source", "approved-sales-source-2026-07-20-to-2026-07-26.xlsx");
+const DEFAULT_PRIOR_DIR = path.join(DEFAULT_OUTPUT_ROOT, "sales-source-method-evidence-2026-07-13-to-2026-07-19");
+const DEFAULT_PRIOR_DECISIONS = path.join(DEFAULT_PRIOR_DIR, "source-credit-decisions-lenient.jsonl");
+const DEFAULT_PRIOR_ALLOCATIONS = path.join(DEFAULT_PRIOR_DIR, "source-credit-allocation-evidence-lenient.jsonl");
+const DEFAULT_PRIOR_MANIFEST = path.join(DEFAULT_PRIOR_DIR, "order-evidence", "manifest.json");
+const DEFAULT_PRIOR_AUDIT = path.join(DEFAULT_PRIOR_DIR, "source-credit-audit-lenient.json");
+const DEFAULT_PRIOR_SOURCE_REPORT = path.join(DEFAULT_PRIOR_DIR, "source", "approved-sales-source-2026-07-13-to-2026-07-19.xlsx");
 const DEFAULT_CREDITS = path.join(DEFAULT_OUTPUT_ROOT, "lead-credit-allocation-evidence-2026-07-26", "actual-credit-records-all.jsonl");
 const DEFAULT_CALLS = path.join(__dirname, "..", "data", "source", "CallData 07.07.2026.csv");
-const SCHEMA_VERSION = "carma_evidence.v2";
+const SCHEMA_VERSION = "carma_evidence.v3";
+const ALL_APPROVED_SALES_POPULATION_CONTRACT = "carma_approved_sales_show_new_customers_false.v1";
 const POLICY_VERSION = LEAD_SOURCE_POLICY_VERSION;
 const EXTERNAL_CREDIT_POLICY_VERSION = "seller_allocation_within_28_days_lenient.v1";
 
@@ -53,6 +62,103 @@ function readJsonl(filePath) {
   });
 }
 
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function sourceDateLabel(value) {
+  const [year, month, day] = String(value).split("-");
+  return `${day}/${month}/${year}`;
+}
+
+function validateAllApprovedSalesSource({
+  decisions,
+  allocations,
+  manifestPath,
+  auditPath,
+  sourceReportPath,
+  periodStart,
+  periodEnd
+}) {
+  const manifest = readJson(manifestPath);
+  const audit = readJson(auditPath);
+  const decisionOrderIds = decisions.map((row) => clean(row.orderNumber));
+  const decisionOrderIdSet = new Set(decisionOrderIds);
+  const manifestOrderIds = (manifest.orderIds || []).map(clean);
+  const manifestOrderIdSet = new Set(manifestOrderIds);
+  const manifestRecordIds = Object.keys(manifest.records || {});
+
+  if (manifest.reportName !== "Approved Sales by Customer for Period") {
+    throw new Error(`Unsupported approved-sales report in ${path.basename(manifestPath)}`);
+  }
+  if (manifest.reportParameters?.showNewCustomersInPeriod !== false) {
+    throw new Error(`Approved-sales source must use Show New Customers In Period = False: ${manifestPath}`);
+  }
+  if (
+    manifest.reportParameters?.startDate !== sourceDateLabel(periodStart)
+    || manifest.reportParameters?.endDate !== sourceDateLabel(periodEnd)
+  ) {
+    throw new Error(`Approved-sales manifest period does not match ${periodStart} to ${periodEnd}`);
+  }
+  if (
+    manifest.reportParameters?.summaryOnly !== false
+    || manifest.reportParameters?.groupBySalesperson !== false
+    || manifest.reportParameters?.assetGroups !== "All"
+  ) {
+    throw new Error(`Approved-sales manifest is not the complete all-assets detail report: ${manifestPath}`);
+  }
+  if (
+    audit.complete !== true
+    || audit.reportPeriod?.start !== periodStart
+    || audit.reportPeriod?.end !== periodEnd
+    || Number(audit.requestedOrders) !== decisions.length
+    || Number(audit.completedEvidenceOrders) !== decisions.length
+    || Number(audit.sourceOrders) !== decisions.length
+    || Number(audit.sourceOrderLineRows) < decisions.length
+    || Number(audit.allocationRows) !== allocations.length
+    || Number(audit.saleDatesOutsidePeriod) !== 0
+  ) {
+    throw new Error(`Approved-sales extraction audit is incomplete or does not reconcile: ${auditPath}`);
+  }
+  if (
+    decisionOrderIds.some((orderId) => !orderId)
+    || decisionOrderIdSet.size !== decisions.length
+    || Number(manifest.requestedOrders) !== decisions.length
+    || manifestOrderIdSet.size !== manifestOrderIds.length
+    || manifestOrderIdSet.size !== decisionOrderIdSet.size
+    || manifestRecordIds.length !== decisionOrderIdSet.size
+    || decisionOrderIds.some((orderId) => !manifestOrderIdSet.has(orderId))
+    || manifestOrderIds.some((orderId) => !decisionOrderIdSet.has(orderId))
+    || manifestRecordIds.some((orderId) => !decisionOrderIdSet.has(orderId))
+  ) {
+    throw new Error(`Approved-sales decision order IDs do not exactly match the all-sales manifest: ${manifestPath}`);
+  }
+  if (decisions.some((row) => {
+    const saleDate = dateOnly(row.saleDate);
+    return !saleDate || saleDate < periodStart || saleDate > periodEnd;
+  })) {
+    throw new Error(`Approved-sales decisions contain a sale date outside ${periodStart} to ${periodEnd}`);
+  }
+  for (const orderId of decisionOrderIds) {
+    const record = manifest.records?.[orderId];
+    if (record?.status !== "complete" || record?.allocationStatus !== "downloaded") {
+      throw new Error(`Allocation inspection is incomplete for approved order ${orderId}`);
+    }
+  }
+  if (allocations.some((row) => !decisionOrderIdSet.has(clean(row.orderNumber)))) {
+    throw new Error(`Allocation evidence includes an order outside the approved-sales manifest: ${manifestPath}`);
+  }
+  if (!fs.existsSync(sourceReportPath)) {
+    throw new Error(`Canonical approved-sales source report is missing: ${sourceReportPath}`);
+  }
+
+  return {
+    manifestSha256: sha256File(manifestPath),
+    sourceReportSha256: sha256File(sourceReportPath),
+    auditSha256: sha256File(auditPath)
+  };
+}
+
 function sha256File(filePath) {
   const hash = crypto.createHash("sha256");
   hash.update(fs.readFileSync(filePath));
@@ -66,8 +172,49 @@ function stableId(prefix, ...parts) {
 function isoDate(value) {
   const text = clean(value);
   if (!text) return "";
-  const date = new Date(text);
-  return Number.isNaN(date.getTime()) ? text : date.toISOString();
+  const legacyDate = text.match(/^(\d{2})-([A-Za-z]{3})-(\d{2})$/);
+  const monthNumber = {
+    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+    jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
+  };
+  const normalizedText = legacyDate
+    ? `20${legacyDate[3]}-${monthNumber[legacyDate[2].toLowerCase()] || "00"}-${legacyDate[1]}`
+    : text;
+  const match = normalizedText.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?Z)?$/
+  );
+  if (!match) {
+    throw new Error(`Carma timestamp does not satisfy ${CARMA_APPROVAL_TIME_SEMANTICS}`);
+  }
+  const [, year, month, day, hour = "00", minute = "00", second = "00", fraction = ""] = match;
+  const numeric = {
+    year: Number(year),
+    month: Number(month),
+    day: Number(day),
+    hour: Number(hour),
+    minute: Number(minute),
+    second: Number(second)
+  };
+  const calendar = new Date(Date.UTC(
+    numeric.year,
+    numeric.month - 1,
+    numeric.day,
+    numeric.hour,
+    numeric.minute,
+    numeric.second
+  ));
+  if (
+    numeric.hour > 23
+    || numeric.minute > 59
+    || numeric.second > 59
+    || calendar.getUTCFullYear() !== numeric.year
+    || calendar.getUTCMonth() + 1 !== numeric.month
+    || calendar.getUTCDate() !== numeric.day
+  ) {
+    throw new Error(`Carma timestamp does not satisfy ${CARMA_APPROVAL_TIME_SEMANTICS}`);
+  }
+  const milliseconds = fraction.padEnd(3, "0").slice(0, 3);
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${milliseconds}Z`;
 }
 
 function dateOnly(value) {
@@ -181,10 +328,16 @@ function execSchema(db) {
     CREATE TABLE extraction_runs (
       run_id TEXT PRIMARY KEY,
       dataset_type TEXT NOT NULL,
+      population_contract TEXT NOT NULL,
+      show_new_customers_only INTEGER NOT NULL CHECK (show_new_customers_only IN (0, 1)),
+      completeness_status TEXT NOT NULL,
       period_start TEXT,
       period_end TEXT,
       extracted_at TEXT,
       source_provenance_id TEXT NOT NULL,
+      source_report_sha256 TEXT NOT NULL DEFAULT '',
+      source_manifest_sha256 TEXT NOT NULL DEFAULT '',
+      extraction_audit_sha256 TEXT NOT NULL DEFAULT '',
       row_count INTEGER NOT NULL CHECK (row_count >= 0),
       notes TEXT NOT NULL DEFAULT ''
     ) STRICT;
@@ -452,10 +605,16 @@ function insertProvenance(db, datasetType, filePath, notes = "") {
 
 function build(options = {}) {
   const outputDir = path.resolve(options.outputDir || DEFAULT_OUTPUT_DIR);
-  const oldDecisionsPath = path.resolve(options.oldDecisions || DEFAULT_OLD_DECISIONS);
-  const oldAllocationsPath = path.resolve(options.oldAllocations || DEFAULT_OLD_ALLOCATIONS);
-  const newDecisionsPath = path.resolve(options.newDecisions || DEFAULT_NEW_DECISIONS);
-  const newAllocationsPath = path.resolve(options.newAllocations || DEFAULT_NEW_ALLOCATIONS);
+  const currentDecisionsPath = path.resolve(options.currentDecisions || options.oldDecisions || DEFAULT_CURRENT_DECISIONS);
+  const currentAllocationsPath = path.resolve(options.currentAllocations || options.oldAllocations || DEFAULT_CURRENT_ALLOCATIONS);
+  const currentManifestPath = path.resolve(options.currentManifest || DEFAULT_CURRENT_MANIFEST);
+  const currentAuditPath = path.resolve(options.currentAudit || DEFAULT_CURRENT_AUDIT);
+  const currentSourceReportPath = path.resolve(options.currentSourceReport || DEFAULT_CURRENT_SOURCE_REPORT);
+  const priorDecisionsPath = path.resolve(options.priorDecisions || options.newDecisions || DEFAULT_PRIOR_DECISIONS);
+  const priorAllocationsPath = path.resolve(options.priorAllocations || options.newAllocations || DEFAULT_PRIOR_ALLOCATIONS);
+  const priorManifestPath = path.resolve(options.priorManifest || DEFAULT_PRIOR_MANIFEST);
+  const priorAuditPath = path.resolve(options.priorAudit || DEFAULT_PRIOR_AUDIT);
+  const priorSourceReportPath = path.resolve(options.priorSourceReport || DEFAULT_PRIOR_SOURCE_REPORT);
   const creditsPath = path.resolve(options.credits || DEFAULT_CREDITS);
   const callsPath = path.resolve(options.calls || DEFAULT_CALLS);
   const dbPath = path.join(outputDir, "carma-evidence.sqlite");
@@ -465,17 +624,53 @@ function build(options = {}) {
   const creditJoinCsvPath = path.join(outputDir, "expanded-credit-join.csv");
   const creditSearchAuditPath = path.join(outputDir, "credit-search-audit.json");
 
-  [oldDecisionsPath, oldAllocationsPath, newDecisionsPath, newAllocationsPath, creditsPath, callsPath].forEach((filePath) => {
+  [
+    currentDecisionsPath,
+    currentAllocationsPath,
+    currentManifestPath,
+    currentAuditPath,
+    currentSourceReportPath,
+    priorDecisionsPath,
+    priorAllocationsPath,
+    priorManifestPath,
+    priorAuditPath,
+    priorSourceReportPath,
+    creditsPath,
+    callsPath
+  ].forEach((filePath) => {
     if (!fs.existsSync(filePath)) throw new Error(`Required source is missing: ${filePath}`);
   });
+
+  const currentDecisions = readJsonl(currentDecisionsPath);
+  const currentAllocations = readJsonl(currentAllocationsPath);
+  const priorDecisions = readJsonl(priorDecisionsPath);
+  const priorAllocations = readJsonl(priorAllocationsPath);
+  const currentSourceContract = validateAllApprovedSalesSource({
+    decisions: currentDecisions,
+    allocations: currentAllocations,
+    manifestPath: currentManifestPath,
+    auditPath: currentAuditPath,
+    sourceReportPath: currentSourceReportPath,
+    periodStart: "2026-07-20",
+    periodEnd: "2026-07-26"
+  });
+  const priorSourceContract = validateAllApprovedSalesSource({
+    decisions: priorDecisions,
+    allocations: priorAllocations,
+    manifestPath: priorManifestPath,
+    auditPath: priorAuditPath,
+    sourceReportPath: priorSourceReportPath,
+    periodStart: "2026-07-13",
+    periodEnd: "2026-07-19"
+  });
+  const currentOrderIds = new Set(currentDecisions.map((row) => clean(row.orderNumber)));
+  if (priorDecisions.some((row) => currentOrderIds.has(clean(row.orderNumber)))) {
+    throw new Error("Authoritative approved-sales periods contain overlapping order IDs");
+  }
 
   fs.mkdirSync(outputDir, { recursive: true });
   if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
 
-  const oldDecisions = readJsonl(oldDecisionsPath);
-  const oldAllocations = readJsonl(oldAllocationsPath);
-  const newDecisions = readJsonl(newDecisionsPath);
-  const newAllocations = readJsonl(newAllocationsPath);
   const creditRows = readJsonl(creditsPath);
   const parsedCalls = parseCsv(fs.readFileSync(callsPath, "utf8")).rows;
   const seenCallIds = new Set();
@@ -499,16 +694,17 @@ function build(options = {}) {
   const generatedAt = new Date().toISOString();
   db.exec("BEGIN IMMEDIATE");
 
-  const oldDecisionProv = insertProvenance(db, "approved_sales_policy_decisions_2026-07-19_to_2026-07-25", oldDecisionsPath, "Focused Carma approved-sales decision extract.");
-  const oldAllocationProv = insertProvenance(db, "customer_allocation_history_2026-07-19_to_2026-07-25", oldAllocationsPath, "Linked Carma customer allocation histories.");
-  const newDecisionProv = insertProvenance(db, "approved_sales_policy_decisions_2026-07-13_to_2026-07-19", newDecisionsPath, "Saved source-credit decisions; top-level Company Sourced/Self Sourced classification is rebuilt from exact seller-allocation evidence.");
-  const newAllocationProv = insertProvenance(db, "customer_allocation_history_2026-07-13_to_2026-07-19", newAllocationsPath, "Exact allocation histories used by the locked allocation-based lead-source classification.");
+  const currentDecisionProv = insertProvenance(db, "all_approved_sales_policy_decisions_2026-07-20_to_2026-07-26", currentDecisionsPath, "Complete all-customer approved-sales decisions; order IDs reconcile exactly to the unfiltered Carma report manifest.");
+  const currentAllocationProv = insertProvenance(db, "complete_customer_allocation_history_2026-07-20_to_2026-07-26", currentAllocationsPath, "Complete per-order allocation inspections used to rebuild the locked allocation-based lead-source classification.");
+  const priorDecisionProv = insertProvenance(db, "all_approved_sales_policy_decisions_2026-07-13_to_2026-07-19", priorDecisionsPath, "Complete all-customer approved-sales decisions; order IDs reconcile exactly to the unfiltered Carma report manifest.");
+  const priorAllocationProv = insertProvenance(db, "complete_customer_allocation_history_2026-07-13_to_2026-07-19", priorAllocationsPath, "Complete per-order allocation inspections used to rebuild the locked allocation-based lead-source classification.");
   const creditProv = insertProvenance(db, "lead_generators_sales_credit_ledger", creditsPath, "Complete parsed 420-branch Lead Generators Sales ledger; no repeat extraction.");
   const callsProv = insertProvenance(db, "sales_dashboard_active_call_export", callsPath, "Sanitized exact customer-ID match facts only; no phone or transcript persisted.");
 
   const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)");
   [
     ["schema_version", SCHEMA_VERSION],
+    ["approval_timestamp_semantics", CARMA_APPROVAL_TIME_SEMANTICS],
     ["policy_rule_version", POLICY_VERSION],
     ["lead_source_classification_rule_version", POLICY_VERSION],
     ["external_credit_policy_rule_version", EXTERNAL_CREDIT_POLICY_VERSION],
@@ -522,25 +718,57 @@ function build(options = {}) {
 
   const runInsert = db.prepare(`
     INSERT INTO extraction_runs
-      (run_id, dataset_type, period_start, period_end, extracted_at, source_provenance_id, row_count, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (run_id, dataset_type, population_contract, show_new_customers_only, completeness_status,
+       period_start, period_end, extracted_at, source_provenance_id, source_report_sha256,
+       source_manifest_sha256, extraction_audit_sha256, row_count, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  runInsert.run("carma_sales_2026_07_19_25", "approved_sales", "2026-07-19", "2026-07-25", generatedAt, oldDecisionProv, oldDecisions.length, "Actual approval events in the local extract fall between 20 and 24 July.");
-  runInsert.run("carma_sales_2026_07_13_19", "approved_sales", "2026-07-13", "2026-07-19", generatedAt, newDecisionProv, newDecisions.length, "Latest completed Monday-Sunday source-credit evidence population.");
-  runInsert.run("carma_credit_ledger_2026_07_26", "credit_ledger", "", "", generatedAt, creditProv, creditRows.length, "Parsed once from 420 report branches.");
-  runInsert.run("sales_dashboard_calls_2026_07_01_06", "call_export", "2026-07-01", "2026-07-06", generatedAt, callsProv, callRows.length, "Active Sales Dashboard call cohort.");
+  runInsert.run(
+    "carma_sales_all_2026_07_20_26",
+    "approved_sales",
+    ALL_APPROVED_SALES_POPULATION_CONTRACT,
+    0,
+    "complete",
+    "2026-07-20",
+    "2026-07-26",
+    generatedAt,
+    currentDecisionProv,
+    currentSourceContract.sourceReportSha256,
+    currentSourceContract.manifestSha256,
+    currentSourceContract.auditSha256,
+    currentDecisions.length,
+    "Unfiltered all-customer Carma approved-sales population; Show New Customers In Period = False."
+  );
+  runInsert.run(
+    "carma_sales_all_2026_07_13_19",
+    "approved_sales",
+    ALL_APPROVED_SALES_POPULATION_CONTRACT,
+    0,
+    "complete",
+    "2026-07-13",
+    "2026-07-19",
+    generatedAt,
+    priorDecisionProv,
+    priorSourceContract.sourceReportSha256,
+    priorSourceContract.manifestSha256,
+    priorSourceContract.auditSha256,
+    priorDecisions.length,
+    "Unfiltered all-customer Carma approved-sales population; Show New Customers In Period = False."
+  );
+  runInsert.run("carma_credit_ledger_2026_07_26", "credit_ledger", "not_applicable", 0, "not_applicable", "", "", generatedAt, creditProv, "", "", "", creditRows.length, "Parsed once from 420 report branches.");
+  runInsert.run("sales_dashboard_calls_2026_07_01_06", "call_export", "not_applicable", 0, "not_applicable", "2026-07-01", "2026-07-06", generatedAt, callsProv, "", "", "", callRows.length, "Active Sales Dashboard call cohort.");
 
-  const oldAllocByOrder = new Map();
-  oldAllocations.forEach((row) => {
+  const currentAllocByOrder = new Map();
+  currentAllocations.forEach((row) => {
     const key = clean(row.orderNumber);
-    if (!oldAllocByOrder.has(key)) oldAllocByOrder.set(key, []);
-    oldAllocByOrder.get(key).push(row);
+    if (!currentAllocByOrder.has(key)) currentAllocByOrder.set(key, []);
+    currentAllocByOrder.get(key).push(row);
   });
-  const newAllocByOrder = new Map();
-  newAllocations.forEach((row) => {
+  const priorAllocByOrder = new Map();
+  priorAllocations.forEach((row) => {
     const key = clean(row.orderNumber);
-    if (!newAllocByOrder.has(key)) newAllocByOrder.set(key, []);
-    newAllocByOrder.get(key).push(row);
+    if (!priorAllocByOrder.has(key)) priorAllocByOrder.set(key, []);
+    priorAllocByOrder.get(key).push(row);
   });
   const creditsByOrder = new Map();
   creditRows.filter((row) => row.approved).forEach((row) => {
@@ -574,153 +802,96 @@ function build(options = {}) {
   `);
 
   const normalizedOrders = [];
+  const authoritativeSalesRuns = [
+    {
+      runId: "carma_sales_all_2026_07_20_26",
+      decisions: currentDecisions,
+      allocationsByOrder: currentAllocByOrder,
+      decisionProvenanceId: currentDecisionProv
+    },
+    {
+      runId: "carma_sales_all_2026_07_13_19",
+      decisions: priorDecisions,
+      allocationsByOrder: priorAllocByOrder,
+      decisionProvenanceId: priorDecisionProv
+    }
+  ];
 
-  for (const row of oldDecisions) {
-    const orderId = clean(row.orderNumber);
-    const customerId = clean(row.customerId);
-    const saleAt = isoDate(row.saleDate);
-    const allocations = oldAllocByOrder.get(orderId) || [];
-    const sellerRows = allocations
-      .filter((allocation) => allocation.recipientExactSeller && new Date(allocation.effectiveStart || 0) <= new Date(saleAt))
-      .sort((a, b) => new Date(b.effectiveStart || 0) - new Date(a.effectiveStart || 0));
-    const aliasRows = allocations.filter((allocation) => allocation.recipientPossibleAlias && new Date(allocation.effectiveStart || 0) <= new Date(saleAt));
-    const latestSeller = sellerRows[0] || null;
-    const allocationDays = latestSeller ? daysBetween(latestSeller.effectiveStart, saleAt) : null;
-    const within28 = allocationDays !== null && allocationDays >= 0 && allocationDays <= 28;
-    const sellerAllocated = Boolean(row.sellerAllocatedBeforeSale);
-    const leadSource = classifyLeadSource({
-      sellerAllocatedBeforeSale: sellerAllocated,
-      sellerAllocationDate: latestSeller ? latestSeller.effectiveStart : "",
-      saleApprovalDate: saleAt
-    });
-    const possibleAlias = !sellerAllocated && aliasRows.length > 0;
-    const source = sourceForOldDecision(row);
-    const campaign = campaignForOldDecision(row);
-    const policySource = possibleAlias ? "Identity Alias Review" : source.proven && within28 ? source.sourceType : "Self Sourced";
-    const allowed = possibleAlias ? null : policySource === "Self Sourced" ? 0 : Number(row.orderAmount || 0);
-    const credits = creditsByOrder.get(orderId) || [];
-    const creditTypes = [...new Set(credits.map(creditSourceType))];
-    const creditedValue = credits.reduce((sum, credit) => sum + Number(credit.creditedValue || 0), 0);
-    const externalCredited = credits.filter((credit) => creditSourceType(credit) !== "Self Sourced").reduce((sum, credit) => sum + Number(credit.creditedValue || 0), 0);
-    const creditedSource = creditTypes.length ? creditTypes.join(" | ") : "Unverified";
-    const reportingError = !possibleAlias && externalCredited > Number(allowed || 0) + 0.005;
-    const finding = possibleAlias
-      ? "Identity alias review required"
-      : !credits.length
-        ? "Carma credit row not found in compiled ledger"
-        : reportingError
-          ? "Carma external credit exceeds policy allowance"
-          : "No proven excess external credit";
-    const validationStatus = possibleAlias ? "review" : credits.length ? (reportingError ? "contradiction" : "verified") : "unverified";
-
-    customerInsert.run(
-      customerId,
-      clean(row.customer),
-      clean(row.tooltipImportSource),
-      source.proven ? source.sourceType : "",
-      dateOnly(row.explicitLeadImportDate || row.customerCreatedDate),
-      clean(row.tooltipCreatedBy),
-      oldDecisionProv
-    );
-    orderInsert.run(
-      orderId,
-      "carma_sales_2026_07_19_25",
-      customerId,
-      clean(row.customer),
-      clean(row.actualSeller),
-      saleAt,
-      Number(row.orderAmount || 0),
-      source.sourceType,
-      source.value,
-      bool(source.proven),
-      campaign,
-      leadSource.classification,
-      leadSource.policyVersion,
-      leadSource.reason,
-      policySource,
-      allowed,
-      bool(sellerAllocated),
-      latestSeller ? isoDate(latestSeller.effectiveStart) : "",
-      bool(within28),
-      bool(latestSeller?.activeAtSale),
-      bool(possibleAlias),
-      0,
-      EXTERNAL_CREDIT_POLICY_VERSION,
-      possibleAlias
-        ? "No exact seller allocation; possible identity alias is isolated for review"
-        : !sellerAllocated
-          ? "No exact seller allocation before sale"
-          : !source.proven
-            ? "No independently proven acquisition source; campaign is stored separately"
-            : !within28
-              ? "Seller allocation was not within 28 days before approval"
-              : "Proven source and exact seller allocation within 28 days",
-      clean(row.primaryFailureReason),
-      creditedSource,
-      creditedValue,
-      externalCredited,
-      finding,
-      bool(reportingError),
-      validationStatus,
-      oldDecisionProv
-    );
-    normalizedOrders.push({ orderId, customerId, runId: "carma_sales_2026_07_19_25" });
-  }
-
-  for (const row of newDecisions) {
-    const orderId = clean(row.orderNumber);
-    const customerId = clean(row.customerId);
-    const sourceType = clean(row.acquisitionSourceType) || "Self Sourced";
-    const sourceRaw = clean(row.sourceEvidenceValue || row.importSource || row.leadSource);
-    const leadSource = classifyLeadSource({
-      sellerAllocatedBeforeSale: Boolean(row.sellerAllocationDate),
-      sellerAllocationDate: row.sellerAllocationDate,
-      saleApprovalDate: row.saleDate
-    });
-    customerInsert.run(
-      customerId,
-      clean(row.customer),
-      clean(row.importSource),
-      clean(row.importSource) ? normalizeSourceType(row.importSource) : "",
-      "",
-      "",
-      newDecisionProv
-    );
-    orderInsert.run(
-      orderId,
-      "carma_sales_2026_07_13_19",
-      customerId,
-      clean(row.customer),
-      clean(row.actualSeller),
-      isoDate(row.saleDate),
-      Number(row.saleValue || 0),
-      sourceType,
-      sourceRaw,
-      bool(row.sourceProven),
-      clean(row.campaign),
-      leadSource.classification,
-      leadSource.policyVersion,
-      leadSource.reason,
-      clean(row.policyCreditSourceType || row.policyMethod || "Self Sourced"),
-      Number(row.allowableExternalSourceCredit || 0),
-      bool(row.sellerAllocationDate),
-      isoDate(row.sellerAllocationDate),
-      bool(row.sellerAllocatedWithin28Days),
-      bool(row.sellerAllocationActiveAtSale),
-      0,
-      bool(row.laterOtherAllocationIgnored),
-      EXTERNAL_CREDIT_POLICY_VERSION,
-      clean(row.primaryReason),
-      "",
-      clean(row.carmaCreditedSourceTypes || "Unverified"),
-      Number(row.carmaCreditedValue || 0),
-      Number(row.carmaExternalCreditedValue || 0),
-      clean(row.reportingFinding),
-      bool(row.directReportingError),
-      Number(row.carmaCreditRows || 0) > 0 ? (row.directReportingError ? "contradiction" : "verified") : "unverified",
-      newDecisionProv
-    );
-    normalizedOrders.push({ orderId, customerId, runId: "carma_sales_2026_07_13_19" });
+  for (const salesRun of authoritativeSalesRuns) {
+    for (const row of salesRun.decisions) {
+      const orderId = clean(row.orderNumber);
+      const customerId = clean(row.customerId);
+      const saleAt = isoDate(row.saleDate);
+      const allocations = salesRun.allocationsByOrder.get(orderId) || [];
+      const selectedSellerAllocations = allocations.filter((allocation) => (
+        allocation.selectedMostRecentSellerAllocation === true
+      ));
+      if (selectedSellerAllocations.length > 1) {
+        throw new Error(`Multiple selected seller allocations exist for approved order ${orderId}`);
+      }
+      const selectedSellerAllocation = selectedSellerAllocations[0] || null;
+      const sellerAllocatedBeforeSale = Boolean(selectedSellerAllocation);
+      const selectedSellerDate = selectedSellerAllocation
+        ? isoDate(selectedSellerAllocation.effectiveStartDate)
+        : "";
+      if (
+        Boolean(clean(row.sellerAllocationDate)) !== sellerAllocatedBeforeSale
+        || (sellerAllocatedBeforeSale && isoDate(row.sellerAllocationDate) !== selectedSellerDate)
+      ) {
+        throw new Error(`Seller-allocation decision does not reconcile to complete allocation evidence for order ${orderId}`);
+      }
+      const leadSource = classifyLeadSource({
+        sellerAllocatedBeforeSale,
+        sellerAllocationDate: selectedSellerDate,
+        saleApprovalDate: saleAt
+      });
+      const sourceType = clean(row.acquisitionSourceType) || "Self Sourced";
+      const sourceRaw = clean(row.sourceEvidenceValue || row.importSource || row.leadSource);
+      customerInsert.run(
+        customerId,
+        clean(row.customer),
+        clean(row.importSource),
+        clean(row.importSource) ? normalizeSourceType(row.importSource) : "",
+        "",
+        "",
+        salesRun.decisionProvenanceId
+      );
+      orderInsert.run(
+        orderId,
+        salesRun.runId,
+        customerId,
+        clean(row.customer),
+        clean(row.actualSeller),
+        saleAt,
+        Number(row.saleValue || 0),
+        sourceType,
+        sourceRaw,
+        bool(row.sourceProven),
+        clean(row.campaign),
+        leadSource.classification,
+        leadSource.policyVersion,
+        leadSource.reason,
+        clean(row.policyCreditSourceType || row.policyMethod || "Self Sourced"),
+        Number(row.allowableExternalSourceCredit || 0),
+        bool(sellerAllocatedBeforeSale),
+        selectedSellerDate,
+        bool(selectedSellerAllocation?.qualifiesSellerWithin28),
+        bool(selectedSellerAllocation?.activeAtSale),
+        0,
+        bool(row.laterOtherAllocationIgnored),
+        EXTERNAL_CREDIT_POLICY_VERSION,
+        clean(row.primaryReason),
+        "",
+        clean(row.carmaCreditedSourceTypes || "Unverified"),
+        Number(row.carmaCreditedValue || 0),
+        Number(row.carmaExternalCreditedValue || 0),
+        clean(row.reportingFinding),
+        bool(row.directReportingError),
+        Number(row.carmaCreditRows || 0) > 0 ? (row.directReportingError ? "contradiction" : "verified") : "unverified",
+        salesRun.decisionProvenanceId
+      );
+      normalizedOrders.push({ orderId, customerId, runId: salesRun.runId });
+    }
   }
 
   const allocationInsert = db.prepare(`
@@ -730,30 +901,10 @@ function build(options = {}) {
       started_before_sale, active_at_sale, qualifies_seller_within_28_days, source_provenance_id
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  oldAllocations.forEach((row, index) => {
+  currentAllocations.forEach((row, index) => {
     allocationInsert.run(
-      stableId("allocation", "old", row.orderNumber, row.historyId, index),
-      "carma_sales_2026_07_19_25",
-      clean(row.orderNumber),
-      clean(row.customerId),
-      clean(row.historyId),
-      isoDate(row.effectiveStart),
-      isoDate(row.inactivatedDate),
-      clean(row.recipient),
-      clean(row.salesManager),
-      clean(row.description),
-      bool(row.recipientExactSeller),
-      bool(row.recipientPossibleAlias),
-      bool(row.startedBySale),
-      bool(row.activeAtSale),
-      bool(row.recipientExactSeller && row.startedBySale && Number(row.daysToSale) >= 0 && Number(row.daysToSale) <= 28),
-      oldAllocationProv
-    );
-  });
-  newAllocations.forEach((row, index) => {
-    allocationInsert.run(
-      stableId("allocation", "new", row.orderNumber, row.historyId, index),
-      "carma_sales_2026_07_13_19",
+      stableId("allocation", "current", row.orderNumber, row.historyId, index),
+      "carma_sales_all_2026_07_20_26",
       clean(row.orderNumber),
       clean(row.customerId),
       clean(row.historyId),
@@ -767,7 +918,27 @@ function build(options = {}) {
       bool(row.startedBySale),
       bool(row.activeAtSale),
       bool(row.qualifiesSellerWithin28),
-      newAllocationProv
+      currentAllocationProv
+    );
+  });
+  priorAllocations.forEach((row, index) => {
+    allocationInsert.run(
+      stableId("allocation", "prior", row.orderNumber, row.historyId, index),
+      "carma_sales_all_2026_07_13_19",
+      clean(row.orderNumber),
+      clean(row.customerId),
+      clean(row.historyId),
+      isoDate(row.effectiveStartDate),
+      isoDate(row.inactivated),
+      clean(row.recipient),
+      clean(row.salesManager),
+      clean(row.description),
+      bool(row.recipientExactSeller),
+      0,
+      bool(row.startedBySale),
+      bool(row.activeAtSale),
+      bool(row.qualifiesSellerWithin28),
+      priorAllocationProv
     );
   });
 
@@ -811,13 +982,13 @@ function build(options = {}) {
       identityRows.set(key, { displayName: value, role, mappingStatus: status, canonical, notes });
     }
   };
-  oldDecisions.forEach((row) => addIdentity(row.actualSeller, "actual_seller"));
-  newDecisions.forEach((row) => addIdentity(row.actualSeller, "actual_seller"));
-  oldAllocations.forEach((row) => {
+  currentDecisions.forEach((row) => addIdentity(row.actualSeller, "actual_seller"));
+  priorDecisions.forEach((row) => addIdentity(row.actualSeller, "actual_seller"));
+  currentAllocations.forEach((row) => {
     addIdentity(row.recipient, "allocation_recipient");
     addIdentity(row.salesManager, "allocation_manager");
   });
-  newAllocations.forEach((row) => {
+  priorAllocations.forEach((row) => {
     addIdentity(row.recipient, "allocation_recipient");
     addIdentity(row.salesManager, "allocation_manager");
   });
@@ -895,22 +1066,14 @@ function build(options = {}) {
     "crm_validation_issues",
     "dashboard_call_matches"
   ].map((table) => [table, db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get().count]));
-  const oldNoAllocation = db.prepare(`
+  const currentNoAllocation = db.prepare(`
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN possible_alias_review = 0 THEN 1 ELSE 0 END) AS confirmed,
       SUM(possible_alias_review) AS aliases,
       ROUND(SUM(sale_value), 2) AS sale_value
     FROM crm_orders
-    WHERE run_id = 'carma_sales_2026_07_19_25' AND seller_allocated_before_sale = 0
-  `).get();
-  const oldFocusedBaseline = db.prepare(`
-    SELECT
-      COUNT(*) AS total,
-      SUM(CASE WHEN legacy_primary_failure_reason = 'Seller has only a possible name-alias allocation match' THEN 0 ELSE 1 END) AS confirmed,
-      SUM(CASE WHEN legacy_primary_failure_reason = 'Seller has only a possible name-alias allocation match' THEN 1 ELSE 0 END) AS aliases
-    FROM crm_orders
-    WHERE run_id = 'carma_sales_2026_07_19_25' AND seller_allocated_before_sale = 0
+    WHERE run_id = 'carma_sales_all_2026_07_20_26' AND seller_allocated_before_sale = 0
   `).get();
   const latest = db.prepare(`
     SELECT
@@ -923,7 +1086,7 @@ function build(options = {}) {
       SUM(CASE WHEN policy_credit_source <> 'Self Sourced' THEN 1 ELSE 0 END) AS named_external_credit_orders,
       ROUND(SUM(CASE WHEN policy_credit_source <> 'Self Sourced' THEN sale_value ELSE 0 END), 2) AS named_external_credit_value
     FROM crm_orders
-    WHERE run_id = 'carma_sales_2026_07_13_19'
+    WHERE run_id = 'carma_sales_all_2026_07_20_26'
   `).get();
   const overlap = db.prepare(`
     SELECT
@@ -936,7 +1099,7 @@ function build(options = {}) {
       SUM(CASE WHEN import_date_comparison = 'match' THEN 1 ELSE 0 END) AS date_matches
     FROM v_combined_customer_proof
   `).get();
-  const oldOverlap = db.prepare(`
+  const currentOverlap = db.prepare(`
     SELECT
       COUNT(DISTINCT p.customer_id) AS exact_customer_matches,
       COUNT(DISTINCT p.call_id) AS matching_calls,
@@ -947,7 +1110,7 @@ function build(options = {}) {
       SUM(CASE WHEN p.import_date_comparison = 'match' THEN 1 ELSE 0 END) AS date_matches
     FROM v_combined_customer_proof p
     JOIN crm_orders o ON o.order_id = p.order_id
-    WHERE o.run_id = 'carma_sales_2026_07_19_25'
+    WHERE o.run_id = 'carma_sales_all_2026_07_20_26'
   `).get();
   const creditCoverage = db.prepare(`
     SELECT
@@ -1015,6 +1178,7 @@ function build(options = {}) {
   const verification = {
     schemaVersion: SCHEMA_VERSION,
     policyRuleVersion: POLICY_VERSION,
+    approvalTimestampSemantics: CARMA_APPROVAL_TIME_SEMANTICS,
     generatedAt,
     database: {
       fileName: path.basename(dbPath),
@@ -1026,15 +1190,14 @@ function build(options = {}) {
     correction: {
       allocationFilterField: "seller_allocated_before_sale",
       primaryFailureReasonUsedForPopulation: false,
-      oldCohortNoExactSellerAllocation: oldNoAllocation,
-      priorFocusedRuleBaseline: oldFocusedBaseline,
-      explanation: "The locked top-level classification uses exact actual-seller pre-sale allocation only. Possible aliases remain review flags and never count as exact allocation without an authoritative identity map."
+      currentAllSalesNoExactSellerAllocation: currentNoAllocation,
+      explanation: "The locked top-level classification is rebuilt from each order's complete allocation inspection and exact actual-seller pre-sale allocation evidence."
     },
     latestCompletedWeek: latest,
     creditCoverage,
     exactJoinProof: {
       expandedTwoCohortContract: overlap,
-      original293OrderCohortBaseline: oldOverlap
+      currentAllSalesCohort: currentOverlap
     },
     safety: {
       joinRule: "exact customer_id only",
@@ -1073,10 +1236,16 @@ if (require.main === module) {
     const args = parseArgs(process.argv.slice(2));
     const result = build({
       outputDir: args["output-dir"],
-      oldDecisions: args["old-decisions"],
-      oldAllocations: args["old-allocations"],
-      newDecisions: args["new-decisions"],
-      newAllocations: args["new-allocations"],
+      currentDecisions: args["current-decisions"] || args["old-decisions"],
+      currentAllocations: args["current-allocations"] || args["old-allocations"],
+      currentManifest: args["current-manifest"],
+      currentAudit: args["current-audit"],
+      currentSourceReport: args["current-source-report"],
+      priorDecisions: args["prior-decisions"] || args["new-decisions"],
+      priorAllocations: args["prior-allocations"] || args["new-allocations"],
+      priorManifest: args["prior-manifest"],
+      priorAudit: args["prior-audit"],
+      priorSourceReport: args["prior-source-report"],
       credits: args.credits,
       calls: args.calls
     });
@@ -1088,11 +1257,15 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ALL_APPROVED_SALES_POPULATION_CONTRACT,
+  CARMA_APPROVAL_TIME_SEMANTICS,
   DEFAULT_OUTPUT_DIR,
   EXTERNAL_CREDIT_POLICY_VERSION,
   POLICY_VERSION,
   SCHEMA_VERSION,
   build,
+  isoDate,
   isCampaignLabel,
-  normalizeSourceType
+  normalizeSourceType,
+  validateAllApprovedSalesSource
 };

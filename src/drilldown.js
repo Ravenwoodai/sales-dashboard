@@ -5,6 +5,7 @@ const { clean, isMissing, parseTranscriptTurns, toInt } = require("./transcriptE
 const { SOURCE_AGE_THRESHOLDS, regionNameFor, sourceAttributionFor } = require("./sourceQuality");
 const { formatSourceDateTimeValue } = require("./dateTimeFormat");
 const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 const EXCLUDED_RAW_FIELDS = new Set([
   "__rowNumber",
@@ -403,11 +404,11 @@ function orderCountFor(row) {
 }
 
 function orderHistoryLabel(row) {
-  return orderCountFor(row) > 0 ? "Previous Sales History" : "No Sales History";
+  return businessRelationshipFor(row).orderHistoryLabel;
 }
 
 function businessSegmentForRow(row) {
-  return orderCountFor(row) > 0 ? "warm" : "new";
+  return businessRelationshipFor(row).segment;
 }
 
 function businessSegmentLabel(segment) {
@@ -469,7 +470,8 @@ function metricKeysForItem(item) {
 
 function buildCallProofRow(item) {
   const row = item.row;
-  const businessSegment = businessSegmentForRow(row);
+  const relationship = businessRelationshipFor(row);
+  const businessSegment = relationship.segment;
   const sourceAttribution = item.sourceAttribution || sourceAttributionFor(row, item.dateTime);
   const governance = rowGovernance(item);
   return {
@@ -512,6 +514,15 @@ function buildCallProofRow(item) {
     orderHistoryLabel: orderHistoryLabel(row),
     businessSegment,
     businessSegmentLabel: businessSegmentLabel(businessSegment),
+    businessRelationshipRule: relationship.rule,
+    businessRelationshipEvidenceTier: relationship.evidenceTier,
+    businessRelationshipEvidenceQuality: relationship.evidenceQuality,
+    businessRelationshipBoundaryAt: relationship.boundaryAt,
+    businessRelationshipInvoiceNumber: relationship.invoiceNumber,
+    businessRelationshipOrderNumber: relationship.orderNumber,
+    businessRelationshipSource: relationship.source,
+    businessRelationshipFallbackUsed: relationship.fallbackUsed,
+    businessRelationshipExplanation: relationship.explanation,
     durationSeconds: item.evaluation.durationSeconds,
     totalSeconds: item.evaluation.totalSeconds,
     contactClassification: item.evaluation.contact.classification,
