@@ -1,0 +1,14 @@
+call_id,call_date,call_time,AllocatedLeadID,customer_id,ContactId,transcription_text,call_duration_seconds,Salesperson,CustomerImportSource,CallRegion,OrderCount
+candidate-1,1/07/2026,09:00:00,lead-candidate,candidate,contact-candidate,Outbound call Voicemail: You have reached the office. Please leave a message after the tone.,18,Seller A,GoogleMaps,NSW,0
+retry-1,1/07/2026,10:00:00,lead-retry,retry,contact-retry,[No answer],18,Seller A,GoogleMaps,NSW,0
+retry-2,2/07/2026,09:00:00,lead-retry,retry,contact-retry,Outbound call Voicemail: You have reached the office. Please leave a message after the tone.,18,Seller A,GoogleMaps,NSW,0
+cycle-1,1/07/2026,11:00:00,lead-cycle,cycle,contact-cycle,[No answer],18,Seller A,GoogleMaps,NSW,0
+cycle-2,2/07/2026,11:00:00,lead-cycle,cycle,contact-cycle,Outbound call Voicemail: You have reached the office. Please leave a message after the tone.,18,Seller A,GoogleMaps,NSW,0
+cycle-3,3/07/2026,11:00:00,lead-cycle,cycle,contact-cycle,[No answer],18,Seller A,GoogleMaps,NSW,0
+cycle-4,4/07/2026,11:00:00,lead-cycle,cycle,contact-cycle,Outbound call Voicemail: You have reached the office. Please leave a message after the tone.,18,Seller A,GoogleMaps,NSW,0
+terminal-1,1/07/2026,12:00:00,lead-terminal,terminal,contact-terminal,Outbound call Agent: Hello. Customer: I am not interested. Agent: Understood.,18,Seller A,GoogleMaps,NSW,0
+waiting-1,9/07/2026,09:00:00,lead-waiting,waiting,contact-waiting,Outbound call Voicemail: You have reached the office. Please leave a message after the tone.,18,Seller A,GoogleMaps,NSW,0
+other-1,1/07/2026,13:00:00,lead-other,other,contact-other,Outbound call Voicemail: You have reached the office. Please leave a message after the tone.,18,Seller A,GoogleMaps,NSW,0
+other-2,5/07/2026,09:00:00,lead-other,other,contact-other,Outbound call Agent: Hello. Customer: Hello who is calling?,18,Seller B,GoogleMaps,NSW,0
+ambiguous-1,1/07/2026,14:00:00,lead-ambiguous,ambiguous,contact-ambiguous,Outbound call Agent: Hello. Customer: Hello who is calling?,18,Seller A,GoogleMaps,NSW,0
+window-end,10/07/2026,09:00:00,lead-window-end,window-end,contact-window-end,Outbound call Agent: Hello. Customer: Hello who is calling?,18,Seller C,GoogleMaps,NSW,0

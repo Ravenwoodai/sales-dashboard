@@ -66,7 +66,7 @@ function auditTrustedBoundary(options = {}) {
       GROUP BY COALESCE(overall_call_outcome, 'unknown')
       ORDER BY outcome
     `).all(importId);
-    const permittedOutcomes = new Set(["unknown", "no_answer", "voicemail", "system_audio", "wrong_number", "opt_out"]);
+    const permittedOutcomes = new Set(["unknown", "no_answer", "voicemail", "system_audio", "wrong_number", "not_interested", "opt_out"]);
     const unexpectedOutcomes = outcomeRows.filter((row) => !permittedOutcomes.has(String(row.outcome)));
 
     const report = {
