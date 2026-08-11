@@ -1,6 +1,7 @@
 .env
 .DS_Store
 node_modules/
+config/weekly-lead-utilisation.local.json
 data/
 outputs/
 tmp/

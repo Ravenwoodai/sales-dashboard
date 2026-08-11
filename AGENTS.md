@@ -4,18 +4,28 @@ Use this file as the table of contents, then load deeper docs only as needed.
 
 ## Startup Order
 1. /AI_SYSTEM.md
-2. /docs/PROJECT.md
-3. /docs/PROJECT_CONTEXT.md
-4. /docs/AGENT_CONTEXT.md
-5. /docs/ARCHITECTURE.md
-6. /docs/SYSTEM_MAP.md
-7. /docs/UI_DESIGN_STANDARD.md
-8. /docs/PLANS.md
-9. /docs/QUALITY_SCORE.md
-10. /docs/CONSTRAINTS.md
-11. /SECURITY.md
-12. /agent/INSTRUCTIONS.md
-13. /runtime/AUTONOMOUS_BACKLOG.md
+2. /docs/CARMA_DATA_LAYER.md
+3. /docs/PROJECT.md
+4. /docs/PROJECT_CONTEXT.md
+5. /docs/AGENT_CONTEXT.md
+6. /docs/ARCHITECTURE.md
+7. /docs/SYSTEM_MAP.md
+8. /docs/UI_DESIGN_STANDARD.md
+9. /docs/PLANS.md
+10. /docs/QUALITY_SCORE.md
+11. /docs/CONSTRAINTS.md
+12. /SECURITY.md
+13. /agent/INSTRUCTIONS.md
+14. /runtime/AUTONOMOUS_BACKLOG.md
+
+## Mandatory Data-Catalog Preflight
+- For every task that uses, searches for, compares, validates, reports on, refreshes, downloads, or extracts data, the first data-discovery action must be to inspect `data/carma/catalog.json` and read the matching entry's authority, coverage, source path, hashes, availability and limitations.
+- If the catalog is missing, its configured source is newer than the catalog, or the requested dataset/period is not clearly represented, run `npm run carma:refresh-data-layer` and inspect the refreshed catalog before searching elsewhere.
+- Do not claim that data is missing, unavailable, incomplete or not previously extracted until the catalog and the source/manifest named by the relevant catalog entry have both been checked.
+- Do not start or recommend a new Carma extraction, download or backfill when the catalog already points to adequate governed data. Reuse the catalogued source and preserve its authority and limitations.
+- Before using a catalogued dataset, state a brief catalog receipt in the work record or user update: catalog key, coverage inspected, selected source and any limitation that affects the answer. A silent catalog check is insufficient for consequential reporting.
+- If the catalog conflicts with a file or report, stop and reconcile freshness, hashes and coverage. Never choose the apparently convenient source without resolving the conflict.
+- This preflight is mandatory even when a familiar path, prior report, chat history or remembered extract appears to answer the request. Memory and directory searches do not replace the catalog.
 
 ## Source Of Truth
 - Product intent: /docs/PROJECT.md and /docs/SPEC.md
@@ -27,6 +37,7 @@ Use this file as the table of contents, then load deeper docs only as needed.
 - Constraints and safety: /docs/CONSTRAINTS.md and /SECURITY.md
 - Decision history and direction: /docs/DECISIONS.md and /docs/ROADMAP.md
 - Live execution state: /runtime/AUTONOMOUS_BACKLOG.md, /runtime/RUN_LOG.md, /runtime/SESSION_HANDOVER.md, and /runtime/BLOCKERS.md
+- Local data discovery and availability: /data/carma/catalog.json, governed by /docs/CARMA_DATA_LAYER.md
 
 ## Working Rules
 - Prefer the smallest effective change.

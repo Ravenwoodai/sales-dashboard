@@ -29,6 +29,16 @@ These are the coding guidelines for agents working in Sales Dashboard.
 - Add tests when the workflow is stable enough to automate.
 - Record meaningful work and blockers in runtime state files.
 
+## Mandatory Data Discovery
+Before using data or looking for data, agents must:
+1. Inspect `data/carma/catalog.json` before doing a broad file search or assuming a source must be acquired.
+2. Refresh it with `npm run carma:refresh-data-layer` when missing or stale, then inspect it again.
+3. Open the catalogued source manifest or file and verify the requested date coverage, authority, hashes/freshness and stated limitations.
+4. Reuse an adequate catalogued source instead of rerunning extraction or building a duplicate dataset.
+5. Record the catalog key, coverage checked, source selected and material limitation in the task update or runtime log.
+
+Agents must not say data is unavailable, ask for a new extraction, or begin a backfill until those five checks are complete. Familiar filenames, prior chat context, remembered outputs and ad hoc directory searches are secondary evidence only.
+
 ## Context Maintenance Responsibility
 Agents must:
 1. Check whether docs/PROJECT_CONTEXT.md and docs/PROJECT_CONTEXT.json are present.
