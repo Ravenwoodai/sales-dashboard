@@ -61,6 +61,8 @@ const SALESPERSON_EXCLUSION_LABELS = listArg(args["salesperson-exclusions"]);
 const MANAGER_TEAM_EXCLUSIONS = new Set(MANAGER_TEAM_EXCLUSION_LABELS.map((name) => name.toLowerCase()));
 const SALESPERSON_EXCLUSIONS = new Set(SALESPERSON_EXCLUSION_LABELS.map((name) => name.toLowerCase()));
 const EXCLUSION_DISPLAY = String(args["exclusion-display"] || "").trim();
+const TRUST_SCOPED_INPUT = Boolean(args["trust-scoped-input"]);
+const LEAD_TYPE_SCOPE = String(args["lead-type-scope"] || "").trim();
 if (!MANAGER_TEAM_EXCLUSION_LABELS.length || !SALESPERSON_EXCLUSION_LABELS.length || !EXCLUSION_DISPLAY) {
   throw new Error("Manager exclusions, salesperson exclusions and --exclusion-display are required.");
 }
@@ -139,13 +141,6 @@ function periodLabel(startIso, endIso) {
 
 function shortDate(iso) {
   return new Intl.DateTimeFormat("en-AU", { timeZone: "UTC", day: "numeric", month: "long", year: "numeric" }).format(new Date(`${iso}T00:00:00Z`));
-}
-
-function isNewBusiness(orderCount) {
-  const value = clean(orderCount);
-  if (!value || /^(?:null|none|n\/a)$/i.test(value)) return true;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed === 0;
 }
 
 function classifyResult(total, followed) {
@@ -248,7 +243,6 @@ function buildCohort(uniqueRows, startIso, endIso, checkThroughIso, managerLooku
     const row = item.row;
     if (item.timestamp < start || item.timestamp > end) continue;
     if (norm(row.call_direction) !== "out") continue;
-    if (!isNewBusiness(row.OrderCount)) continue;
     const evaluation = evaluateCall(row);
     const literalNoContactType = evaluation.contact?.classification;
     if (!["no_answer", "voicemail", "system_audio"].includes(literalNoContactType)) continue;
@@ -274,12 +268,13 @@ function buildCohort(uniqueRows, startIso, endIso, checkThroughIso, managerLooku
     }
     const prior = anchorsByCustomer.get(customerId);
     if (!prior || item.timestamp < prior.timestamp || (item.timestamp === prior.timestamp && clean(row.call_id).localeCompare(clean(prior.row.call_id)) < 0)) {
-      anchorsByCustomer.set(customerId, { ...item, literalNoContactType, manager, managerResolution });
+      anchorsByCustomer.set(customerId, { ...item, literalNoContactType, manager, managerResolution, reportLeadType: clean(row.ReportLeadType) });
     }
   }
   const evidence = [];
   for (const [customerId, anchor] of anchorsByCustomer) {
     if (anchor.literalNoContactType !== "voicemail") continue;
+    if (LEAD_TYPE_SCOPE && !TRUST_SCOPED_INPUT && anchor.reportLeadType !== LEAD_TYPE_SCOPE) continue;
     const laterCalls = (callsByCustomer.get(customerId) || []).filter((item) => item.timestamp > anchor.timestamp && item.timestamp <= cutoff);
     const salespersonKey = norm(anchor.row.Salesperson);
     const qualifying = laterCalls.find((item) => norm(item.row.call_direction) === "out" && norm(item.row.Salesperson) === salespersonKey) || null;
@@ -499,7 +494,7 @@ for (const [range, rows, columns] of [
   ["A6:B6", 1, 2], ["C6:D6", 1, 2], ["E6:F6", 1, 2], ["G6:I6", 1, 3],
   ["A8:I8", 1, 9], ["A24:C24", 1, 3], ["D24:F24", 1, 3], ["G24:I24", 1, 3],
 ]) resetMerged(startHere, range, rows, columns);
-setSingle(startHere, "A1", `Voicemail Follow-Up — ${periodLabel(current.startIso, current.endIso)}`);
+setSingle(startHere, "A1", `Voicemail Follow-Up — ${periodLabel(current.startIso, current.endIso)}${LEAD_TYPE_SCOPE ? ` — ${LEAD_TYPE_SCOPE} only` : ""}`);
 setSingle(startHere, "A3", `We checked whether customers who reached voicemail or an answering machine received another outbound call from the same salesperson by the end of Friday. Scope matches Lead Utilisation: excluded ${EXCLUSION_DISPLAY}.`);
 setSingle(startHere, "A4", "VOICEMAILS CHECKED");
 setSingle(startHere, "C4", "FOLLOWED UP BY FRIDAY");
@@ -546,13 +541,15 @@ setSingle(allPeople, "A1", "All Salespeople — Voicemail Follow-Up by Friday");
 setSingle(allPeople, "A3", "Each row uses the same Monday-to-Friday cohort and Friday cutoff. Day-of-week mix matters because later-week voicemails have less time available.");
 setSingle(allPeople, "A5", "A qualifying follow-up is a later outbound call by the same salesperson to the same customer by Friday 11:59:59 pm. Inbound calls and calls by another employee are context only.");
 allPeople.getRange("A6:H6").values = [["Salesperson", "Voicemails", "Followed up by Friday", "No follow-up by Friday", "No later call by Friday", "Follow-up rate", "No-later-call rate", "Simple result"]];
-allPeople.getRange(`A7:C${allLastRow}`).values = current.people.map((person) => [person.salesperson, person.total, person.followed]);
-allPeople.getRange(`E7:E${allLastRow}`).values = current.people.map((person) => [person.noLater]);
-allPeople.getRange(`D7:D${allLastRow}`).formulas = current.people.map((_, index) => [`=B${7 + index}-C${7 + index}`]);
-allPeople.getRange(`F7:F${allLastRow}`).formulas = current.people.map((_, index) => [`=IFERROR(C${7 + index}/B${7 + index},0)`]);
-allPeople.getRange(`G7:G${allLastRow}`).formulas = current.people.map((_, index) => [`=IFERROR(E${7 + index}/B${7 + index},0)`]);
-allPeople.getRange(`H7:H${allLastRow}`).values = current.people.map((person) => [person.status]);
-allPeople.getRange(`F7:G${allLastRow}`).format.numberFormat = "0.0%";
+if (current.people.length) {
+  allPeople.getRange(`A7:C${allLastRow}`).values = current.people.map((person) => [person.salesperson, person.total, person.followed]);
+  allPeople.getRange(`E7:E${allLastRow}`).values = current.people.map((person) => [person.noLater]);
+  allPeople.getRange(`D7:D${allLastRow}`).formulas = current.people.map((_, index) => [`=B${7 + index}-C${7 + index}`]);
+  allPeople.getRange(`F7:F${allLastRow}`).formulas = current.people.map((_, index) => [`=IFERROR(C${7 + index}/B${7 + index},0)`]);
+  allPeople.getRange(`G7:G${allLastRow}`).formulas = current.people.map((_, index) => [`=IFERROR(E${7 + index}/B${7 + index},0)`]);
+  allPeople.getRange(`H7:H${allLastRow}`).values = current.people.map((person) => [person.status]);
+  allPeople.getRange(`F7:G${allLastRow}`).format.numberFormat = "0.0%";
+}
 for (let index = 0; index < current.people.length; index += 1) {
   const row = 7 + index;
   const status = current.people[index].status;
@@ -598,16 +595,18 @@ evidenceSheet.getRange("A5:O5").values = [[
   "Salesperson", "Customer ID", "Lead ID", "First voicemail call", "Day received", "Hours available to Friday", "Follow-up result",
   "Qualifying follow-up", "Hours later", "Follow-up Call ID", "Other call by Friday", "Other caller", "Other direction", "Other Call ID", "First Call ID",
 ]];
-evidenceSheet.getRange(`A6:O${evidenceLastRow}`).values = current.evidence.map((item) => [
-  item.salesperson, item.customerId, item.leadId || null, new Date(item.anchorAt), item.dayReceived, item.hoursAvailable, item.outcome,
-  item.nextAt ? new Date(item.nextAt) : null, item.hoursLater, item.nextCallId || null,
-  item.otherAt ? new Date(item.otherAt) : null, item.otherSalesperson || null, item.otherDirection || null, item.otherCallId || null, item.firstCallId,
-]);
-evidenceSheet.getRange(`D6:D${evidenceLastRow}`).format.numberFormat = "d mmm yyyy h:mm";
-evidenceSheet.getRange(`F6:F${evidenceLastRow}`).format.numberFormat = "0.0";
-evidenceSheet.getRange(`H6:H${evidenceLastRow}`).format.numberFormat = "d mmm yyyy h:mm";
-evidenceSheet.getRange(`I6:I${evidenceLastRow}`).format.numberFormat = "0.0";
-evidenceSheet.getRange(`K6:K${evidenceLastRow}`).format.numberFormat = "d mmm yyyy h:mm";
+if (current.evidence.length) {
+  evidenceSheet.getRange(`A6:O${evidenceLastRow}`).values = current.evidence.map((item) => [
+    item.salesperson, item.customerId, item.leadId || null, new Date(item.anchorAt), item.dayReceived, item.hoursAvailable, item.outcome,
+    item.nextAt ? new Date(item.nextAt) : null, item.hoursLater, item.nextCallId || null,
+    item.otherAt ? new Date(item.otherAt) : null, item.otherSalesperson || null, item.otherDirection || null, item.otherCallId || null, item.firstCallId,
+  ]);
+  evidenceSheet.getRange(`D6:D${evidenceLastRow}`).format.numberFormat = "d mmm yyyy h:mm";
+  evidenceSheet.getRange(`F6:F${evidenceLastRow}`).format.numberFormat = "0.0";
+  evidenceSheet.getRange(`H6:H${evidenceLastRow}`).format.numberFormat = "d mmm yyyy h:mm";
+  evidenceSheet.getRange(`I6:I${evidenceLastRow}`).format.numberFormat = "0.0";
+  evidenceSheet.getRange(`K6:K${evidenceLastRow}`).format.numberFormat = "d mmm yyyy h:mm";
+}
 for (const [column, width] of [["A",22],["B",14],["C",14],["D",20],["E",12],["F",16],["G",36],["H",20],["I",12],["J",18],["K",20],["L",20],["M",14],["N",18],["O",18]]) {
   evidenceSheet.getRange(`${column}:${column}`).format.columnWidth = width;
 }
@@ -644,9 +643,11 @@ setSingle(previousSheet, "B3", periodLabel(previous.startIso, previous.endIso));
 setSingle(previousSheet, "E3", shortDate(previous.checkThroughIso));
 const previousLastRow = 5 + previous.people.length;
 previousSheet.getRange("A5:E5").values = [["Salesperson", "Voicemails", "Followed by Friday", "Follow-up rate", "Simple result"]];
-previousSheet.getRange(`A6:C${previousLastRow}`).values = previous.people.map((person) => [person.salesperson, person.total, person.followed]);
-previousSheet.getRange(`D6:D${previousLastRow}`).formulas = previous.people.map((_, index) => [`=IFERROR(C${6 + index}/B${6 + index},0)`]);
-previousSheet.getRange(`E6:E${previousLastRow}`).values = previous.people.map((person) => [person.status]);
+if (previous.people.length) {
+  previousSheet.getRange(`A6:C${previousLastRow}`).values = previous.people.map((person) => [person.salesperson, person.total, person.followed]);
+  previousSheet.getRange(`D6:D${previousLastRow}`).formulas = previous.people.map((_, index) => [`=IFERROR(C${6 + index}/B${6 + index},0)`]);
+  previousSheet.getRange(`E6:E${previousLastRow}`).values = previous.people.map((person) => [person.status]);
+}
 replaceTable(previousSheet, "PreviousPeriodTable", `A5:E${previousLastRow}`);
 previousSheet.getRange("A58:E58").format.fill = "#D9EEF7";
 previousSheet.getRange("A59:E59").format.fill = "#FFFFFF";
@@ -665,9 +666,11 @@ setSingle(comparisonSheet, "A3", "This compares by-Friday follow-up rates under 
 setSingle(comparisonSheet, "C5", periodLabel(current.startIso, current.endIso));
 setSingle(comparisonSheet, "G5", periodLabel(previous.startIso, previous.endIso));
 const comparisonLastRow = 14 + comparisons.length;
-comparisonSheet.getRange(`A15:H${comparisonLastRow}`).values = comparisons.map((item) => [
-  item.person.salesperson, item.person.total, item.person.rate, item.prior?.total ?? null, item.prior?.rate ?? null, item.change, item.direction, item.explanation,
-]);
+if (comparisons.length) {
+  comparisonSheet.getRange(`A15:H${comparisonLastRow}`).values = comparisons.map((item) => [
+    item.person.salesperson, item.person.total, item.person.rate, item.prior?.total ?? null, item.prior?.rate ?? null, item.change, item.direction, item.explanation,
+  ]);
+}
 setSingle(comparisonSheet, "A8", comparisons.filter((item) => item.direction === "Improved").length);
 setSingle(comparisonSheet, "C8", comparisons.filter((item) => item.direction === "Regressed").length);
 setSingle(comparisonSheet, "E8", comparisons.filter((item) => item.direction === "Broadly stable").length);
@@ -697,13 +700,15 @@ setSingle(teamSheet, "A2", `Monday ${shortDate(current.startIso)} to Friday ${sh
 setSingle(teamSheet, "A3", `Scope matches Lead Utilisation exactly: excluded ${EXCLUSION_DISPLAY}. Blank manager values remain visible as Unassigned / Missing Manager.`);
 const teamLastRow = 5 + current.teams.length;
 teamSheet.getRange("A5:I5").values = [["Manager team", "Salespeople", "Voicemails", "Followed by Friday", "No follow-up by Friday", "No later call by Friday", "Follow-up rate", "No-later-call rate", "Simple result"]];
-teamSheet.getRange(`A6:D${teamLastRow}`).values = current.teams.map((team) => [team.manager, team.salespeople, team.total, team.followed]);
-teamSheet.getRange(`F6:F${teamLastRow}`).values = current.teams.map((team) => [team.noLater]);
-teamSheet.getRange(`E6:E${teamLastRow}`).formulas = current.teams.map((_, index) => [`=C${6 + index}-D${6 + index}`]);
-teamSheet.getRange(`G6:G${teamLastRow}`).formulas = current.teams.map((_, index) => [`=IFERROR(D${6 + index}/C${6 + index},0)`]);
-teamSheet.getRange(`H6:H${teamLastRow}`).formulas = current.teams.map((_, index) => [`=IFERROR(F${6 + index}/C${6 + index},0)`]);
-teamSheet.getRange(`I6:I${teamLastRow}`).values = current.teams.map((team) => [team.status]);
-teamSheet.getRange(`G6:H${teamLastRow}`).format.numberFormat = "0.0%";
+if (current.teams.length) {
+  teamSheet.getRange(`A6:D${teamLastRow}`).values = current.teams.map((team) => [team.manager, team.salespeople, team.total, team.followed]);
+  teamSheet.getRange(`F6:F${teamLastRow}`).values = current.teams.map((team) => [team.noLater]);
+  teamSheet.getRange(`E6:E${teamLastRow}`).formulas = current.teams.map((_, index) => [`=C${6 + index}-D${6 + index}`]);
+  teamSheet.getRange(`G6:G${teamLastRow}`).formulas = current.teams.map((_, index) => [`=IFERROR(D${6 + index}/C${6 + index},0)`]);
+  teamSheet.getRange(`H6:H${teamLastRow}`).formulas = current.teams.map((_, index) => [`=IFERROR(F${6 + index}/C${6 + index},0)`]);
+  teamSheet.getRange(`I6:I${teamLastRow}`).values = current.teams.map((team) => [team.status]);
+  teamSheet.getRange(`G6:H${teamLastRow}`).format.numberFormat = "0.0%";
+}
 replaceTable(teamSheet, "TeamFollowUpTable", `A5:I${teamLastRow}`, "TableStyleLight1");
 for (const [column, width] of [["A",27],["B",13],["C",14],["D",17],["E",18],["F",18],["G",15],["H",17],["I",19]]) teamSheet.getRange(`${column}:${column}`).format.columnWidth = width;
 teamSheet.freezePanes.freezeRows(5);
@@ -716,9 +721,11 @@ setSingle(teamComparisonSheet, "A2", `${periodLabel(current.startIso, current.en
 setSingle(teamComparisonSheet, "A3", "Team rates use aggregated voicemail and qualifying-follow-up counts. They are not averages of individual salesperson rates. Meaningful movement requires at least 20 voicemail customers in both weeks and at least 5 percentage points change.");
 const teamComparisonLastRow = 5 + teamComparisons.length;
 teamComparisonSheet.getRange("A5:H5").values = [["Manager team", "Current voicemails", "Current rate", "Previous voicemails", "Previous rate", "Change", "Direction", "Explanation"]];
-teamComparisonSheet.getRange(`A6:H${teamComparisonLastRow}`).values = teamComparisons.map((item) => [
-  item.team.manager, item.team.total, item.team.rate, item.prior?.total ?? null, item.prior?.rate ?? null, item.change, item.direction, item.explanation,
-]);
+if (teamComparisons.length) {
+  teamComparisonSheet.getRange(`A6:H${teamComparisonLastRow}`).values = teamComparisons.map((item) => [
+    item.team.manager, item.team.total, item.team.rate, item.prior?.total ?? null, item.prior?.rate ?? null, item.change, item.direction, item.explanation,
+  ]);
+}
 teamComparisonSheet.getRange(`C6:C${teamComparisonLastRow}`).format.numberFormat = "0.0%";
 teamComparisonSheet.getRange(`E6:F${teamComparisonLastRow}`).format.numberFormat = "0.0%";
 replaceTable(teamComparisonSheet, "TeamWeekOnWeekTable", `A5:H${teamComparisonLastRow}`, "TableStyleLight1");
@@ -910,7 +917,7 @@ for (let row = 6; row <= teamComparisonLastRow; row += 1) {
 }
 
 await fs.writeFile(reportDataPath, JSON.stringify({
-  title: "VOICEMAIL FOLLOW-UP REPORT",
+  title: `VOICEMAIL FOLLOW-UP REPORT${LEAD_TYPE_SCOPE ? ` - ${LEAD_TYPE_SCOPE.toUpperCase()} ONLY` : ""}`,
   subtitle: reportSubtitle,
   reportingPeriod: { start: current.startIso, end: current.endIso },
   previousPeriod: { start: previous.startIso, end: previous.endIso },

@@ -16,11 +16,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Render the combined weekly Lead Management PDF.")
     parser.add_argument("--lead-data", required=True, type=Path)
     parser.add_argument("--voicemail-data", required=True, type=Path)
+    parser.add_argument("--call-data", required=True, type=Path)
     parser.add_argument("--lead-pdf", required=True, type=Path)
     parser.add_argument("--voicemail-pdf", required=True, type=Path)
+    parser.add_argument("--call-pdf", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--logo", required=True, type=Path)
     parser.add_argument("--work", type=Path)
+    parser.add_argument("--lead-type-scope")
     return parser.parse_args()
 
 
@@ -28,17 +31,22 @@ ARGS = parse_args()
 OUTPUT = ARGS.output.resolve()
 LEAD_JSON = ARGS.lead_data.resolve()
 VM_JSON = ARGS.voicemail_data.resolve()
+CALL_JSON = ARGS.call_data.resolve()
 LEAD_PDF = ARGS.lead_pdf.resolve()
 VM_PDF = ARGS.voicemail_pdf.resolve()
+CALL_PDF = ARGS.call_pdf.resolve()
 LOGO = ARGS.logo.resolve()
 WORK = (ARGS.work or OUTPUT.parent / ".combined-pdf-work").resolve()
 EXEC_PDF = WORK / "combined-executive-section.pdf"
 LEAD_DATA = json.loads(LEAD_JSON.read_text(encoding="utf-8"))
 VM_DATA = json.loads(VM_JSON.read_text(encoding="utf-8"))
+CALL_DATA = json.loads(CALL_JSON.read_text(encoding="utf-8"))
 REPORT_START = LEAD_DATA["reportingPeriod"]["startDate"]
 REPORT_END = LEAD_DATA["reportingPeriod"]["endDate"]
 if VM_DATA["reportingPeriod"]["start"] != REPORT_START or VM_DATA["reportingPeriod"]["end"] != REPORT_END:
     raise ValueError("Lead Utilisation and Voicemail reporting periods do not match.")
+if CALL_DATA.get("scope", {}).get("currentPeriod") != [REPORT_START, REPORT_END]:
+    raise ValueError("Lead Utilisation and Call Activity reporting periods do not match.")
 
 
 def date_label(iso_date, include_weekday=True):
@@ -59,6 +67,7 @@ def short_period(start_iso, end_iso):
 
 REPORT_SUBTITLE = f"{date_label(REPORT_START)} to {date_label(REPORT_END)}"
 REPORT_SHORT = short_period(REPORT_START, REPORT_END)
+LEAD_TYPE_SCOPE = (ARGS.lead_type_scope or "").strip()
 
 PAGE_W, PAGE_H = landscape(A4)
 MARGIN = 14 * mm
@@ -234,18 +243,19 @@ def draw_manager_table(c, rows, y_top):
     return y
 
 
-def create_executive_pdf(lead, vm, total_pages):
+def create_executive_pdf(lead, vm, call, total_pages):
     WORK.mkdir(parents=True, exist_ok=True)
     c = canvas.Canvas(str(EXEC_PDF), pagesize=(PAGE_W, PAGE_H))
-    c.setTitle(f"Weekly Lead Management Report - {REPORT_SHORT}")
+    title = f"Weekly Lead Management Report - {LEAD_TYPE_SCOPE} Only" if LEAD_TYPE_SCOPE else "Weekly Lead Management Report"
+    c.setTitle(f"{title} - {REPORT_SHORT}")
     c.setAuthor("Official Media Group")
 
-    draw_header(c, "WEEKLY LEAD MANAGEMENT REPORT", REPORT_SUBTITLE)
+    draw_header(c, title.upper(), f"{REPORT_SUBTITLE} | Campaign Lead Type: {LEAD_TYPE_SCOPE}" if LEAD_TYPE_SCOPE else REPORT_SUBTITLE)
     scope_y = PAGE_H - 55 * mm
     c.setFillColor(CREAM)
     c.setStrokeColor(BRAND_RED)
     c.roundRect(MARGIN, scope_y, CONTENT_W, 22 * mm, 1.5 * mm, fill=1, stroke=1)
-    draw_wrapped(c, "One weekly pack, two separate cohorts. Lead Utilisation measures allocations received during the week. Voicemail Follow-up measures New Business voicemail encounters observed during the week. The rates must not be blended or treated as sharing one denominator.", MARGIN + 4 * mm, scope_y + 17 * mm, CONTENT_W - 8 * mm, size=9.2, leading=11, colour=SECONDARY, max_lines=2)
+    draw_wrapped(c, "One weekly pack with three separate lenses. Lead Utilisation measures weekly allocations, Voicemail Follow-up checks weekly voicemail customers, and Call Activity & Rhythm reviews outbound phone activity. Each section keeps its own denominator and safeguards; no blended score is produced.", MARGIN + 4 * mm, scope_y + 17 * mm, CONTENT_W - 8 * mm, size=9.2, leading=11, colour=SECONDARY, max_lines=2)
     exclusion_display = vm.get("exclusionPolicy", {}).get("display", "")
     if not exclusion_display:
         raise ValueError("The configured exclusion display is missing.")
@@ -274,7 +284,7 @@ def create_executive_pdf(lead, vm, total_pages):
     c.setFillColor(PANEL)
     c.setStrokeColor(BORDER)
     c.roundRect(MARGIN, 23 * mm, CONTENT_W, 16 * mm, 1.5 * mm, fill=1, stroke=1)
-    draw_wrapped(c, "Use the manager view on page 2 to see where both measures moved. Detailed lead trends, qualifying-person lines and outlier prompts are retained in the Lead Utilisation section; team and individual voicemail movement is retained in the Voicemail section.", MARGIN + 4 * mm, 33 * mm, CONTENT_W - 8 * mm, size=8.7, leading=10, colour=SECONDARY, max_lines=2)
+    draw_wrapped(c, "Page 2 compares the allocation and voicemail measures by manager. Page 3 gives the Call Activity company and team headline. The detailed sections that follow retain the full trends, evidence and review prompts.", MARGIN + 4 * mm, 33 * mm, CONTENT_W - 8 * mm, size=8.7, leading=10, colour=SECONDARY, max_lines=2)
     draw_footer(c, 1, total_pages)
     c.showPage()
 
@@ -293,7 +303,7 @@ def create_executive_pdf(lead, vm, total_pages):
             fmt(vm_item["currentTotal"]),
             fmt(round(vm_item["currentTotal"] * vm_item["currentRate"])),
             pct(vm_item["currentRate"]),
-            f"{vm_item['direction']} {abs(vm_item['change']) * 100:.1f} pp" if vm_item["direction"] != "Broadly stable" else f"Broadly stable {abs(vm_item['change']) * 100:.1f} pp",
+            f"{vm_item['direction']} {abs(vm_item['change']) * 100:.1f}%" if vm_item["direction"] != "Broadly stable" else f"Broadly stable {abs(vm_item['change']) * 100:.1f}%",
         ])
     table_bottom = draw_manager_table(c, rows, PAGE_H - 49 * mm)
 
@@ -323,6 +333,69 @@ def create_executive_pdf(lead, vm, total_pages):
     c.roundRect(MARGIN, 23 * mm, CONTENT_W, 15 * mm, 1.5 * mm, fill=1, stroke=1)
     draw_wrapped(c, "Interpretation guardrail: the lead and voicemail columns answer different questions. Compare direction and operational patterns, but never average the rates or create a combined performance score.", MARGIN + 4 * mm, 32 * mm, CONTENT_W - 8 * mm, font="SourceSans3-Semibold", size=8.7, leading=10, colour=AMBER, max_lines=2)
     draw_footer(c, 2, total_pages)
+    c.showPage()
+
+    draw_header(c, "CALL ACTIVITY & RHYTHM OVERVIEW", "Telephony activity review - not an answer or call-quality score")
+    current = next((week for week in call["weeks"] if week["period"] == f"{REPORT_START}_to_{REPORT_END}"), None)
+    if current is None:
+        raise ValueError("Current Call Activity week is missing.")
+    overall = current["overall"]
+    voicemail_count = next((item["count"] for item in overall["contactClassificationBreakdown"] if item["label"] == "voicemail"), 0)
+    section_heading(c, "Company headline", PAGE_H - 48 * mm)
+    kpi_cards(c, [
+        ("Outbound calls", fmt(overall["calls"]), CHARCOAL),
+        ("Calls / active person-day", f"{overall['callsPerPersonDay']:.1f}", colors.HexColor("#225E8F")),
+        ("Recorded talk-time calls", fmt(overall["positiveDurationCalls"]), GREEN),
+        ("Confirmed voicemail", fmt(voicemail_count), AMBER),
+        ("Total talk time", f"{overall['totalTalkHours']:.1f} h", colors.HexColor("#147D78")),
+    ], PAGE_H - 82 * mm)
+
+    section_heading(c, "Manager-team phone activity", PAGE_H - 100 * mm)
+    headers = ["Manager team", "Outbound calls", "Calls / person-day", "Recorded talk time", "Other short calls", "Late / early pace"]
+    widths = [55, 34, 38, 40, 40, 40]
+    widths = [value * mm for value in widths]
+    x = MARGIN
+    y_top = PAGE_H - 108 * mm
+    header_h = 12 * mm
+    row_h = 10 * mm
+    c.setFillColor(CHARCOAL)
+    c.setStrokeColor(BORDER)
+    c.rect(x, y_top - header_h, sum(widths), header_h, fill=1, stroke=1)
+    cursor = x
+    for index, (label, width) in enumerate(zip(headers, widths)):
+        if index:
+            c.line(cursor, y_top - header_h, cursor, y_top)
+        lines = wrap(label, "SourceSans3-Semibold", 8, width - 3 * mm)[:2]
+        c.setFont("SourceSans3-Semibold", 8)
+        c.setFillColor(WHITE)
+        for line_index, line in enumerate(lines):
+            c.drawCentredString(cursor + width / 2, y_top - 4.8 * mm - line_index * 8, line)
+        cursor += width
+    y = y_top - header_h
+    for row_index, team in enumerate(call["currentTeams"]):
+        y -= row_h
+        c.setFillColor(PANEL if row_index % 2 else WHITE)
+        c.rect(x, y, sum(widths), row_h, fill=1, stroke=1)
+        values = [
+            team["manager"], fmt(team["calls"]), f"{team['callsPerPersonDay']:.1f}",
+            pct(team["positiveDurationRate"]), pct(team["nonLiteralShortPositiveShare"]),
+            f"{team['lateToEarlyVelocityRatio']:.2f}" if team.get("lateToEarlyVelocityRatio") is not None else "-",
+        ]
+        cursor = x
+        for col_index, (value, width) in enumerate(zip(values, widths)):
+            c.setFillColor(CHARCOAL)
+            c.setFont("SourceSans3", 8)
+            if col_index == 0:
+                c.drawString(cursor + 2 * mm, y + 3.6 * mm, safe(value))
+            else:
+                c.drawCentredString(cursor + width / 2, y + 3.6 * mm, safe(value))
+            cursor += width
+
+    c.setFillColor(CREAM)
+    c.setStrokeColor(BRAND_RED)
+    c.roundRect(MARGIN, 23 * mm, CONTENT_W, 18 * mm, 1.5 * mm, fill=1, stroke=1)
+    draw_wrapped(c, f"How to read this: the later calling pace was {overall['lateToEarlyVelocityRatio']:.2f}, or about {overall['lateToEarlyVelocityRatio'] * 100:.0f} late-period calls for every 100 early-period calls. Recorded talk time and duration bands are activity evidence only. Check schedules, lead supply, campaign mix and actual outcomes before coaching or discipline.", MARGIN + 4 * mm, 35 * mm, CONTENT_W - 8 * mm, font="SourceSans3-Semibold", size=8.5, leading=9.5, colour=AMBER, max_lines=3)
+    draw_footer(c, 3, total_pages)
     c.save()
 
 
@@ -341,7 +414,7 @@ def page_number_overlay(width, height, page_number, total_pages):
 
 
 def assemble():
-    source_readers = [PdfReader(str(EXEC_PDF)), PdfReader(str(LEAD_PDF)), PdfReader(str(VM_PDF))]
+    source_readers = [PdfReader(str(EXEC_PDF)), PdfReader(str(LEAD_PDF)), PdfReader(str(VM_PDF)), PdfReader(str(CALL_PDF))]
     total_pages = sum(len(reader.pages) for reader in source_readers)
     writer = PdfWriter()
     for reader_index, reader in enumerate(source_readers):
@@ -352,12 +425,14 @@ def assemble():
             writer.add_page(page)
     writer.add_outline_item("Executive overview", 0)
     writer.add_outline_item("Manager cross-report view", 1)
-    writer.add_outline_item("Lead Utilisation", 2)
-    writer.add_outline_item("Voicemail Follow-up", 2 + len(source_readers[1].pages))
+    writer.add_outline_item("Call Activity overview", 2)
+    writer.add_outline_item("Lead Utilisation", 3)
+    writer.add_outline_item("Voicemail Follow-up", 3 + len(source_readers[1].pages))
+    writer.add_outline_item("Call Activity & Rhythm", 3 + len(source_readers[1].pages) + len(source_readers[2].pages))
     writer.add_metadata({
-        "/Title": f"Weekly Lead Management Report - {REPORT_SHORT}",
+        "/Title": f"Weekly Lead Management Report - {LEAD_TYPE_SCOPE + ' Only - ' if LEAD_TYPE_SCOPE else ''}{REPORT_SHORT}",
         "/Author": "Official Media Group",
-        "/Subject": "Combined Lead Utilisation and Voicemail Follow-up weekly report",
+        "/Subject": "Combined Lead Utilisation, Voicemail Follow-up and Call Activity weekly report",
     })
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT.open("wb") as handle:
@@ -369,13 +444,14 @@ def main():
     register_fonts()
     lead = LEAD_DATA
     vm = VM_DATA
-    total_pages = 2 + len(PdfReader(str(LEAD_PDF)).pages) + len(PdfReader(str(VM_PDF)).pages)
-    create_executive_pdf(lead, vm, total_pages)
+    call = CALL_DATA
+    total_pages = 3 + len(PdfReader(str(LEAD_PDF)).pages) + len(PdfReader(str(VM_PDF)).pages) + len(PdfReader(str(CALL_PDF)).pages)
+    create_executive_pdf(lead, vm, call, total_pages)
     assembled_pages = assemble()
     check = PdfReader(str(OUTPUT))
     if len(check.pages) != assembled_pages:
         raise RuntimeError(f"Page count mismatch: expected {assembled_pages}, got {len(check.pages)}")
-    print(json.dumps({"output": str(OUTPUT), "pages": len(check.pages), "bookmarks": 4}, indent=2))
+    print(json.dumps({"output": str(OUTPUT), "pages": len(check.pages), "bookmarks": 6}, indent=2))
 
 
 if __name__ == "__main__":

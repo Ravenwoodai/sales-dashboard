@@ -20,6 +20,7 @@
     "report:build-lead-utilisation": "node scripts/build-lead-utilisation-report.mjs",
     "report:weekly-lead-utilisation": "node scripts/run-weekly-lead-utilisation.js",
     "report:weekly-lead-management": "node scripts/run-weekly-lead-management.js",
+    "report:uncalled-lead-review": "node scripts/run-uncalled-lead-review.js",
     "evaluations:migrate-sqlite": "node scripts/migrate-evaluation-studio-sqlite.js",
     "test": "node --test tests/*.test.js"
   },

@@ -467,6 +467,24 @@ def page_two(c):
     draw_footer(c, 2)
 
 
+def page_highest_utilisation(c, page_number):
+    begin_tag(c, "H1")
+    minimum = DATA["ongoingTrends"]["personMinimumAllocations"]
+    draw_header(c, "Highest Lead Utilisation by Salesperson", f"Minimum {minimum:,} lead allocations")
+    end_tag(c)
+    headers = ["Rank", "Manager", "Salesperson", "Received", "Called", "Wasted", "Utilisation", "Wastage", "Outbound calls", "Calls / allocation"]
+    rows = []
+    for row in DATA["topUtilisation15"]:
+        rows.append([
+            row["utilisationRank"], row["manager"], row["salesperson"], fmt(row["received"]), fmt(row["called"]), fmt(row["wasted"]),
+            pct(row["called"] / row["received"]), pct(row["wasted"] / row["received"]), fmt(row["outboundCalls"]), f'{row["outboundCalls"] / row["received"]:.2f}',
+        ])
+    begin_tag(c, "Table")
+    draw_table(c, headers, rows, [14, 35, 51, 22, 20, 20, 22, 22, 30, 33], MARGIN, PAGE_H - 38 * mm, 12, 8.4, font_size=9.5, left_columns={1, 2}, centre_columns={0})
+    end_tag(c)
+    draw_footer(c, page_number)
+
+
 def self_source_rows():
     rows = sorted(
         DATA["salespeople"],
@@ -527,7 +545,7 @@ def page_self_source(c, page_number, start, end):
             row["manager"],
             row["salesperson"],
             fmt(row["received"]),
-            pct(row["called"] / row["received"]),
+            pct(row["called"] / row["received"]) if row["received"] else "No allocations",
             fmt(row["outboundCalls"]),
             fmt(row["allocatedLeadCallAttempts"]),
             fmt(row["otherOutboundCalls"]),
@@ -653,7 +671,7 @@ def page_team_trends(c, page_number):
     draw_header(c, "Ongoing Lead Utilisation — Teams", "Same verified exclusion policy; no performance ranking")
     end_tag(c)
     begin_tag(c, "P")
-    draw_wrapped(c, f'Improvement/regression uses a ±{trends["meaningfulChange"] * 100:.1f} percentage-point threshold. Outlier prompts are withheld until {trends["outlierPriorWeeksRequired"]} prior comparable weeks exist.', MARGIN, PAGE_H - 34 * mm, CONTENT_W, size=8.8, leading=10.5, colour=SECONDARY, max_lines=2)
+    draw_wrapped(c, f'Improvement/regression uses a ±{trends["meaningfulChange"] * 100:.1f}% threshold. Outlier prompts are withheld until {trends["outlierPriorWeeksRequired"]} prior comparable weeks exist.', MARGIN, PAGE_H - 34 * mm, CONTENT_W, size=8.8, leading=10.5, colour=SECONDARY, max_lines=2)
     end_tag(c)
     teams = trends["teams"]
     columns = 2
@@ -701,7 +719,7 @@ def page_person_trends(c, page_number, start, end):
         current = person.get("current") or {}
         c.setFont("SourceSans3-Semibold", 8.4)
         c.setFillColor(CHARCOAL)
-        title = f'{person["name"]} — {pct(current.get("utilisation", 0))} | n={int(current.get("received", 0)):,}'
+        title = f'{person["name"]} — {pct(current.get("utilisation", 0))} | {int(current.get("received", 0)):,} Leads'
         c.drawString(x + 1.5 * mm, y + panel_height + 1.2 * mm, title[:58])
         labels = [entry["weekLabel"] for entry in person["series"]]
         utilisation = [entry.get("metrics", {}).get("utilisation") if entry.get("metrics") and entry["metrics"].get("received", 0) >= trends["personMinimumAllocations"] else None for entry in person["series"]]
@@ -736,8 +754,8 @@ def build():
     c.setSubject(f"Lead utilisation and wastage, {REPORT_SUBTITLE}")
     c._doc.Catalog.Lang = PDFString("en-AU")
     salespeople = self_source_rows()
-    page_drawers = [page_one, page_two]
-    page_number = 3
+    page_drawers = [page_one, page_two, lambda canvas_obj: page_highest_utilisation(canvas_obj, 3)]
+    page_number = 4
     for start in range(0, len(salespeople), 31):
         end = min(start + 31, len(salespeople))
         page_drawers.append(lambda canvas_obj, number=page_number, first=start, last=end: page_self_source(canvas_obj, number, first, last))

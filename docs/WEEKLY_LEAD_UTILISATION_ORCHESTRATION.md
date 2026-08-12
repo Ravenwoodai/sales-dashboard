@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This workflow builds the combined Weekly Lead Management Excel and PDF pack from one Monday start date. The combined pack retains Lead Utilisation and Voicemail Follow-up as separate cohorts, adds a side-by-side manager view, and preserves the ongoing overall/team/person trend sections. Sales Dashboard owns report calculation, validation, rendering and optional delivery. Carma Reports remains the acquisition owner for Carma-hosted allocation and approved-sales evidence. The two projects are connected by versioned files and commands; Carma extraction code and credentials are not copied into Sales Dashboard.
+This workflow builds three Weekly Lead Management Excel/PDF packs from one Monday start date: Overall, New Business only and Warm only. Each pack retains Lead Utilisation, Voicemail Follow-up and Call Activity & Rhythm as separate lenses, adds a side-by-side manager view, and preserves the ongoing overall/team/person trend sections. The split packs are accepted only when New Business plus Warm reconciles exactly to Overall for the current week and every retained historical trend. Sales Dashboard owns report calculation, validation, rendering and optional delivery. Carma Reports remains the acquisition owner for Carma-hosted allocation and approved-sales evidence. The two projects are connected by versioned files and commands; Carma extraction code and credentials are not copied into Sales Dashboard.
 
 ## Weekly inputs
 
@@ -103,9 +103,12 @@ Use `--acquire --send-email` together only when both acquisition commands and de
 8. Extracts the governed Allocated/Self-Sourced sales split for the same included salesperson population and Monday-Friday approval period.
 9. Renders the fixed-layout A4 landscape PDF, including the same ongoing trend charts and sample-gated callouts.
 10. Builds the Friday-cutoff Voicemail workbook and PDF from the same retained call bundle and exact exclusion policy, including current/prior team and person movement.
-11. Assembles the 18-sheet Weekly Lead Management workbook and the consolidated PDF with two executive pages, the complete Lead Utilisation section and the complete Voicemail section. No blended score is produced.
-12. Optionally emails only the combined XLSX/PDF attachments.
-13. Writes a combined `orchestration-manifest.json` atomically after every stage, including source/output hashes and failure details.
+11. Builds the Call Activity & Rhythm analysis, workbook and PDF from the exact Lead Utilisation roster and exclusion-policy key, reconciling each retained week's outbound calls before exposing duration, short-call or calling-pace review prompts.
+12. Assembles the 25-sheet Overall Weekly Lead Management workbook in two bounded memory passes and the consolidated PDF with three executive pages plus the complete Lead Utilisation, Voicemail and Call Activity sections. No blended score is produced.
+13. Applies the versioned exact-campaign lead-type policy to allocations, calls, voicemail anchors and approved sales. Calls without a permitted Customer ID are New Business; otherwise the deterministic exact/nearest allocation rule supplies the type, with Admin-nearest calls Warm and customers absent from all retained allocation logs New Business. Self Sourced approved sales are New Business.
+14. Rebuilds the New Business and Warm histories from the same retained weeks and exclusion policy, creates matching 25-sheet XLSX/PDF packs and requires every current and historical additive metric to reconcile exactly to Overall.
+15. Optionally emails only explicitly configured verified attachments.
+16. Writes a `weekly_lead_management_orchestrator.v3` `orchestration-manifest.json` atomically after every stage, including source/output hashes, split-pack manifests, reconciliation evidence and failure details.
 
 The ongoing trend section is a mandatory weekly contract, not an optional presentation layer. The orchestrator rejects a generated workbook when the trend model or configured allocation threshold is missing. The exclusion lists and display are supplied by ignored local configuration and protected by `report.exclusionPolicySha256`; the run fails if the lists drift from that hash.
 
@@ -122,8 +125,12 @@ The run stops before delivery when any of these conditions occurs:
 - either the current or prior Voicemail Monday-to-Friday cohort is incomplete;
 - the shared exclusion contract differs between the Lead Utilisation and Voicemail sections;
 - the Voicemail or combined workbook formula scan fails;
-- the combined workbook does not contain the full 18-sheet contract;
+- the Call Activity analysis does not reconcile to the Lead Utilisation roster, period or exclusion policy;
+- the combined workbook does not contain the full 25-sheet contract;
 - the allocated/self-sourced split contains an unknown classification or fails to reconcile;
+- any allocation, call, voicemail anchor or approved sale is not classified as exactly New Business or Warm;
+- either split workbook/PDF fails its report QA, formula, render or signature checks;
+- New Business plus Warm differs from Overall for any current-week or retained historical metric;
 - the XLSX/PDF signatures are invalid;
 - an email attachment is missing.
 
@@ -181,7 +188,11 @@ For this report workflow, Carma Reports calls the Approved Sales extractor with 
 
 The orchestrator must pass the freshly verified run-specific `carma-evidence.sqlite` to the supporting Lead Result Dashboard through `--carma-database`. This prevents a valid but stale global evidence database from silently supplying the sales-source split. The completed manifest, report data and output hashes are under `outputs/weekly-lead-utilisation/2026-08-03_to_2026-08-07`.
 
-The combined command was replayed without acquisition or email for 3-7 August 2026. It completed the full top-level manifest and reproduced 25,129 allocations received, 15,271 called, 9,858 wasted, 2,071 voicemail customers checked, 790 followed by Friday, 1,281 without a qualifying follow-up and 1,194 with no later call found. The combined workbook contains 18 sheets with zero formula errors; the consolidated PDF contains 24 pages and four navigation bookmarks. All 14 Lead Utilisation QA checks and both 20-check Voicemail cohorts passed.
+The combined command was regenerated for 3-7 August 2026 under `weekly_lead_management_orchestrator.v3`. The Overall pack remains the authoritative complete pack. Separate 25-sheet New Business and Warm workbooks and matching PDFs are generated from the same sources, roster and exclusion policy. Their current-week and three-week trend measures pass 41 exact additive reconciliation checks against Overall. Email remains explicit-only.
+
+## Automatic Monday generation
+
+Codex automation `Weekly Lead Management Report Generation` checks each Monday at 6:30 AM, 9:30 AM and 12:30 PM Australia/Sydney time, beginning after the existing 6:00 AM Carma weekly-export download task. The repeated checks catch later-arriving reports; a complete verified v3 run is a no-op. Each check validates the catalog, matching retained weekly manifest and complete governed Approved Sales evidence before generating Overall, New Business and Warm without acquisition or email. It requires the split packs and histories to reconcile exactly before reporting success. Missing, stale, filtered or ambiguous inputs stop that check; the automation never substitutes a prior week or sends attachments.
 
 ## Carma authentication preflight
 

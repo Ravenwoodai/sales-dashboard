@@ -13,7 +13,7 @@ const {
   assertExclusionPolicy,
 } = require("./weeklyLeadUtilisationOrchestrator");
 
-const MANIFEST_SCHEMA = "weekly_lead_management_orchestrator.v1";
+const MANIFEST_SCHEMA = "weekly_lead_management_orchestrator.v3";
 
 function clean(value) {
   return String(value ?? "").trim();
@@ -232,10 +232,79 @@ async function runWeeklyLeadManagement(options) {
     return { pdfFileName: path.basename(voicemailPdf) };
   });
 
+  const callStem = `Call_Activity_and_Rhythm_Report_${runId}`;
+  const callWorkbook = path.join(outputDir, `${callStem}.xlsx`);
+  const callPdf = path.join(outputDir, `${callStem}.pdf`);
+  const callDataPath = path.join(outputDir, "call_activity_analysis.json");
+  const callQaPath = path.join(outputDir, "call_activity_qa.json");
+  const trendHistoryPath = resolveConfiguredPath(config.report.trendHistoryPath, tokens, loaded.configDir);
+  await runStage("build_call_activity_analysis", async () => {
+    runCommand({
+      executable: process.execPath,
+      args: [
+        path.join(root, "scripts", "build-call-activity-analysis.cjs"),
+        "--current-report", leadDataPath,
+        "--source-config", sourceConfigPath,
+        "--trend-history", trendHistoryPath,
+        "--output", callDataPath,
+      ],
+      cwd: root,
+    }, { label: "Call Activity analysis build" });
+    const analysis = JSON.parse(fs.readFileSync(callDataPath, "utf8"));
+    if (analysis.schemaVersion !== "call_activity_analysis.v1" || analysis.scope.currentPeriod.join("_") !== `${period.startDate}_${period.endDate}`) {
+      throw new Error("Call Activity analysis period or schema is invalid.");
+    }
+    if (analysis.scope.exclusionPolicyKey !== JSON.parse(fs.readFileSync(leadDataPath, "utf8")).ongoingTrends.policyKey) {
+      throw new Error("Call Activity analysis does not match the Lead Utilisation exclusion policy.");
+    }
+    if (!analysis.weeks.every((week) => week.quality.reportReconciliation)) {
+      throw new Error("Call Activity analysis does not reconcile to Lead Utilisation.");
+    }
+    return { dataFileName: path.basename(callDataPath), weeks: analysis.weeks.map((week) => week.period) };
+  });
+
+  await runStage("build_call_activity_workbook", async () => {
+    runCommand({
+      executable: process.execPath,
+      args: [
+        "--max-old-space-size=16384",
+        path.join(root, "scripts", "build-call-activity-rhythm-report.mjs"),
+        "--analysis", callDataPath,
+        "--output", callWorkbook,
+        "--qa", callQaPath,
+        "--work", path.join(workDir, "call-activity"),
+      ],
+      cwd: root,
+    }, { label: "Call Activity workbook build" });
+    assertSignature(callWorkbook, "PK", "Call Activity workbook");
+    const qa = JSON.parse(fs.readFileSync(callQaPath, "utf8"));
+    if (qa.sheets.length !== 7 || !qa.outboundReconciliation.every((item) => item.passed) || !qa.durationCompleteness.every((item) => item.passed)) {
+      throw new Error("Call Activity workbook QA did not pass.");
+    }
+    return { workbookFileName: path.basename(callWorkbook), people: qa.currentPeople, teams: qa.currentTeams };
+  });
+
+  await runStage("render_call_activity_pdf", async () => {
+    runCommand({
+      executable: pythonExecutable,
+      args: [
+        path.join(root, "scripts", "render-call-activity-rhythm-pdf.py"),
+        "--analysis", callDataPath,
+        "--output", callPdf,
+        "--logo", logoPath,
+      ],
+      cwd: root,
+    }, { label: "Call Activity PDF render" });
+    assertSignature(callPdf, "%PDF-", "Call Activity PDF");
+    return { pdfFileName: path.basename(callPdf) };
+  });
+
   const combinedStem = `Weekly_Lead_Management_Report_${runId}`;
   const combinedWorkbook = path.join(outputDir, `${combinedStem}.xlsx`);
+  const combinedCoreWorkbook = path.join(workDir, `${combinedStem}.core.xlsx`);
   const combinedPdf = path.join(outputDir, `${combinedStem}.pdf`);
   const combinedWorkbookQa = path.join(outputDir, "combined_workbook_qa.json");
+  const combinedCallQa = path.join(outputDir, "combined_call_activity_qa.json");
   await runStage("build_combined_workbook", async () => {
     runCommand({
       executable: process.execPath,
@@ -247,15 +316,38 @@ async function runWeeklyLeadManagement(options) {
         "--voicemail-workbook", voicemailWorkbook,
         "--lead-data", leadDataPath,
         "--voicemail-data", voicemailDataPath,
-        "--output", combinedWorkbook,
+        "--call-data", callDataPath,
+        "--output", combinedCoreWorkbook,
         "--qa", combinedWorkbookQa,
         "--work", path.join(workDir, "combined-workbook"),
       ],
       cwd: root,
     }, { label: "Combined weekly workbook build" });
-    assertSignature(combinedWorkbook, "PK", "Combined weekly workbook");
+    assertSignature(combinedCoreWorkbook, "PK", "Combined weekly core workbook");
     const qa = JSON.parse(fs.readFileSync(combinedWorkbookQa, "utf8"));
-    if (qa.formulaErrorMatches !== 0 || qa.sheets.length < 18) throw new Error("Combined workbook QA did not pass.");
+    if (qa.formulaErrorMatches !== 0 || qa.sheets.length !== 18 || qa.callActivityTotals.outboundCalls <= 0) throw new Error("Combined workbook core QA did not pass.");
+    return { workbookFileName: path.basename(combinedCoreWorkbook), sheetCount: qa.sheets.length };
+  });
+
+  await runStage("append_call_activity_to_combined_workbook", async () => {
+    runCommand({
+      executable: process.execPath,
+      args: [
+        "--max-old-space-size=16384",
+        path.join(root, "scripts", "build-call-activity-rhythm-report.mjs"),
+        "--analysis", callDataPath,
+        "--base-workbook", combinedCoreWorkbook,
+        "--output", combinedWorkbook,
+        "--qa", combinedCallQa,
+        "--work", path.join(workDir, "combined-call-activity"),
+      ],
+      cwd: root,
+    }, { label: "Call Activity combined-workbook append" });
+    assertSignature(combinedWorkbook, "PK", "Combined weekly workbook");
+    const qa = JSON.parse(fs.readFileSync(combinedCallQa, "utf8"));
+    if (!qa.embedded || qa.sheets.length !== 25 || qa.addedSheets.length !== 7 || !qa.outboundReconciliation.every((item) => item.passed)) {
+      throw new Error("Combined Call Activity append QA did not pass.");
+    }
     return { workbookFileName: path.basename(combinedWorkbook), sheetCount: qa.sheets.length };
   });
 
@@ -266,8 +358,10 @@ async function runWeeklyLeadManagement(options) {
         path.join(root, "scripts", "render-combined-weekly-report-pdf.py"),
         "--lead-data", leadDataPath,
         "--voicemail-data", voicemailDataPath,
+        "--call-data", callDataPath,
         "--lead-pdf", leadPdf,
         "--voicemail-pdf", voicemailPdf,
+        "--call-pdf", callPdf,
         "--output", combinedPdf,
         "--logo", logoPath,
         "--work", path.join(workDir, "combined-pdf"),
@@ -276,6 +370,39 @@ async function runWeeklyLeadManagement(options) {
     }, { label: "Combined weekly PDF render" });
     assertSignature(combinedPdf, "%PDF-", "Combined weekly PDF");
     return { pdfFileName: path.basename(combinedPdf) };
+  });
+
+  const leadTypeOutputDir = path.join(outputDir, "lead-type-packs");
+  const leadTypeManifestPath = path.join(leadTypeOutputDir, "lead-type-pack-manifest.json");
+  const leadTypeReconciliationPath = path.join(leadTypeOutputDir, "lead-type-reconciliation.json");
+  await runStage("build_reconciled_lead_type_packs", async () => {
+    runCommand({
+      executable: process.execPath,
+      args: [
+        "--max-old-space-size=16384",
+        path.join(root, "scripts", "build-weekly-lead-type-packs.mjs"),
+        "--root", root,
+        "--start", period.startDate,
+        "--config", loaded.configPath,
+        "--overall-management-dir", outputDir,
+        "--overall-lead-dir", leadOutputDir,
+        "--source-config", sourceConfigPath,
+        "--policy", path.join(root, "config", "weekly-lead-type-policy.json"),
+        "--output", leadTypeOutputDir,
+        "--work", path.join(workDir, "lead-type-packs"),
+      ],
+      cwd: root,
+    }, { label: "Reconciled New Business and Warm pack build" });
+    const typeManifest = JSON.parse(fs.readFileSync(leadTypeManifestPath, "utf8"));
+    const reconciliation = JSON.parse(fs.readFileSync(leadTypeReconciliationPath, "utf8"));
+    if (typeManifest.status !== "complete" || reconciliation.status !== "complete" || !reconciliation.checks?.every((check) => check.passed)) {
+      throw new Error("New Business and Warm packs did not pass exact reconciliation.");
+    }
+    for (const pack of Object.values(typeManifest.packs || {})) {
+      assertSignature(pack.workbook.path, "PK", "Lead-type combined workbook");
+      assertSignature(pack.pdf.path, "%PDF-", "Lead-type combined PDF");
+    }
+    return { manifestPath: leadTypeManifestPath, reconciliationChecks: reconciliation.checks.length };
   });
 
   if (options.sendEmail) {
@@ -308,7 +435,14 @@ async function runWeeklyLeadManagement(options) {
     voicemailPdf: { fileName: path.basename(voicemailPdf), sha256: sha256File(voicemailPdf) },
     voicemailData: { fileName: path.basename(voicemailDataPath), sha256: sha256File(voicemailDataPath) },
     voicemailQa: { fileName: path.basename(voicemailQaPath), sha256: sha256File(voicemailQaPath) },
+    callActivityWorkbook: { fileName: path.basename(callWorkbook), sha256: sha256File(callWorkbook) },
+    callActivityPdf: { fileName: path.basename(callPdf), sha256: sha256File(callPdf) },
+    callActivityData: { fileName: path.basename(callDataPath), sha256: sha256File(callDataPath) },
+    callActivityQa: { fileName: path.basename(callQaPath), sha256: sha256File(callQaPath) },
     combinedWorkbookQa: { fileName: path.basename(combinedWorkbookQa), sha256: sha256File(combinedWorkbookQa) },
+    combinedCallActivityQa: { fileName: path.basename(combinedCallQa), sha256: sha256File(combinedCallQa) },
+    leadTypePackManifest: { fileName: path.relative(outputDir, leadTypeManifestPath), sha256: sha256File(leadTypeManifestPath) },
+    leadTypeReconciliation: { fileName: path.relative(outputDir, leadTypeReconciliationPath), sha256: sha256File(leadTypeReconciliationPath) },
   };
   manifest.status = "complete";
   manifest.completedAt = new Date().toISOString();

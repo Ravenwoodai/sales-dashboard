@@ -60,18 +60,24 @@ const outputDir = path.resolve(String(args.output || path.join(root, "outputs", 
 const defaultFileName = `Lead_Utilisation_and_Wastage_Report_${periodStart}_to_${periodEnd}.xlsx`;
 const outputPath = path.join(outputDir, String(args.filename || defaultFileName));
 const dataPath = path.join(outputDir, "report_data.json");
+const leadTypeScope = clean(args["lead-type-scope"]);
+const rosterReportDataPath = args["roster-report-data"] ? path.resolve(String(args["roster-report-data"])) : "";
 
 const start = wallClockTimestamp(periodStart);
 const cutoff = wallClockTimestamp(periodEnd, true);
 const managerExclusionLabels = parseNameList(args["manager-exclusions"], []);
 const salespersonExclusionLabels = parseNameList(args["salesperson-exclusions"], []);
 const exclusionDisplay = clean(args["exclusion-display"]);
+const personMinimumAllocations = Number(args["person-minimum-allocations"] || 100);
 if (!managerExclusionLabels.length || !salespersonExclusionLabels.length || !exclusionDisplay) {
   throw new Error("Manager exclusions, salesperson exclusions and --exclusion-display are required.");
 }
+if (!Number.isFinite(personMinimumAllocations) || personMinimumAllocations < 1) {
+  throw new Error("--person-minimum-allocations must be a positive number.");
+}
 const managerExclusions = new Set(managerExclusionLabels.map(norm));
 const salespersonExclusions = new Set(salespersonExclusionLabels.map(norm));
-const reportSubtitle = `${displayDate(periodStart, true)} to ${displayDate(periodEnd, true)}`;
+const reportSubtitle = `${displayDate(periodStart, true)} to ${displayDate(periodEnd, true)}${leadTypeScope ? ` | Lead Type: ${leadTypeScope} only` : ""}`;
 const reportingPeriodText = `${displayDate(periodStart, true)} 00:00:00 through ${displayDate(periodEnd, true)} 23:59:59`;
 
 const navy = "#231F20";
@@ -258,6 +264,21 @@ for (const allocation of includedAllocations) {
   salespersonDisplay.set(allocation.salespersonKey, allocation.salesperson);
   salespersonManager.set(allocation.salespersonKey, allocation.manager);
 }
+if (rosterReportDataPath) {
+  const rosterReport = JSON.parse(await fs.readFile(rosterReportDataPath, "utf8"));
+  if (rosterReport.reportingPeriod?.startDate !== periodStart || rosterReport.reportingPeriod?.endDate !== periodEnd) {
+    throw new Error("--roster-report-data does not match the requested reporting period.");
+  }
+  for (const person of rosterReport.salespeople || []) {
+    const salesperson = salespersonLabel(person.salesperson);
+    const salespersonKey = norm(salesperson);
+    const manager = managerLabel(person.manager);
+    if (managerExclusions.has(norm(manager)) || salespersonExclusions.has(salespersonKey)) continue;
+    includedSalespersonKeys.add(salespersonKey);
+    salespersonDisplay.set(salespersonKey, salesperson);
+    salespersonManager.set(salespersonKey, manager);
+  }
+}
 
 const seenCallIds = new Set();
 let duplicateCallRowsRemoved = 0;
@@ -366,6 +387,13 @@ function seedSalesperson(allocation) {
 }
 
 const salespersonMap = new Map();
+for (const salespersonKey of includedSalespersonKeys) {
+  salespersonMap.set(salespersonKey, seedSalesperson({
+    salespersonKey,
+    salesperson: salespersonDisplay.get(salespersonKey) || salespersonKey,
+    manager: salespersonManager.get(salespersonKey) || "Unassigned / Missing Manager",
+  }));
+}
 for (const allocation of includedAllocations) {
   if (!salespersonMap.has(allocation.salespersonKey)) salespersonMap.set(allocation.salespersonKey, seedSalesperson(allocation));
   const record = salespersonMap.get(allocation.salespersonKey);
@@ -387,6 +415,10 @@ const salespeople = [...salespersonMap.values()].sort((a, b) =>
   b.wasted - a.wasted || percent(b.wasted, b.received) - percent(a.wasted, a.received) || b.received - a.received || a.salesperson.localeCompare(b.salesperson)
 );
 salespeople.forEach((row, index) => { row.wastageRank = index + 1; });
+const utilisationLeaders = salespeople
+  .filter((row) => row.received >= personMinimumAllocations)
+  .sort((a, b) => percent(b.called, b.received) - percent(a.called, a.received) || b.called - a.called || b.received - a.received || a.salesperson.localeCompare(b.salesperson))
+  .map((row, index) => ({ ...row, utilisationRank: index + 1 }));
 
 const managerMap = new Map();
 for (const salesperson of salespeople) {
@@ -479,8 +511,9 @@ if (!qaChecks.every(([, passed]) => passed)) {
 
 await fs.mkdir(outputDir, { recursive: true });
 const payload = {
-  title: "LEAD UTILISATION & WASTAGE REPORT",
+  title: `LEAD UTILISATION & WASTAGE REPORT${leadTypeScope ? ` - ${leadTypeScope.toUpperCase()} ONLY` : ""}`,
   subtitle: reportSubtitle,
+  leadTypeScope: leadTypeScope || null,
   reportingPeriod: {
     startDate: periodStart,
     endDate: periodEnd,
@@ -491,6 +524,7 @@ const payload = {
   managers,
   salespeople,
   top15: salespeople.slice(0, 15),
+  topUtilisation15: utilisationLeaders.slice(0, 15),
   wastedRows: wastedAllocations.length,
   followUpFailureRows: followUpFailures.length,
   exclusions: {
@@ -517,10 +551,6 @@ const payload = {
   qaChecks: qaChecks.map(([check, passed]) => ({ check, result: passed ? "PASS" : "FAIL" })),
 };
 const trendHistoryPath = path.resolve(String(args["trend-history"] || path.join(root, "data", "store", "lead-utilisation-trend-history.json")));
-const personMinimumAllocations = Number(args["person-minimum-allocations"] || 100);
-if (!Number.isFinite(personMinimumAllocations) || personMinimumAllocations < 1) {
-  throw new Error("--person-minimum-allocations must be a positive number.");
-}
 const { history: trendHistory, snapshot: trendSnapshot } = appendSnapshot(trendHistoryPath, payload);
 payload.ongoingTrends = buildTrendModel(trendHistory, trendSnapshot, { personMinimumAllocations });
 payload.trendHistory = {
@@ -688,6 +718,22 @@ summary.getRange(`K${topStart + 2}:K${topStart + 1 + topRows.length}`).format.nu
 summary.getRange(`L${topStart + 2}:L${topStart + 1 + topRows.length}`).format.numberFormat = "0.00";
 summary.getRange(`M${topStart + 2}:N${topStart + 1 + topRows.length}`).format.numberFormat = "#,##0";
 summary.getRange(`O${topStart + 2}:O${topStart + 1 + topRows.length}`).format.numberFormat = "0.0%";
+const utilisationStart = topStart + topRows.length + 4;
+summary.getRange(`A${utilisationStart}:R${utilisationStart}`).merge();
+summary.getRange(`A${utilisationStart}`).values = [["Highest Lead Utilisation by Salesperson"]];
+summary.getRange(`A${utilisationStart}:R${utilisationStart}`).format = { fill: blue, font: { bold: true, color: navy, size: 12 } };
+const utilisationRows = payload.topUtilisation15.map((row) => [row.utilisationRank, row.manager, row.salesperson, row.received, row.called, row.wasted, percent(row.called, row.received), row.firstCallVoicemails, row.followUpFailures, percent(row.called - row.followUpFailures, row.received), row.outboundCalls, percent(row.outboundCalls, row.received), row.allocatedLeadCallAttempts, row.otherOutboundCalls, percent(row.otherOutboundCalls, row.outboundCalls)]);
+summary.getRange(`A${utilisationStart + 1}:O${utilisationStart + 1 + utilisationRows.length}`).values = [topHeaders, ...utilisationRows];
+styleHeader(summary.getRange(`A${utilisationStart + 1}:O${utilisationStart + 1}`));
+styleBody(summary.getRange(`A${utilisationStart + 2}:O${utilisationStart + 1 + utilisationRows.length}`));
+summary.getRange(`D${utilisationStart + 2}:F${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "#,##0";
+summary.getRange(`G${utilisationStart + 2}:G${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "0.0%";
+summary.getRange(`H${utilisationStart + 2}:I${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "#,##0";
+summary.getRange(`J${utilisationStart + 2}:J${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "0.0%";
+summary.getRange(`K${utilisationStart + 2}:K${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "#,##0";
+summary.getRange(`L${utilisationStart + 2}:L${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "0.00";
+summary.getRange(`M${utilisationStart + 2}:N${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "#,##0";
+summary.getRange(`O${utilisationStart + 2}:O${utilisationStart + 1 + utilisationRows.length}`).format.numberFormat = "0.0%";
 setWidths(summary, { A: 18, B: 18, C: 22, D: 11, E: 10, F: 10, G: 13, H: 13, I: 13, J: 15, K: 12, L: 12, M: 15, N: 14, O: 16, P: 6, Q: 6, R: 6 });
 
 title(salespersonSheet, "R", "SALESPERSON UTILISATION", "One row per included salesperson; default sort is Lead Allocations Wasted descending.");
@@ -915,10 +961,10 @@ setWidths(overallTrendSheet, { A: 14, B: 14, C: 19, D: 13, E: 11, F: 11, G: 15, 
 
 title(teamTrendSheet, "N", "ONGOING LEAD UTILISATION — TEAMS", `Each current included manager team is shown without performance ranking; history uses the same verified exclusion policy.`);
 teamTrendSheet.getRange("A3:N4").merge();
-teamTrendSheet.getRange("A3").values = [[`Improvement/regression threshold: ±${(trends.meaningfulChange * 100).toFixed(1)} percentage points. Outliers need ${trends.outlierPriorWeeksRequired} prior comparable weeks. Team totals use aggregated counts.`]];
+teamTrendSheet.getRange("A3").values = [[`Improvement/regression threshold: ±${(trends.meaningfulChange * 100).toFixed(1)}%. Outliers need ${trends.outlierPriorWeeksRequired} prior comparable weeks. Team totals use aggregated counts.`]];
 teamTrendSheet.getRange("A3:N4").format = { fill: cream, font: { color: "#7F6000", italic: true, size: 9 }, wrapText: true, verticalAlignment: "center" };
 const teamSummaryRows = trends.teams.map((team) => [team.name, team.current?.received ?? null, team.current?.utilisation ?? null, team.current?.adjustedUtilisation ?? null, team.comparison.change, team.comparison.label, team.outlier.label]);
-teamTrendSheet.getRange(`A6:G${6 + teamSummaryRows.length}`).values = [["Manager team", "Current allocations", "Utilisation %", "Adjusted Utilisation %", "WoW change", "Movement", "Outlier prompt"], ...teamSummaryRows];
+teamTrendSheet.getRange(`A6:G${6 + teamSummaryRows.length}`).values = [["Manager team", "Current allocations", "Utilisation %", "Adjusted Utilisation %", "Change from last week", "Movement", "Outlier prompt"], ...teamSummaryRows];
 styleHeader(teamTrendSheet.getRange("A6:G6"));
 styleBody(teamTrendSheet.getRange(`A7:G${6 + teamSummaryRows.length}`));
 teamTrendSheet.getRange(`B7:B${6 + teamSummaryRows.length}`).format.numberFormat = "#,##0";
@@ -951,7 +997,7 @@ title(personTrendSheet, personLastColumn, "ONGOING LEAD UTILISATION — QUALIFYI
 personTrendSheet.getRange(`A3:${personLastColumn}4`).merge();
 personTrendSheet.getRange("A3").values = [[`Person-level callouts include only salespeople with at least ${trends.personMinimumAllocations.toLocaleString()} current-week allocations. A week-on-week label also requires the prior week to meet that threshold. Grey gaps mean the person did not have a comparable result for that week.`]];
 personTrendSheet.getRange(`A3:${personLastColumn}4`).format = { fill: cream, font: { color: "#7F6000", italic: true, size: 9 }, wrapText: true, verticalAlignment: "center" };
-const personHeaders = ["Salesperson", "Manager", "Current allocations", "Current utilisation %", "Adjusted utilisation %", "WoW change", "Movement", "Outlier prompt", "Utilisation trend", "Comparable weeks", ...trendWeeks.map((week) => week.weekLabel)];
+const personHeaders = ["Salesperson", "Manager", "Current allocations", "Current utilisation %", "Adjusted utilisation %", "Change from last week", "Movement", "Outlier prompt", "Utilisation trend", "Comparable weeks", ...trendWeeks.map((week) => week.weekLabel)];
 const personRows = trends.people.map((person) => [
   person.name,
   person.manager,
@@ -1009,7 +1055,7 @@ const formulaErrors = await workbook.inspect({
 await fs.writeFile(path.join(outputDir, "verification_inspect.ndjson"), `${keyInspect.ndjson}\n${formulaErrors.ndjson}\n`);
 
 const renderTargets = [
-  ["Lead Utilisation Summary", "A1:R51", "summary.png"],
+  ["Lead Utilisation Summary", `A1:R${utilisationStart + 1 + utilisationRows.length}`, "summary.png"],
   ["Salesperson Utilisation", `A1:R${Math.min(20, 5 + salespersonRows.length)}`, "salesperson.png"],
   ["Manager Utilisation", `A1:Q${5 + managerRows.length}`, "manager.png"],
   ["Wasted Lead Detail", "A1:M14", "wasted.png"],

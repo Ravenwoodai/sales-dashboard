@@ -153,9 +153,9 @@ function comparison(current, previous, minimumAllocations, meaningfulChange) {
     return { status: "not_comparable", label: "No comparable prior week", change: null };
   }
   const change = current.utilisation - previous.utilisation;
-  if (change >= meaningfulChange) return { status: "improved", label: `Improved ${Math.abs(change * 100).toFixed(1)} pp`, change };
-  if (change <= -meaningfulChange) return { status: "regressed", label: `Regressed ${Math.abs(change * 100).toFixed(1)} pp`, change };
-  return { status: "stable", label: `Stable ${change >= 0 ? "+" : ""}${(change * 100).toFixed(1)} pp`, change };
+  if (change >= meaningfulChange) return { status: "improved", label: `Improved ${Math.abs(change * 100).toFixed(1)}%`, change };
+  if (change <= -meaningfulChange) return { status: "regressed", label: `Regressed ${Math.abs(change * 100).toFixed(1)}%`, change };
+  return { status: "stable", label: `Stable ${change >= 0 ? "+" : ""}${(change * 100).toFixed(1)}%`, change };
 }
 
 function outlier(current, prior, minimumAllocations, priorWeeksRequired) {

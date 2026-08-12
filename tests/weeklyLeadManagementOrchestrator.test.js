@@ -50,7 +50,7 @@ function createEvidenceDatabase(filePath) {
 }
 
 test("combined weekly orchestration contract and tokens fail closed", () => {
-  assert.equal(MANIFEST_SCHEMA, "weekly_lead_management_orchestrator.v1");
+  assert.equal(MANIFEST_SCHEMA, "weekly_lead_management_orchestrator.v3");
   assert.equal(interpolate("{{runId}}/report.xlsx", { runId: "2026-07-27_to_2026-07-31" }), "2026-07-27_to_2026-07-31/report.xlsx");
   assert.throws(() => interpolate("{{missing}}", {}), /Unknown configuration token/);
 });

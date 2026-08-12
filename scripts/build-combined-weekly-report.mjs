@@ -30,7 +30,7 @@ function compactPeriod(startIso, endIso) {
 }
 
 const args = parseArgs(process.argv.slice(2));
-for (const required of ["lead-workbook", "voicemail-workbook", "lead-data", "voicemail-data", "output"]) {
+for (const required of ["lead-workbook", "voicemail-workbook", "lead-data", "voicemail-data", "call-data", "output"]) {
   if (!args[required]) throw new Error(`Missing required --${required} argument.`);
 }
 const root = path.resolve(String(args.root || process.cwd()));
@@ -41,13 +41,16 @@ const leadWorkbookPath = path.resolve(String(args["lead-workbook"]));
 const voicemailWorkbookPath = path.resolve(String(args["voicemail-workbook"]));
 const leadDataPath = path.resolve(String(args["lead-data"]));
 const voicemailDataPath = path.resolve(String(args["voicemail-data"]));
+const callDataPath = path.resolve(String(args["call-data"]));
 const qaPath = path.resolve(String(args.qa || path.join(outputDir, "combined_workbook_qa.json")));
+const leadTypeScope = String(args["lead-type-scope"] || "").trim();
 
 const BRAND_RED = "#EE3424";
 const CHARCOAL = "#231F20";
 const CALLED_GREEN = "#1F6F5B";
 const WASTED_RED = "#B42318";
 const AMBER = "#A45A00";
+const TEAL = "#147D78";
 const PANEL = "#F5F6F7";
 const BORDER = "#D6D9DD";
 const SECONDARY = "#5B6470";
@@ -55,9 +58,10 @@ const CREAM = "#FFF3F1";
 const GREEN_PANEL = "#E8F5E9";
 const RED_PANEL = "#FCE4E4";
 
-const [leadData, voicemailData] = await Promise.all([
+const [leadData, voicemailData, callData] = await Promise.all([
   fs.readFile(leadDataPath, "utf8").then(JSON.parse),
   fs.readFile(voicemailDataPath, "utf8").then(JSON.parse),
+  fs.readFile(callDataPath, "utf8").then(JSON.parse),
 ]);
 const reportStart = leadData.reportingPeriod.startDate;
 const reportEnd = leadData.reportingPeriod.endDate;
@@ -65,6 +69,9 @@ const previousStart = voicemailData.previousPeriod.start;
 const previousEnd = voicemailData.previousPeriod.end;
 if (voicemailData.reportingPeriod.start !== reportStart || voicemailData.reportingPeriod.end !== reportEnd) {
   throw new Error("Lead Utilisation and Voicemail reporting periods do not match.");
+}
+if (callData.scope?.currentPeriod?.[0] !== reportStart || callData.scope?.currentPeriod?.[1] !== reportEnd) {
+  throw new Error("Lead Utilisation and Call Activity reporting periods do not match.");
 }
 const reportSubtitle = `${displayDate(reportStart)} to ${displayDate(reportEnd)}`;
 const previousSubtitle = `${displayDate(previousStart)} to ${displayDate(previousEnd)} under the same Friday-cutoff contract.`;
@@ -119,11 +126,11 @@ function resultStyle(label) {
 function ppLabel(item) {
   if (!item || item.change == null) return item?.direction || "No prior result";
   const absolute = Math.abs(Number(item.change) * 100).toFixed(1);
-  return `${item.direction} ${absolute} pp`;
+  return `${item.direction} ${absolute}%`;
 }
 
-function cloneWorksheet(sourceName, targetName, rows, columns, freezeRows = null) {
-  const source = voicemailWorkbook.worksheets.getItem(sourceName);
+function cloneWorksheet(sourceWorkbook, sourceName, targetName, rows, columns, freezeRows = null) {
+  const source = sourceWorkbook.worksheets.getItem(sourceName);
   const target = workbook.worksheets.add(targetName);
   const sourceRange = source.getRangeByIndexes(0, 0, rows, columns);
   const targetRange = target.getRangeByIndexes(0, 0, rows, columns);
@@ -311,7 +318,7 @@ const voicemailSheets = [
 ];
 
 for (const definition of voicemailSheets) {
-  const target = cloneWorksheet(definition.source, definition.target, definition.rows, definition.columns, definition.freeze);
+  const target = cloneWorksheet(voicemailWorkbook, definition.source, definition.target, definition.rows, definition.columns, definition.freeze);
   if (definition.table) {
     const [range, name] = definition.table;
     const table = target.tables.add(range, true, name);
@@ -320,11 +327,17 @@ for (const definition of voicemailSheets) {
 }
 styleVoicemailSheets();
 
+const callCurrent = callData.weeks.find((week) => week.period === `${reportStart}_to_${reportEnd}`);
+if (!callCurrent) throw new Error("Call Activity data does not contain the current reporting week.");
+
 const summary = workbook.worksheets.getItem("Lead Utilisation Summary");
+summary.unmergeCells("A53:R200");
+summary.getRange("A53:R200").values = Array.from({ length: 148 }, () => Array(18).fill(null));
+summary.getRange("A53:R200").format = { fill: "#FFFFFF", font: { name: "Source Sans 3", color: CHARCOAL, size: 9 } };
 for (const range of ["A1:P1", "A2:P2", "A3:P3", "A4:P5"]) ensureMerge(summary, range);
-summary.getRange("A1").values = [["WEEKLY LEAD MANAGEMENT REPORT"]];
-summary.getRange("A2").values = [[reportSubtitle]];
-summary.getRange("A3").values = [["One weekly pack, two separate cohorts. Lead Utilisation measures lead allocations received during the week. Voicemail Follow-up measures New Business voicemail encounters during the week. Rates must not be combined or treated as sharing one denominator."]];
+summary.getRange("A1").values = [[leadTypeScope ? `WEEKLY LEAD MANAGEMENT REPORT - ${leadTypeScope.toUpperCase()} ONLY` : "WEEKLY LEAD MANAGEMENT REPORT"]];
+summary.getRange("A2").values = [[leadTypeScope ? `${reportSubtitle} | Campaign Lead Type: ${leadTypeScope}` : reportSubtitle]];
+summary.getRange("A3").values = [["One weekly pack with three separate lenses. Lead Utilisation measures weekly allocations, Voicemail Follow-up checks weekly voicemail customers, and Call Activity & Rhythm reviews outbound phone activity. Each section keeps its own denominator and validation rules; no blended score is produced."]];
 summary.getRange("A4").values = [[`Scope exclusions: ${exclusionDisplay}.`]];
 summary.getRange("A1:P1").format = { fill: "#FFFFFF", font: { name: "Source Sans 3", bold: true, color: CHARCOAL, size: 18 }, verticalAlignment: "center", borders: { left: { style: "thick", color: BRAND_RED } } };
 summary.getRange("A1:P1").format.rowHeight = 30;
@@ -410,13 +423,52 @@ for (let row = 66; row <= managerSummaryLastRow; row += 1) {
   }
 }
 
+const callSummaryStartRow = managerSummaryLastRow + 3;
+const callCardLabelRow = callSummaryStartRow + 4;
+const callCardValueStartRow = callCardLabelRow + 1;
+const callSummaryLastRow = callCardValueStartRow + 2;
+mergeAndWrite(summary, `A${callSummaryStartRow}:P${callSummaryStartRow}`, "CALL ACTIVITY & RHYTHM - TELEPHONY ACTIVITY REVIEW");
+mergeAndWrite(summary, `A${callSummaryStartRow + 1}:P${callSummaryStartRow + 2}`, "This section uses the same included salesperson roster and Monday-to-Friday window. Recorded talk time, short calls and calling pace are review prompts only: they do not prove who answered, call quality, effort or fatigue.");
+for (const range of [
+  `A${callCardLabelRow}:C${callCardLabelRow}`, `D${callCardLabelRow}:F${callCardLabelRow}`, `G${callCardLabelRow}:I${callCardLabelRow}`, `J${callCardLabelRow}:L${callCardLabelRow}`, `M${callCardLabelRow}:P${callCardLabelRow}`,
+  `A${callCardValueStartRow}:C${callSummaryLastRow}`, `D${callCardValueStartRow}:F${callSummaryLastRow}`, `G${callCardValueStartRow}:I${callSummaryLastRow}`, `J${callCardValueStartRow}:L${callSummaryLastRow}`, `M${callCardValueStartRow}:P${callSummaryLastRow}`,
+]) summary.mergeCells(range);
+for (const [cell, value] of [
+  [`A${callCardLabelRow}`, "OUTBOUND CALLS"], [`D${callCardLabelRow}`, "CALLS / PERSON-DAY"], [`G${callCardLabelRow}`, "RECORDED TALK-TIME CALLS"], [`J${callCardLabelRow}`, "CONFIRMED VOICEMAIL"], [`M${callCardLabelRow}`, "TOTAL TALK TIME"],
+]) summary.getRange(cell).values = [[value]];
+const confirmedVoicemail = callCurrent.overall.contactClassificationBreakdown.find((item) => item.label === "voicemail")?.count || 0;
+summary.getRange(`A${callCardValueStartRow}`).values = [[callCurrent.overall.calls]];
+summary.getRange(`D${callCardValueStartRow}`).values = [[callCurrent.overall.callsPerPersonDay]];
+summary.getRange(`G${callCardValueStartRow}`).values = [[callCurrent.overall.positiveDurationCalls]];
+summary.getRange(`J${callCardValueStartRow}`).values = [[confirmedVoicemail]];
+summary.getRange(`M${callCardValueStartRow}`).values = [[callCurrent.overall.totalTalkHours]];
+summary.getRange(`A${callSummaryStartRow}:P${callSummaryStartRow}`).format = { fill: PANEL, font: { name: "Source Sans 3", bold: true, color: CHARCOAL, size: 12 }, borders: { left: { style: "thick", color: BRAND_RED } }, verticalAlignment: "center" };
+summary.getRange(`A${callSummaryStartRow + 1}:P${callSummaryStartRow + 2}`).format = { fill: CREAM, font: { name: "Source Sans 3", italic: true, color: AMBER, size: 9 }, wrapText: true, verticalAlignment: "center", borders: { preset: "outside", style: "thin", color: BRAND_RED } };
+for (const [labelRange, valueRange, fill, colour] of [
+  [`A${callCardLabelRow}:C${callCardLabelRow}`, `A${callCardValueStartRow}:C${callSummaryLastRow}`, PANEL, CHARCOAL],
+  [`D${callCardLabelRow}:F${callCardLabelRow}`, `D${callCardValueStartRow}:F${callSummaryLastRow}`, "#EAF2F8", "#225E8F"],
+  [`G${callCardLabelRow}:I${callCardLabelRow}`, `G${callCardValueStartRow}:I${callSummaryLastRow}`, GREEN_PANEL, CALLED_GREEN],
+  [`J${callCardLabelRow}:L${callCardLabelRow}`, `J${callCardValueStartRow}:L${callSummaryLastRow}`, CREAM, AMBER],
+  [`M${callCardLabelRow}:P${callCardLabelRow}`, `M${callCardValueStartRow}:P${callSummaryLastRow}`, "#E7F4F3", TEAL],
+]) {
+  summary.getRange(labelRange).format = { fill, font: { name: "Source Sans 3", bold: true, color: SECONDARY, size: 9 }, horizontalAlignment: "center", verticalAlignment: "center", wrapText: true, borders: { preset: "outside", style: "thin", color: BORDER } };
+  summary.getRange(valueRange).format = { fill, font: { name: "Source Sans 3", bold: true, color: colour, size: 18 }, horizontalAlignment: "center", verticalAlignment: "center", borders: { preset: "outside", style: "thin", color: BORDER } };
+}
+summary.getRange(`A${callCardValueStartRow}:C${callSummaryLastRow}`).format.numberFormat = "#,##0";
+summary.getRange(`D${callCardValueStartRow}:F${callSummaryLastRow}`).format.numberFormat = "0.0";
+summary.getRange(`G${callCardValueStartRow}:L${callSummaryLastRow}`).format.numberFormat = "#,##0";
+summary.getRange(`M${callCardValueStartRow}:P${callSummaryLastRow}`).format.numberFormat = "0.0\" h\"";
+
 if (leadData.totals.received !== leadData.totals.called + leadData.totals.wasted) throw new Error("Lead Utilisation totals do not reconcile.");
 if (!(leadData.qaChecks || []).every((item) => item.result === "PASS")) throw new Error("Lead Utilisation source QA is not fully passed.");
 if (voicemailData.totals.checked !== voicemailData.totals.followed + voicemailData.totals.notByFriday) throw new Error("Voicemail totals do not reconcile.");
 if (voicemailData.totals.noLater > voicemailData.totals.notByFriday) throw new Error("Voicemail no-later count exceeds the not-followed count.");
 if (!voicemailData.qaChecks?.current?.length || !voicemailData.qaChecks?.previous?.length) throw new Error("Voicemail source QA is incomplete.");
+if (callData.schemaVersion !== "call_activity_analysis.v1") throw new Error("Call Activity analysis schema is invalid.");
+if (!callData.weeks?.every((week) => week.quality?.reportReconciliation)) throw new Error("Call Activity does not reconcile to Lead Utilisation.");
+if (!callData.weeks?.every((week) => week.overall.durationObserved === week.overall.calls)) throw new Error("Call Activity duration coverage is incomplete.");
 
-const keyInspection = await workbook.inspect({ kind: "region", sheetId: "Lead Utilisation Summary", range: `A53:P${managerSummaryLastRow}`, include: "values,formulas", maxChars: 12000 });
+const keyInspection = await workbook.inspect({ kind: "region", sheetId: "Lead Utilisation Summary", range: `A53:P${callSummaryLastRow}`, include: "values,formulas", maxChars: 16000 });
 const formulaErrors = await workbook.inspect({ kind: "match", searchTerm: "#REF!|#DIV/0!|#VALUE!|#NAME\\?|#N/A", options: { useRegex: true, maxResults: 300 }, summary: "combined workbook formula error scan" });
 const errorLines = formulaErrors.ndjson.split(/\r?\n/).filter((line) => line.includes('"kind":"match"'));
 if (errorLines.length) throw new Error(`Formula errors detected: ${errorLines.slice(0, 10).join("\n")}`);
@@ -424,7 +476,7 @@ if (errorLines.length) throw new Error(`Formula errors detected: ${errorLines.sl
 const previewDir = path.join(workDir, "xlsx-previews-final");
 await fs.mkdir(previewDir, { recursive: true });
 const previewRanges = {
-  "Lead Utilisation Summary": `A1:R${managerSummaryLastRow}`,
+  "Lead Utilisation Summary": `A1:R${callSummaryLastRow}`,
   "Salesperson Utilisation": "A1:R63",
   "Manager Utilisation": "A1:Q11",
   "Wasted Lead Detail": "A1:M40",
@@ -457,10 +509,17 @@ const qa = {
   sheets: workbook.worksheets.items.map((sheet) => sheet.name),
   leadTotals: leadData.totals,
   voicemailTotals: voicemailData.totals,
+  callActivityTotals: {
+    outboundCalls: callCurrent.overall.calls,
+    recordedTalkTimeCalls: callCurrent.overall.positiveDurationCalls,
+    confirmedVoicemail,
+    people: callData.currentPeople.length,
+    teams: callData.currentTeams.length,
+  },
   managerTeams: managerNames,
   formulaErrorMatches: errorLines.length,
   keyInspection: keyInspection.ndjson,
-  sourceFiles: [leadWorkbookPath, voicemailWorkbookPath, leadDataPath, voicemailDataPath],
+  sourceFiles: [leadWorkbookPath, voicemailWorkbookPath, leadDataPath, voicemailDataPath, callDataPath],
 };
 await fs.writeFile(qaPath, JSON.stringify(qa, null, 2));
-console.log(JSON.stringify({ outputPath, sheetCount: qa.sheets.length, leadTotals: qa.leadTotals, voicemailTotals: qa.voicemailTotals, formulaErrorMatches: qa.formulaErrorMatches }, null, 2));
+console.log(JSON.stringify({ outputPath, sheetCount: qa.sheets.length, leadTotals: qa.leadTotals, voicemailTotals: qa.voicemailTotals, callActivityTotals: qa.callActivityTotals, formulaErrorMatches: qa.formulaErrorMatches }, null, 2));
