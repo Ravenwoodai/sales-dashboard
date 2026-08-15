@@ -1,0 +1,960 @@
+{
+  "schemaVersion": "carma_read_only_navigation_report_inventory.v1",
+  "inventoryDate": "2026-07-30",
+  "sourceSystem": "Carma",
+  "baseUrl": "https://cwa.carmacloud.com/",
+  "scope": {
+    "objective": "Strictly read-only navigation and report inventory for the currently authorised Carma account",
+    "currentStatus": "partial_prior_live_evidence_authenticated_current_ui_pass_pending",
+    "accountBoundary": "Only features visible to the saved Carma account may be inventoried",
+    "notClaimed": [
+      "Hidden administrator features",
+      "Features available only to other roles",
+      "Backend-only services",
+      "Business rules that cannot be observed without a state-changing action"
+    ]
+  },
+  "safetyPolicy": {
+    "mode": "strict_read_only",
+    "permitted": [
+      "Open navigation menus",
+      "Hover submenus",
+      "Navigate to already-authorised screens",
+      "Inspect labels, fields, filters, tables and non-secret route metadata",
+      "Open dropdowns without changing the underlying business record",
+      "Run previously proven read-only reports with bounded parameters",
+      "Save local report exports when required as evidence"
+    ],
+    "forbidden": [
+      "Save",
+      "Delete",
+      "Approve",
+      "Cancel an order",
+      "Allocate or reallocate",
+      "Create or submit a batch",
+      "Send",
+      "Process",
+      "Payment or refund actions",
+      "Select business-record rows",
+      "Unverified Additional Actions",
+      "CRM writeback"
+    ],
+    "unknownControlRule": "Document an unknown control but do not activate it.",
+    "authenticationRule": "Use saved encrypted credentials first. Never record credentials or one-time codes. Request a new one-time code only when Carma visibly presents a fresh 2FA challenge.",
+    "screenshotRule": "No login-stage screenshots. Store any later UI evidence locally and avoid unnecessary customer data."
+  },
+  "evidenceLevels": {
+    "live_current_ui": "Observed again in the authenticated 2026-07-30 mapping pass",
+    "prior_live_proof": "Observed in a completed read-only Carma run with retained output or process evidence",
+    "local_process_contract": "Present in saved automation/configuration but not yet revisited in the current mapping pass",
+    "unknown": "Not safely established"
+  },
+  "retainedEvidence": {
+    "source": "mapping/retained-navigation-evidence-2026-07-24.json",
+    "sampledOrderArtifacts": 25,
+    "bodyTextFields": 300,
+    "primaryWorkspaceNavigationObservations": 857,
+    "applicationMenuObservations": 600,
+    "contextualCustomerManagementTabs": 12,
+    "privacy": "Only navigation labels, observation counts and a source-set hash are retained; no customer or contact values are copied."
+  },
+  "cachedReportEvidence": {
+    "source": "mapping/cached-report-evidence.json",
+    "technicalReportFiles": 8,
+    "reportsWithParameterPages": 3,
+    "sanitizedParameters": 8,
+    "placementRule": "Cached technical report filenames and prompt schemas are supporting evidence only. They are not assigned a current menu label or path without navigation proof.",
+    "privacy": "No report rows, option-list values, customer data, credentials or session values are copied."
+  },
+  "navigation": [
+    {
+      "id": "nav.primary_workspace_navigation",
+      "label": "Primary workspace navigation",
+      "kind": "navigation_group",
+      "parentId": null,
+      "safety": "labels_observed_read_only_destinations_mixed",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "nav.primary.my_mail",
+        "nav.primary.search",
+        "nav.primary.campaigns",
+        "nav.primary.events",
+        "nav.primary.history",
+        "nav.primary.payment_plans",
+        "nav.primary.digital_inventory",
+        "nav.primary.sales",
+        "nav.primary.sales_summary",
+        "nav.primary.sales_totals",
+        "nav.primary.graphs",
+        "nav.debt_collections",
+        "nav.primary.admin_email_status",
+        "nav.primary.maintain_orders",
+        "nav.primary.our_people",
+        "nav.primary.banking"
+      ],
+      "sourceEvidence": "mapping/retained-navigation-evidence-2026-07-24.json"
+    },
+    {
+      "id": "nav.primary.my_mail",
+      "label": "My Mail",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "unclassified_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.search",
+      "label": "Search",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.campaigns",
+      "label": "Campaigns",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "screen.campaign_allocations"
+      ]
+    },
+    {
+      "id": "nav.primary.events",
+      "label": "Events",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.history",
+      "label": "History",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.payment_plans",
+      "label": "Payment Plans",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "financial_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.digital_inventory",
+      "label": "Digital Inventory",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.sales",
+      "label": "Sales",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.sales_summary",
+      "label": "Sales Summary",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "read_only_summary_destination",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.sales_totals",
+      "label": "Sales Totals",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "read_only_summary_destination",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.graphs",
+      "label": "Graphs",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "read_only_analytics_destination",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.debt_collections",
+      "label": "Debt Collections",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "mixed_screen_read_only_inspection_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "screen.debt_collections"
+      ]
+    },
+    {
+      "id": "nav.primary.admin_email_status",
+      "label": "Admin Email Status",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "read_only_status_destination",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.maintain_orders",
+      "label": "Maintain Orders",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.primary.our_people",
+      "label": "Our People",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "personal_data_destination_read_only_inspection_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "screen.our_people"
+      ]
+    },
+    {
+      "id": "nav.primary.banking",
+      "label": "Banking",
+      "kind": "primary_workspace_item",
+      "parentId": "nav.primary_workspace_navigation",
+      "safety": "financial_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application_menu",
+      "label": "Application menu",
+      "kind": "navigation_group",
+      "parentId": null,
+      "safety": "labels_observed_read_only_destinations_mixed",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "nav.application.handbooks_distribution",
+        "nav.application.add_new_businesses",
+        "nav.application.home",
+        "nav.application.collections",
+        "nav.application.custom_lists",
+        "nav.application.menu_editor",
+        "nav.application.production",
+        "nav.reporting",
+        "nav.application.payruns",
+        "nav.application.pay_reporting",
+        "nav.application.sales_team_reports",
+        "nav.application.pending_cancellations",
+        "nav.application.template_editor",
+        "nav.application.learning_hub",
+        "nav.application.material",
+        "nav.application.adhoc_maintenance",
+        "nav.application.logout"
+      ],
+      "sourceEvidence": "mapping/retained-navigation-evidence-2026-07-24.json"
+    },
+    {
+      "id": "nav.application.handbooks_distribution",
+      "label": "Handbooks Distribution",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "unclassified_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.add_new_businesses",
+      "label": "Add New Businesses",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.home",
+      "label": "Home",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.collections",
+      "label": "Collections",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.custom_lists",
+      "label": "Custom Lists",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.menu_editor",
+      "label": "Menu Editor",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "configuration_editor_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.production",
+      "label": "Production",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.reporting",
+      "label": "Reporting",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "nav.reporting.campaign_reporting",
+        "nav.reporting.sales",
+        "nav.reporting.salespeople"
+      ]
+    },
+    {
+      "id": "nav.application.payruns",
+      "label": "Payruns",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "financial_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.pay_reporting",
+      "label": "Pay Reporting",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "read_only_reporting_destination_unverified",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.sales_team_reports",
+      "label": "Sales Team Reports",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "read_only_reporting_destination_unverified",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.pending_cancellations",
+      "label": "Pending Cancellations",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.template_editor",
+      "label": "Template Editor",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "configuration_editor_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.learning_hub",
+      "label": "Learning Hub",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "read_only_content_destination_unverified",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.material",
+      "label": "Material",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "mixed_or_potentially_mutating_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.application.adhoc_maintenance",
+      "label": "AdHoc Maintenace",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "maintenance_destination_label_only",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "labelNote": "Spelling retained exactly from the captured Carma UI."
+    },
+    {
+      "id": "nav.application.logout",
+      "label": "Logout",
+      "kind": "application_menu_item",
+      "parentId": "nav.application_menu",
+      "safety": "session_action_not_activated_during_mapping",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false
+    },
+    {
+      "id": "nav.reporting.campaign_reporting",
+      "label": "Campaign Reporting",
+      "kind": "submenu",
+      "parentId": "nav.reporting",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "report.new_business_leads_sold_by_allocation"
+      ]
+    },
+    {
+      "id": "nav.reporting.sales",
+      "label": "Sales",
+      "kind": "submenu",
+      "parentId": "nav.reporting",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "report.approved_sales_by_customer_for_period",
+        "report.cancelled_orders_by_week"
+      ]
+    },
+    {
+      "id": "nav.reporting.salespeople",
+      "label": "Salespeople",
+      "kind": "submenu",
+      "parentId": "nav.reporting",
+      "safety": "read_only_navigation",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "children": [
+        "report.customer_lead_allocation"
+      ]
+    }
+  ],
+  "reports": [
+    {
+      "id": "report.new_business_leads_sold_by_allocation",
+      "name": "New Business Leads Sold by Allocation",
+      "menuPath": [
+        "Reporting",
+        "Campaign Reporting",
+        "New Business Leads Sold by Allocation"
+      ],
+      "reportTechnology": "SAP Crystal Reports viewer",
+      "reportFileName": "LeadsNBSoldbyAllocation.rpt",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "read_only_report",
+      "parameters": [
+        {
+          "position": 0,
+          "name": "Start Date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "position": 1,
+          "name": "End Date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "position": 2,
+          "name": "Top Count",
+          "type": "integer",
+          "required": true,
+          "observedConfiguredValue": 99
+        },
+        {
+          "position": 3,
+          "name": "Summary Only",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        },
+        {
+          "position": 4,
+          "name": "Group By Source",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        },
+        {
+          "position": 5,
+          "name": "Group By Sales Manager",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        },
+        {
+          "position": 6,
+          "name": "Mobile Only",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        },
+        {
+          "position": 7,
+          "name": "Include Terminated Salespeople",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        }
+      ],
+      "knownExports": [
+        "Microsoft Excel Workbook Data-only"
+      ],
+      "sourceEvidence": [
+        "report-config.json",
+        "src/run-report.ts"
+      ],
+      "gaps": [
+        "Current menu siblings not yet captured",
+        "Full export-format list not yet captured",
+        "Output column schema not yet catalogued"
+      ]
+    },
+    {
+      "id": "report.approved_sales_by_customer_for_period",
+      "name": "Approved Sales by Customer for Period",
+      "menuPath": [
+        "Reporting",
+        "Sales",
+        "Approved Sales by Customer for Period"
+      ],
+      "reportTechnology": "SAP Crystal Reports viewer",
+      "reportFileName": "SalesApprovedByCustomerForPeriod.rpt",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "read_only_report",
+      "parameters": [
+        {
+          "position": 0,
+          "name": "Start Date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "position": 1,
+          "name": "End Date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "position": 2,
+          "name": "Show Only New Customers",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ],
+          "meaning": "True is an exact report-membership subset, not independent proof of customer age."
+        },
+        {
+          "position": 3,
+          "name": "Summary Only",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        },
+        {
+          "position": 4,
+          "name": "Group By Salesperson",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ]
+        },
+        {
+          "position": 5,
+          "name": "Asset Groups",
+          "type": "multi_select",
+          "observedOptionCount": 7,
+          "observedSelection": "All",
+          "optionLabelsCurrentPassVerified": false
+        }
+      ],
+      "knownExports": [
+        "Microsoft Excel Workbook Data-only"
+      ],
+      "sourceEvidence": [
+        "src/open-approved-sales-report-cdp.ts",
+        "src/run-approved-sales-report-cdp.ts",
+        "output/approved-sales-history-backfill-2026-07-27/manifest.json"
+      ],
+      "gaps": [
+        "Seven Asset Group labels not yet captured",
+        "Current menu siblings not yet captured",
+        "Full export-format list not yet captured"
+      ]
+    },
+    {
+      "id": "report.cancelled_orders_by_week",
+      "name": "Cancelled Orders by Week",
+      "menuPath": [
+        "Reporting",
+        "Sales",
+        "Cancelled Orders by Week"
+      ],
+      "reportTechnology": "SAP Crystal Reports viewer",
+      "reportFileName": "CancelledOrdersByWeek.rpt",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "read_only_report",
+      "parameters": [
+        {
+          "position": 0,
+          "name": "Start Date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "position": 1,
+          "name": "End Date",
+          "type": "date",
+          "required": true
+        },
+        {
+          "position": 2,
+          "name": "Publications",
+          "type": "multi_select",
+          "observedOptionCount": 21,
+          "optionSnapshotSource": "output/cancelled-orders-by-week-history-2026-07-29/manifest.json"
+        },
+        {
+          "position": 3,
+          "name": "Editions",
+          "type": "multi_select",
+          "observedOptionCount": 26,
+          "dependency": "Options were exposed after publications were selected.",
+          "optionSnapshotSource": "output/cancelled-orders-by-week-history-2026-07-29/manifest.json"
+        },
+        {
+          "position": 4,
+          "name": "Group By Week",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ],
+          "falseMeaning": "Group by Publication"
+        },
+        {
+          "position": 5,
+          "name": "Show Inactive Only",
+          "type": "boolean",
+          "options": [
+            false,
+            true
+          ],
+          "falseMeaning": "All salespeople",
+          "trueMeaning": "Terminated salespeople only"
+        }
+      ],
+      "knownExports": [
+        "Microsoft Excel Workbook Data-only"
+      ],
+      "knownBehavior": [
+        "A fresh report instance is required when changing data-fetching date parameters.",
+        "The post-run Crystal Parameter Panel displayed changed dates without reliably re-querying.",
+        "The four Boolean report views overlap and must not be summed."
+      ],
+      "sourceEvidence": [
+        "PROCESS-CANCELLED-ORDERS-BY-WEEK-HISTORY.md",
+        "output/cancelled-orders-by-week-history-2026-07-29/manifest.json"
+      ],
+      "gaps": [
+        "Current menu siblings not yet captured",
+        "Full export-format list not yet captured"
+      ]
+    },
+    {
+      "id": "report.customer_lead_allocation",
+      "name": "Customer Lead Allocation",
+      "menuPath": [
+        "Reporting",
+        "Salespeople",
+        "Customer Lead Allocation"
+      ],
+      "reportTechnology": "Carma report dialog with generated PDF",
+      "reportFileName": "CustomerLeadAllocationHistory.pdf",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "read_only_report",
+      "parameters": [
+        {
+          "position": 0,
+          "name": "Customer ID",
+          "type": "numeric_identifier",
+          "required": true
+        }
+      ],
+      "knownExports": [
+        "PDF"
+      ],
+      "knownBehavior": [
+        "A valid customer can return a multi-page allocation-history PDF.",
+        "Carma can return an explicit empty-report result for an ID with no matching history."
+      ],
+      "sourceEvidence": [
+        "PROCESS-CUSTOMER-LEAD-ALLOCATION.md",
+        "src/extract-customer-lead-allocation.ts"
+      ],
+      "gaps": [
+        "Current menu siblings not yet captured",
+        "Exact report-dialog control labels beyond Enter CustomerID not yet catalogued"
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "screen.debt_collections",
+      "name": "Debt Collections",
+      "navigationPath": [
+        "Debt Collections"
+      ],
+      "kind": "operational_grid_not_a_reporting_menu_report",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "mixed_screen_read_only_inspection_only",
+      "safeObservedControls": [
+        "Debt Collections Batch dropdown",
+        "Period",
+        "Start Date",
+        "End Date",
+        "Virtualized result grid",
+        "Displayed Order Amount total",
+        "Displayed Payments total",
+        "Displayed Amount Owing total"
+      ],
+      "forbiddenControls": [
+        "Grid Select All checkbox",
+        "Grid Select Row checkboxes",
+        "Carma export actions",
+        "Create batch",
+        "Save batch",
+        "Submit batch",
+        "Unverified Additional Actions"
+      ],
+      "sourceEvidence": [
+        "PROCESS-CARMA-DEBT-COLLECTIONS-EXTRACTION.md"
+      ],
+      "gaps": [
+        "Current neighbouring top-level tabs not yet captured",
+        "Unknown controls have not been activated"
+      ]
+    },
+    {
+      "id": "screen.customer_management",
+      "name": "Customer Management",
+      "navigationPath": [
+        "Customer Management"
+      ],
+      "route": "/CustomerManagement",
+      "kind": "customer_context_workspace",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "mixed_screen_read_only_inspection_only",
+      "contextualTabs": [
+        "Address",
+        "Admin Notes",
+        "Admin Notes (Show all)",
+        "Company",
+        "Contacts",
+        "History",
+        "Invoicing Summary",
+        "OrderSummary",
+        "Payments",
+        "Sales History",
+        "Sales Totals",
+        "Summary"
+      ],
+      "sourceEvidence": [
+        "mapping/retained-navigation-evidence-2026-07-24.json"
+      ],
+      "gaps": [
+        "Current route entry point and tab order require authenticated verification",
+        "Tab labels prove visible surface only; controls within tabs remain uncatalogued",
+        "No customer record is to be selected solely for mapping"
+      ]
+    },
+    {
+      "id": "screen.campaign_allocations",
+      "name": "Campaign Allocations",
+      "navigationPath": [
+        "Campaigns"
+      ],
+      "route": "/CustomerManagement",
+      "kind": "campaign_allocation_grid",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "mixed_screen_read_only_inspection_only",
+      "safeObservedControls": [
+        "Start Date",
+        "End Date",
+        "Admin Campaigns Only",
+        "Salespeople selector",
+        "Virtualized allocation grid"
+      ],
+      "observedGridFields": [
+        "Campaign Allocation ID",
+        "Row position",
+        "Name",
+        "Quantity",
+        "Actioned",
+        "Remaining",
+        "Created Date",
+        "Sales Manager",
+        "Allocated To",
+        "Allocated By",
+        "Name Details"
+      ],
+      "forbiddenControlCategories": [
+        "Create or edit a campaign allocation",
+        "Allocate or reallocate",
+        "Delete",
+        "Save",
+        "Select business rows for action"
+      ],
+      "sourceEvidence": [
+        "outputs/campaigns_2026-07-01_to_2026-07-20/campaign_allocations_2026-07-01_to_2026-07-20.json"
+      ],
+      "gaps": [
+        "Exact current control labels, ordering and pagination behaviour require authenticated verification",
+        "Potentially mutating controls have not been activated or behaviour-tested"
+      ]
+    },
+    {
+      "id": "screen.our_people",
+      "name": "Our People",
+      "navigationPath": [
+        "Our People"
+      ],
+      "route": "/CustomerManagement",
+      "kind": "people_directory_grid",
+      "evidenceLevel": "prior_live_proof",
+      "currentPassVerified": false,
+      "safety": "personal_data_screen_read_only_inspection_only",
+      "safeObservedControls": [
+        "Active Only",
+        "Grid field selector",
+        "Read-only filter submissions",
+        "Results grid"
+      ],
+      "observedAvailableFields": [
+        "Email",
+        "Name",
+        "First Name",
+        "Last Name",
+        "Ext.",
+        "Phone Number",
+        "Salesperson",
+        "Sales Manager",
+        "Username",
+        "Start Date",
+        "End Date",
+        "Account Id",
+        "Loc Restricted",
+        "Last Login",
+        "Date of Birth",
+        "State",
+        "Country",
+        "Rating"
+      ],
+      "knownBehaviour": [
+        "Grid enforces a 200-record ceiling",
+        "Some historical filter submissions were rejected or did not finish",
+        "Email values rendered as tooltip-only content in the retained extraction"
+      ],
+      "forbiddenControlCategories": [
+        "Create, edit, disable or delete an account",
+        "Password fields or password actions",
+        "Save",
+        "Bulk selection or bulk action"
+      ],
+      "sourceEvidence": [
+        "data/reference/our-people/README.md",
+        "data/reference/our-people/2026-07-28/our_people_checkpoint_2026-07-28.json"
+      ],
+      "gaps": [
+        "Exact current filter controls, edit affordances and screen ordering require authenticated verification",
+        "Password fields remain intentionally excluded",
+        "Existing retained extract is best-effort and not a certified complete census"
+      ]
+    }
+  ],
+  "currentPass": {
+    "startedAt": "2026-07-30",
+    "authentication": {
+      "savedCredentialsAttempted": true,
+      "attemptCount": 4,
+      "explicitLogoutRouteAttempted": true,
+      "explicitLogoutRouteResult": "returned_to_root_login_form",
+      "result": "login_form_remained_visible",
+      "freshTwoFactorChallengeObserved": false,
+      "credentialOrCodeCaptured": false,
+      "loginScreenshotCaptured": false
+    },
+    "mutationsPerformed": 0,
+    "businessRecordsSelected": 0,
+    "reportsRun": 0,
+    "navigationBranchesCurrentVerified": 0,
+    "nextRequiredEvidence": "Authenticated current-UI menu traversal for every visible branch, followed by read-only report-parameter inspection."
+  }
+}

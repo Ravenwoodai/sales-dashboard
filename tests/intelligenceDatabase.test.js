@@ -96,7 +96,7 @@ function csv(rows) {
   return `${header.join(",")}\n${rows.join("\n")}\n`;
 }
 
-test("SQLite intelligence database stores call and lead waste rollups", () => {
+test("SQLite intelligence database withholds unvalidated call and lead scores", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csv([
     row({
@@ -128,18 +128,45 @@ test("SQLite intelligence database stores call and lead waste rollups", () => {
   assert.equal(persisted.callsIndexed, 2);
   assert.equal(summary.totals.callsIndexed, 2);
   assert.equal(summary.totals.leadsIndexed, 2);
-  assert.equal(summary.totals.wasteRiskLeads, 1);
-  assert.equal(summary.totals.highQualityLeads, 1);
+  assert.equal(summary.totals.wasteRiskLeads, null);
+  assert.equal(summary.totals.highQualityLeads, null);
+  assert.equal(summary.authorityStatus, "restricted_literal_only");
   assert.equal(calls.length, 2);
-  assert.equal(wasteCalls.length, 1);
-  assert.equal(wasteCalls[0].call_id, "waste");
-  assert.equal(wasteCalls[0].customer_id, "customer-waste");
+  assert.equal(wasteCalls.length, 0);
   assert.equal(calls.some((call) => call.call_id === "good" && call.customer_id === "customer-good"), true);
-  assert.equal(calls.some((call) => call.call_id === "good" && call.lead_utilization_score >= 4), true);
-  assert.equal(calls.some((call) => call.call_id === "waste" && call.lead_utilization_score <= 1), true);
+  assert.equal(calls.every((call) => call.lead_utilization_score === null), true);
+  assert.equal(calls.every((call) => call.salesperson_quality_score === null), true);
+  assert.equal(calls.every((call) => /unavailable|literal/i.test(call.brief_reason)), true);
 });
 
-test("SQLite intelligence database stores completed local LLM extraction results", () => {
+test("SQLite intelligence database stores AI assistant detection without handling judgments", () => {
+  const storePath = tempStorePath();
+  const analysis = analyzeCsvText(csv([
+    row({
+      call_id: "ai-handled",
+      transcription_text: "Outbound call Customer: Hi, I'm a call assistant recording this call. Please say who you are and why you're calling. Riley Example (CWA): Hi, this is Riley from Countrywide Austral. The reason for my call is the official journal for the local area. Please ask them to call me back."
+    })
+  ]));
+
+  replaceImportIntelligence(analysis, { storePath, importId: "import-ai" });
+  const db = openIntelligenceDb({ storePath });
+  try {
+    const events = db.prepare(`
+      SELECT event_type, normalized_value
+      FROM intelligence_events
+      WHERE import_id = ? AND call_id = ? AND source = 'deterministic'
+      ORDER BY id
+    `).all("import-ai", "ai-handled");
+    assert.equal(events.some((event) => event.event_type === "ai_call_assistant_encountered"), true);
+    assert.equal(events.some((event) => event.event_type === "ai_assistant_handled_well"), false);
+    assert.equal(events.some((event) => event.event_type === "ai_assistant_tactic"), false);
+    assert.equal(events.find((event) => event.event_type === "ai_call_assistant_encountered").normalized_value, "detected_unscored");
+  } finally {
+    db.close();
+  }
+});
+
+test("SQLite intelligence database archives local-model payloads without changing operational rows", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csv([
     row({
@@ -150,6 +177,7 @@ test("SQLite intelligence database stores completed local LLM extraction results
   ]));
 
   replaceImportIntelligence(analysis, { storePath, importId: "import-llm" });
+  const deterministicCall = listCallIntelligence({ storePath, importId: "import-llm" })[0];
   markLlmJobQueued({ storePath, importId: "import-llm", callId: "llm-call", jobId: "job-llm-1" });
   const saved = saveLlmIntelligenceResult({
     storePath,
@@ -199,13 +227,16 @@ test("SQLite intelligence database stores completed local LLM extraction results
     const results = db.prepare("SELECT * FROM intelligence_llm_results WHERE import_id = ? AND call_id = ?").all("import-llm", "llm-call");
 
     assert.equal(saved.ok, true);
-    assert.equal(calls[0].llm_status, "completed");
-    assert.equal(calls[0].llm_job_id, "job-llm-1");
-    assert.equal(calls[0].decision_maker_status, "reached");
-    assert.equal(calls[0].customer_sentiment, "interested");
-    assert.equal(entities.length, 1);
-    assert.equal(events.length, 1);
+    assert.equal(saved.researchOnly, true);
+    assert.equal(calls[0].llm_status, "not_requested");
+    assert.equal(calls[0].llm_job_id, "");
+    assert.equal(calls[0].decision_maker_status, deterministicCall.decision_maker_status);
+    assert.equal(calls[0].customer_sentiment, deterministicCall.customer_sentiment);
+    assert.equal(calls[0].brief_reason, deterministicCall.brief_reason);
+    assert.equal(entities.length, 0);
+    assert.equal(events.length, 0);
     assert.equal(results.length, 1);
+    assert.match(results[0].result_json, /Customer requested information by email/);
   } finally {
     db.close();
   }
@@ -263,7 +294,7 @@ test("SQLite intelligence database drops LLM payment intent when pay evidence is
   }
 });
 
-test("SQLite intelligence database keeps LLM payment intent when evidence shows offer order intent", () => {
+test("SQLite intelligence database keeps supported payment intent only inside the research payload", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csv([
     row({
@@ -304,8 +335,9 @@ test("SQLite intelligence database keeps LLM payment intent when evidence shows 
   const db = openIntelligenceDb({ storePath });
   try {
     const events = db.prepare("SELECT * FROM intelligence_events WHERE import_id = ? AND call_id = ? AND source = 'llm'").all("import-llm-send-invoice", "llm-send-invoice");
-    assert.equal(events.length, 1);
-    assert.equal(events[0].event_type, "payment_or_order_intent");
+    const archived = db.prepare("SELECT result_json FROM intelligence_llm_results WHERE import_id = ? AND call_id = ?").get("import-llm-send-invoice", "llm-send-invoice");
+    assert.equal(events.length, 0);
+    assert.equal(JSON.parse(archived.result_json).events[0].event_type, "payment_or_order_intent");
   } finally {
     db.close();
   }
@@ -371,16 +403,16 @@ test("SQLite intelligence database replaces stale LLM results for the same call"
     assert.equal(resultRows[0].job_id, "new-job");
     assert.match(resultRows[0].result_json, /New clean result/);
     assert.doesNotMatch(resultRows[0].result_json, /Old bad result/);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].event_type, "customer_requested_invoice");
-    assert.equal(listed.llm_job_id, "new-job");
+    assert.equal(events.length, 0);
+    assert.equal(listed.llm_job_id, "");
+    assert.equal(listed.llm_status, "not_requested");
     assert.match(listed.llm_result_json, /New clean result/);
   } finally {
     db.close();
   }
 });
 
-test("SQLite intelligence database parses wrapped raw local LLM JSON", () => {
+test("SQLite intelligence database parses wrapped raw local-model JSON into research storage only", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csv([
     row({
@@ -391,6 +423,7 @@ test("SQLite intelligence database parses wrapped raw local LLM JSON", () => {
   ]));
 
   replaceImportIntelligence(analysis, { storePath, importId: "import-raw-llm" });
+  const deterministicCall = listCallIntelligence({ storePath, importId: "import-raw-llm" })[0];
   saveLlmIntelligenceResult({
     storePath,
     importId: "import-raw-llm",
@@ -423,17 +456,18 @@ test("SQLite intelligence database parses wrapped raw local LLM JSON", () => {
   const db = openIntelligenceDb({ storePath });
   try {
     const events = db.prepare("SELECT * FROM intelligence_events WHERE import_id = ? AND call_id = ? AND source = 'llm'").all("import-raw-llm", "raw-llm-call");
-    const call = listCallIntelligence({ storePath, importId: "import-raw-llm", llmStatus: "completed" })[0];
-    assert.equal(events.length, 1);
-    assert.equal(events[0].event_type, "customer_requested_callback");
-    assert.equal(call.customer_sentiment, "interested");
+    const call = listCallIntelligence({ storePath, importId: "import-raw-llm" })[0];
+    assert.equal(events.length, 0);
+    assert.equal(call.customer_sentiment, deterministicCall.customer_sentiment);
+    assert.equal(call.brief_reason, deterministicCall.brief_reason);
+    assert.match(call.llm_result_json, /customer_requested_callback/);
   } finally {
     db.close();
   }
 
 });
 
-test("SQLite intelligence database salvages useful fields from truncated local LLM JSON", () => {
+test("SQLite intelligence database salvages truncated local-model JSON as research without operational overlay", () => {
   const storePath = tempStorePath();
   const analysis = analyzeCsvText(csv([
     row({
@@ -444,6 +478,7 @@ test("SQLite intelligence database salvages useful fields from truncated local L
   ]));
 
   replaceImportIntelligence(analysis, { storePath, importId: "import-truncated-llm" });
+  const deterministicCall = listCallIntelligence({ storePath, importId: "import-truncated-llm" })[0];
   saveLlmIntelligenceResult({
     storePath,
     importId: "import-truncated-llm",
@@ -475,23 +510,65 @@ test("SQLite intelligence database salvages useful fields from truncated local L
 
   const db = openIntelligenceDb({ storePath });
   try {
-    const call = listCallIntelligence({ storePath, importId: "import-truncated-llm", llmStatus: "completed" })[0];
+    const call = listCallIntelligence({ storePath, importId: "import-truncated-llm" })[0];
     const events = db.prepare("SELECT * FROM intelligence_events WHERE import_id = ? AND call_id = ? AND source = 'llm'").all("import-truncated-llm", "truncated-llm-call");
     const result = db.prepare("SELECT * FROM intelligence_llm_results WHERE import_id = ? AND call_id = ?").get("import-truncated-llm", "truncated-llm-call");
 
-    assert.equal(call.customer_sentiment, "annoyed");
-    assert.equal(call.manager_review_required, 1);
-    assert.equal(call.llm_confidence, 0.84);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].event_type, "manager_review_promised");
+    assert.equal(call.customer_sentiment, deterministicCall.customer_sentiment);
+    assert.equal(call.manager_review_required, deterministicCall.manager_review_required);
+    assert.equal(call.llm_confidence, null);
+    assert.equal(events.length, 0);
     assert.match(result.result_json, /Customer complaint needs manager review/);
   } finally {
     db.close();
   }
 
   replaceImportIntelligence(analysis, { storePath, importId: "import-truncated-llm" });
-  const rebuiltCall = listCallIntelligence({ storePath, importId: "import-truncated-llm", llmStatus: "completed" })[0];
-  assert.equal(rebuiltCall.manager_review_required, 1);
-  assert.equal(rebuiltCall.risk_flag_exists, 1);
-  assert.equal(rebuiltCall.llm_confidence, 0.84);
+  const rebuiltCall = listCallIntelligence({ storePath, importId: "import-truncated-llm" })[0];
+  assert.equal(rebuiltCall.manager_review_required, deterministicCall.manager_review_required);
+  assert.equal(rebuiltCall.risk_flag_exists, deterministicCall.risk_flag_exists);
+  assert.equal(rebuiltCall.llm_confidence, null);
+  assert.match(rebuiltCall.llm_result_json, /Customer complaint needs manager review/);
+});
+
+test("pre-policy LLM intelligence is preserved in storage but quarantined from active rows", () => {
+  const storePath = tempStorePath();
+  const analysis = analyzeCsvText(csv([row({
+    call_id: "legacy-llm-call",
+    transcription_text: "Customer: Please send the information. Agent: I will send it."
+  })]));
+
+  replaceImportIntelligence(analysis, { storePath, importId: "import-legacy-llm" });
+  saveLlmIntelligenceResult({
+    storePath,
+    importId: "import-legacy-llm",
+    callId: "legacy-llm-call",
+    jobId: "job-legacy-llm",
+    result: {
+      call_summary: { manager_review_required: true, confidence: 0.9, brief_reason: "Legacy result." },
+      risk_flags: [{ flag_type: "customer_complaint", severity: "high", evidence: "Legacy evidence", confidence: 0.9 }]
+    }
+  });
+
+  const db = openIntelligenceDb({ storePath });
+  try {
+    for (const table of ["intelligence_llm_results", "intelligence_events", "intelligence_entities", "intelligence_risk_flags"]) {
+      db.prepare(`UPDATE ${table} SET created_at = ? WHERE import_id = ? AND call_id = ?`).run("2026-07-10T00:00:00.000Z", "import-legacy-llm", "legacy-llm-call");
+    }
+  } finally {
+    db.close();
+  }
+
+  replaceImportIntelligence(analysis, { storePath, importId: "import-legacy-llm" });
+  const active = listCallIntelligence({ storePath, importId: "import-legacy-llm" })[0];
+  assert.equal(active.llm_status, "not_requested");
+  assert.equal(active.llm_result_json, "");
+  assert.deepEqual(active.llm_risk_flags, []);
+
+  const preserved = openIntelligenceDb({ storePath });
+  try {
+    assert.equal(preserved.prepare("SELECT COUNT(*) AS count FROM intelligence_llm_results WHERE import_id = ? AND call_id = ?").get("import-legacy-llm", "legacy-llm-call").count, 1);
+  } finally {
+    preserved.close();
+  }
 });

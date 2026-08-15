@@ -1,0 +1,168 @@
+{
+  "schema_version": "sales_dashboard_local_model_capability_register.v1",
+  "created_at": "2026-07-22",
+  "program_status": "semantic_capability_boundary_rejected",
+  "model": {
+    "model_key": "sales-dashboard-qwen3-30b-a3b-q4km",
+    "provider_model": "hf.co/lmstudio-community/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M",
+    "local_digest": "20123c3f0bbbfb08e001830875dab0aa37da52c0ce55c0e89ecd9b79e335a5e7",
+    "architecture": "qwen3moe",
+    "parameter_size": "30.5B total, A3B mixture-of-experts route",
+    "quantisation": "Q4_K_M",
+    "runtime": "Ollama native chat",
+    "inference_settings_observed": {
+      "think": false,
+      "temperature_with_schema": 0,
+      "maximum_completion_tokens": 1024,
+      "num_ctx_explicitly_pinned": false,
+      "seed_explicitly_pinned": false,
+      "top_p_explicitly_pinned": false
+    }
+  },
+  "allowed_uses": [
+    "historical audit display",
+    "non-authoritative research",
+    "evidence suggestion only when a separate approved workflow explicitly permits it"
+  ],
+  "prohibited_uses": [
+    "automatic semantic routing",
+    "authoritative offer acceptance",
+    "callback workload or timing decisions",
+    "objection or procedure judgement",
+    "record correction or invalidity action",
+    "Spiel or call-handling scoring",
+    "coaching, ranking, compliance, discipline, finance, CRM, or operational decisions"
+  ],
+  "capabilities": [
+    {
+      "id": "call_intelligence_foundation_complete",
+      "status": "failed_not_promoted",
+      "reason": "The complete Foundation decision and routing product failed its frozen semantic audit; narrow literal subfields do not promote the composite evaluator."
+    },
+    {
+      "id": "legacy_transcript_evaluation_unrouted",
+      "status": "disabled_unrouted",
+      "reason": "The generic call-page task has no approved project route, frozen semantic contract, or promotion evidence."
+    },
+    {
+      "id": "execution_and_json_schema",
+      "status": "technical_only_verified",
+      "evidence": "The frozen 25-call audit produced 98/98 execution-layer done jobs and 98/98 schema-valid service outputs; Sales Dashboard accepted 96 and semantically rejected 2.",
+      "operational_meaning": "The service and structured-output path work. This is not semantic accuracy."
+    },
+    {
+      "id": "foundation_offer_presented",
+      "status": "restricted_unpromoted",
+      "exact": 24,
+      "denominator": 25
+    },
+    {
+      "id": "foundation_price_presented",
+      "status": "restricted_unpromoted",
+      "exact": 25,
+      "denominator": 25
+    },
+    {
+      "id": "foundation_decision_maker_status",
+      "status": "failed",
+      "exact": 17,
+      "denominator": 25
+    },
+    {
+      "id": "foundation_objection_present",
+      "status": "failed",
+      "exact": 16,
+      "denominator": 25
+    },
+    {
+      "id": "foundation_efficiency_status",
+      "status": "failed",
+      "exact": 9,
+      "denominator": 25
+    },
+    {
+      "id": "offer_acceptance_v3",
+      "status": "failed_not_promoted",
+      "exact": 18,
+      "denominator": 25
+    },
+    {
+      "id": "callback_v3_state",
+      "status": "failed_not_promoted",
+      "exact": 15,
+      "denominator": 25,
+      "strict_state_channel_timing_exact": 12
+    },
+    {
+      "id": "objection_handling_v2",
+      "status": "failed_not_promoted",
+      "exact": 10,
+      "denominator": 25
+    },
+    {
+      "id": "procedure_adherence_v2",
+      "status": "failed_not_promoted",
+      "exact": 7,
+      "denominator": 21
+    },
+    {
+      "id": "lead_record_v4",
+      "status": "restricted_not_promoted",
+      "shared_audit_exact": 23,
+      "shared_audit_denominator": 25,
+      "reference_primary_exact": 17,
+      "reference_primary_denominator": 25,
+      "allegation_exact": 3,
+      "allegation_denominator": 8
+    },
+    {
+      "id": "spiel_quality_v3",
+      "status": "failed_not_promoted",
+      "exact_full_decisions": 3,
+      "denominator": 10,
+      "exact_band_pairs": 5
+    },
+    {
+      "id": "spiel_fact_extraction_v4",
+      "status": "failed_retired",
+      "contract_valid": 4,
+      "denominator": 20
+    },
+    {
+      "id": "spiel_v5_third_party_authority",
+      "status": "failed",
+      "exact_fact_decisions": 8,
+      "denominator": 10
+    },
+    {
+      "id": "spiel_v5_wrong_contact",
+      "status": "failed",
+      "exact_fact_decisions": 6,
+      "denominator": 10
+    },
+    {
+      "id": "spiel_v5_business_permanently_closed",
+      "status": "failed",
+      "exact_fact_decisions": 5,
+      "denominator": 10
+    },
+    {
+      "id": "spiel_v6_candidate_span_nomination",
+      "status": "stopped_untested",
+      "reason": "Further same-model decomposition is prohibited after repeated narrow semantic failures."
+    },
+    {
+      "id": "legacy_transcript_intelligence_and_numeric_quality",
+      "status": "retire_or_replace",
+      "reason": "No frozen semantic calibration or approved score rubric; inactive on the current import."
+    }
+  ],
+  "controlling_evidence": [
+    "runtime/ALL_EVALUATORS_ACCURACY_AUDIT_2026-07-20.md",
+    "runtime/SPIEL_QUALITY_VALIDATION_2026-07-20.md",
+    "runtime/SPIEL_QUALITY_V4_GATE_A_R2_QWEN_CAPABILITY_ANALYSIS_2026-07-21.json",
+    "runtime/SPIEL_QUALITY_V5_THIRD_PARTY_AUTHORITY_GATE_A_R2_RECOVERED_RESULT_2026-07-21.json",
+    "runtime/SPIEL_QUALITY_V5_WRONG_CONTACT_GATE_A_RECOVERED_RESULT_2026-07-21.json",
+    "runtime/SPIEL_QUALITY_V5_BUSINESS_PERMANENTLY_CLOSED_GATE_A_RECOVERED_RESULT_2026-07-21.json"
+  ]
+}

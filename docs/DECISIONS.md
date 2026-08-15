@@ -89,3 +89,400 @@ Consequences:
 - report title, summary, markdown content, metadata, and timestamps are retained locally
 - the dashboard becomes the default place to revisit generated analysis
 - future agent work should include report-saving as a normal closeout step when a report is produced
+
+## ADR-009 - Allocation Coverage Uses Aggregate-Safe Joins
+Date: 2026-07-07
+Status: Superseded by ADR-010
+Decision: Lead allocation workbooks can be incorporated as their own dashboard section, but call-record enrichment must join only by date + salesperson + type until the allocation export provides a shared campaign/list ID or stable lead ID.
+Context: The July 7 allocation workbook contains campaign, allocated/actioned/remaining counts, date, manager, salesperson, and type. It does not contain lead IDs or a campaign/list key that appears in the call records.
+Consequences:
+- allocation `QTY ACTIONED` remains an operational source field, not a replacement for raw call count
+- campaign rows are allocation-side totals only
+- call observations such as stable lead-days, live-human rate, meaningful conversation rate, and one-attempt/no-contact are shown as aggregate comparisons
+- future campaign-level attribution requires a new shared identifier, not name matching or phone inference
+
+## ADR-010 - Park Separate Campaign/Allocation Imports
+Date: 2026-07-08
+Status: Accepted
+Decision: Separate campaign/allocation imports are preserved but parked from active dashboard use.
+Context: The allocation workbook created confusing allocation-versus-call comparisons and could be over-read as salesperson, campaign, source, or completion performance. The reliable product scope is call/transcript data plus call CSV fields.
+Consequences:
+- active analysis no longer builds allocation coverage or reconciliation metrics
+- `/api/allocations` returns diagnostic parked status only
+- normal dashboard navigation, cards, reports, alerts, scorecards, source/list quality, and AI transcript context exclude separate allocation import data
+- raw parser code and existing data are preserved for a future explicit decision
+- `AllocatedLeadID` remains an allowed call CSV field for call-based matching and raw inspection, but not for allocation-performance inference
+
+## ADR-011 - Alert Lifecycle State Is A Non-Destructive Overlay
+Date: 2026-07-08
+Status: Accepted
+Decision: Alert lifecycle actions are stored as manager workflow metadata over generated call-data alerts, not as rewrites of the generated alert evidence.
+Context: Managers need to acknowledge, progress, resolve, dismiss, reopen, note, and mark likely false positives without losing why an alert originally fired. The app is still local-only and has no real user authentication.
+Consequences:
+- active alert counts include only `new`, `acknowledged`, and `in_progress`
+- `resolved`, `dismissed`, `false_positive`, and parked alerts are preserved but excluded from active alert totals
+- lifecycle history and manager notes remain auditable in the local JSON store
+- authoritative lifecycle actors use the server-resolved `local_manager` placeholder until authentication exists; client-supplied actor names are ignored
+- parked allocation-related alerts stay excluded from normal alert workflow endpoints and dashboard views
+
+## ADR-012 - Active Report APIs Hide Parked And Superseded Report Content
+Date: 2026-07-08
+Status: Accepted
+Decision: Normal report APIs and report viewer routes expose only active reports. Parked allocation, stale stable-target, stable lead-day, lead-day, and allocation-like report content remains preserved in the local store but hidden from normal `/api/reports`, `/api/reports/:id`, `/reports/<id>`, and dashboard Reports Library views.
+Context: Batch 5 verification found that raw report APIs could still expose historical report bodies with superseded allocation/stable-target terminology even though active dashboard analytics had parked allocation data.
+Consequences:
+- `/api/reports` returns active, non-parked reports only and reports a hidden-report count
+- `/api/reports/:id` and `/reports/<id>` return not-found behavior for hidden reports in normal mode
+- `POST /api/reports` preserves hidden report records but does not echo hidden report bodies in its normal response
+- stored records are preserved for future explicit admin/internal diagnostics or cleanup decisions
+- `AllocatedLeadID` remains allowed in raw call-field context and is not treated as allocation report content by itself
+
+## ADR-013 - Manager Review Corrections Are Governed Overlays
+Date: 2026-07-08
+Status: Accepted
+Decision: Manager review state and corrections are stored as separate review/correction/history overlays instead of rewriting raw imported fields, deterministic evaluation outputs, LLM outputs, or generated alert evidence.
+Context: Managers need to confirm, correct, dismiss, escalate, and note call-level or signal-level classifications while preserving the provenance of the original dashboard intelligence. Alert lifecycle already answers whether an alert has been triaged; manager review answers whether a human reviewed or corrected the underlying classification.
+Consequences:
+- review statuses are `unreviewed`, `review_needed`, `in_review`, `reviewed_confirmed`, `reviewed_corrected`, `dismissed`, and `escalated`
+- manager review and alert lifecycle statuses are displayed and stored separately
+- corrections use an explicit field allowlist and reject raw imported, metadata, alert-evidence, allocation, and campaign fields
+- authoritative review actors use the server-resolved `local_manager` placeholder until authentication exists
+- review history, correction reason, evidence assessment, previous displayed value, corrected value, notes, actor, and timestamp are preserved for audit
+- aggregate metrics remain deterministic unless a manager-reviewed value is explicitly labelled as such
+
+## ADR-014 - Evaluation Studio Is A Governed Overlay, Not A Replacement App
+Date: 2026-07-10
+Status: Accepted
+Decision: Sales Dashboard remains the system of record while Batch 7 borrows Neuron-Compute-Training's knowledgebase/prompt-management ideas and LatentPulse's structured/local evaluation governance ideas into a local Evaluation Studio overlay.
+Context: The sibling projects already contain useful company sales knowledgebase material, editable prompt concepts, local model sidecar patterns, strict structured outputs, and gold-review thinking. Replacing Sales Dashboard would risk losing the active import, allocation parking, global filters, alert lifecycle, manager review, report visibility, and data-confidence guardrails already built here.
+Consequences:
+- Evaluation Studio stores knowledgebase entries, strict-schema templates, queued/prompt-test runs, local AI harvest state, result records, and report-safe rollups as local management artifacts.
+- Evaluation templates may use safe custom evaluation goals so managers can add new question types without code changes; parked campaign/allocation goal names remain blocked.
+- Neuron/LatentPulse-derived seeds are included as starting guidance, but managers can edit/archive them inside Sales Dashboard.
+- Optional local model submission must go through `src/aiExecutionLayer.js`; Sales Dashboard does not call model runtimes directly.
+- Evaluation Studio outputs must remain evidence-backed, confidence-labelled, versioned, and manager-reviewable.
+- Evaluation results preserve prompt/template version and knowledgebase-version context so stored findings can be audited against the exact management context used.
+- Evaluation Studio result handoff may add suggested correction prefill for allowlisted manager-review fields, but suggestions remain separate from confirmed manager corrections until a manager acts.
+- Evaluation Studio run quarantine/resume/harvest state is governance metadata only; it does not delete jobs, raw calls, result records, or manager review history.
+- Evaluation Studio must not silently overwrite raw imported fields, deterministic outputs, LLM outputs, alert evidence, or manager review history.
+- Parked campaign/allocation imports remain excluded from active evaluation, reporting, filters, and performance claims.
+
+## ADR-015 - Manager Reporting Uses Focused Workspaces
+Date: 2026-07-11
+Status: Accepted
+Decision: The Sales Dashboard is presented as seven focused manager workspaces selected with the `view` query parameter, while Evaluation Studio remains a separate `/evaluation-studio` workspace.
+Context: Rendering every scorecard, queue, confidence panel, alert, report, and raw record on one page created excessive scrolling and made operational priorities hard to find. The redesign must improve navigation without creating inconsistent analytics or separate filter implementations.
+Consequences:
+- workspace views are `overview`, `harvest`, `follow_up`, `reviews`, `team`, `intelligence`, and `records`
+- global filter query state is preserved when moving between workspaces
+- server analysis, denominators, allocation parking, alert lifecycle, and manager review governance remain unchanged
+- Evaluation Studio prompt, knowledgebase, and run controls stay outside the reporting workspace
+- operational tables may use bounded previews, but their full evidence and drilldown routes remain available
+
+## ADR-016 - Historical Evaluation Knowledge Requires Explicit Approval
+Date: 2026-07-11
+Status: Accepted
+Decision: Historical Neuron and LatentPulse knowledge is stored as active, visible Evaluation Studio records with `pending_manager_approval`, but is excluded from evaluation runs and local model input until a manager changes it to `approved_current`.
+Context: The source projects contain useful company procedure, language, scoring, examples, historic pricing, programme variants, outcome-linked analysis, and review-governance material. Some content may no longer match the current offer, policy, legal wording, or data-confidence rules.
+Consequences:
+- visible knowledge is distinct from knowledge eligible for evaluation context
+- every imported entry stores source project, source reference, version, historical flag, approval status, and approval note
+- historical pricing, dates, legal statements, programme wording, and examples cannot silently become current operational policy
+- de-identified LatentPulse calibration entries support manager review and prompt calibration but are not raw transcript imports
+- managers approve current material per entry through Evaluation Studio before new runs can use it
+
+## ADR-017 - Exclude Untrusted Legacy Disposition And Note Fields
+Date: 2026-07-11
+Status: Accepted
+Decision: `NoSaleType` and `Baz_DetailedNotes` remain preserved unchanged in raw source files but are optional and excluded from active analytics, alerts, filters, reports, scorecards, normal UI/APIs, manager-review prefill, and AI/evaluator context.
+Context: `NoSaleType` is a human-entered legacy disposition known to be inaccurate, while `Baz_DetailedNotes` is output from an unknown legacy model with unverified prompt, version, provenance, and accuracy. Neither is reliable enough to support management conclusions or model evaluation context.
+Consequences:
+- changing, blanking, or omitting either field cannot change active dashboard results
+- imported-disposition mismatch metrics and alerts are retired
+- old reports and alerts that depend on either field remain preserved but are hidden from normal active views
+- Evaluation Studio records that contain legacy dependencies remain preserved and are classified out of active lists; new knowledge, templates, and results reject those dependencies
+- local LLM intelligence created before the policy cutoff is preserved but quarantined from active intelligence until rerun under the current field-exclusion policy
+- raw source records are not rewritten or deleted
+- future integrations must provide separately governed, provenance-labelled evidence rather than reusing these fields
+
+## ADR-018 - Bad-Lead Claims Are Auditable Allegations, Not Lead Decisions
+Date: 2026-07-11
+Status: Accepted
+Decision: Introduce an internal versioned `bad_lead_claim.v1` record that stores a submitted allegation separately from future system evidence and manager decisions. Original allegation fields are immutable, status changes are controlled, manager decisions use trusted service context, and every action appends audit history.
+Context: The dashboard can derive transcript signals and store manager corrections, but it has no authenticated salesperson claim, lead-suppression, or CRM writeback workflow. Treating deterministic, LLM, `NoSaleType`, or `Baz_DetailedNotes` values as a salesperson claim would be inaccurate.
+Consequences:
+- the initial implementation is a service and local JSON-store foundation only, with no normal API, UI, Evaluation Studio, report, alert, metric, or suppression integration
+- submitter and manager identity must be supplied by trusted service context, never accepted from the claim payload
+- `NoSaleType`, `Baz_DetailedNotes`, aliases, and historical dependent outputs cannot create, populate, infer, or alter claims
+- a claim records what was alleged; confirmation or rejection is a separate manager decision and does not itself deactivate or suppress a lead
+- a future salesperson-facing API requires an authenticated identity source before it can be considered trustworthy
+
+## ADR-019 - Evaluation Studio May Inspect Active Trusted Claims As Allegations
+Date: 2026-07-11
+Status: Accepted
+Decision: Local Evaluation Studio task inputs may include active `submitted` or `under_review` `bad_lead_claim.v1` records as read-only salesperson allegations. Exact `call_id` claims take precedence; only when none exist may a claim with no call ID match the call's exact canonical `AllocatedLeadID`.
+Context: The evaluator needs to inspect what a salesperson alleged without treating deterministic outcomes, historical AI output, alerts, manager reviews, phone/name similarity, or excluded legacy fields as claims.
+Consequences:
+- claim context is labelled `salesperson_allegation` and is not factual proof, a manager decision, or an instruction
+- inactive `confirmed`, `rejected`, and `withdrawn` claims are excluded from evaluator context
+- customer/contact IDs, phone text, salesperson names, transcript wording, business names, alerts, reviews, deterministic outcomes, and historical AI results cannot match or create claim context
+- claim history and manager-decision metadata are not sent to the evaluator
+- internal claim context is sent only in the local model task payload and is removed from normal prompt-test API task-input responses
+- the project-authenticated local AI Execution Layer may durably retain the full submitted task payload under its own retention policy; Sales Dashboard job references and job-status proxy responses do not expose the claim block
+- evaluator instructions, output schema, result normalisation, metrics, reports, alerts, lead status, allocation, and CRM data remain unchanged
+
+## ADR-020 - Replace Broad Lead-Validity Evaluation With A Conservative Evidence Audit
+Date: 2026-07-11
+Status: Accepted
+Decision: Archive the seeded Lead Validity And Utilisation template and replace it with the versioned Lead Record & Disposition Evidence Audit (`lead_record_disposition_evidence_audit`, schema `lead_record_disposition_evidence_audit.v1`).
+Context: A broad lead-validity prompt could blur call evidence, salesperson allegation, operational usability, and final lead disposition. The local Qwen3 route has an 8,192-token context and 1,024-token output cap, so the replacement uses a compact fixed schema with semantic validation.
+Consequences:
+- the evaluator distinguishes record evidence from allegation assessment and treats allegation absence explicitly
+- supported or contradictory conclusions require direct transcript/system evidence; missing evidence produces untestable or insufficient-evidence output
+- the model returns no trusted findings directly; a required empty `findings` array satisfies the shared execution contract and normalized findings are generated locally only after validation
+- historical generic v1 results and runs remain readable, while the old seeded template is archived non-destructively
+- audit results are excluded from report rollups and cannot confirm/reject claims, change workflow status, alter leads, change operational systems, or write to a CRM
+- excluded legacy fields and parked data remain unavailable
+
+## ADR-021 - Enforce Lead Evidence Decision Consistency Locally
+Date: 2026-07-12
+Status: Accepted
+Decision: Version the Lead Record & Disposition Evidence Audit template to v3 while retaining output schema `lead_record_disposition_evidence_audit.v1`, and enforce recommendation, review, evidence, confidence, and contact-state relationships in the local Sales Dashboard semantic layer.
+Context: A controlled five-call run showed that valid schema output could still pair supported invalidity with normal workflow, confuse absent allegations with absent transcript evidence, or assign high confidence to unavailable evidence.
+Consequences:
+- explicit verified wrong-number evidence is normalized to supported invalidity, `correct_or_remove_record`, and manager review without changing a lead or claim
+- absent allegations affect only allegation assessment; normal rejection evidence remains usable and available
+- unavailable evidence caps confidence at 0.35, partial evidence at 0.75, and confidence of 0.90 or more requires available verified transcript evidence
+- voicemail and no-answer evidence remain non-invalidity contact states with advisory `retry_contact`
+- normalized findings separately expose contact evidence, record evidence, allegation availability/assessment, and recommended manager action
+- deterministic semantic adjustments are stored with the normalized audit assessment while the raw model response remains preserved by the Execution Layer
+- prior template versions, runs, and stored results remain preserved and readable
+
+## ADR-022 - Make Safety-Critical Disposition Mappings Deterministic
+Date: 2026-07-12
+Status: Accepted
+Decision: Version the Lead Record & Disposition Evidence Audit template to v4, retain schema `lead_record_disposition_evidence_audit.v1`, and deterministically reconcile verified do-not-contact, serious threat, explicit permanent-closure, and hedged-closure evidence before accepting a stored result.
+Context: The preserved 25-call calibration showed that schema-valid model output could ignore an explicit opt-out or serious threat, treat a direct permanent closure as ordinary operational unusability, or overstate uncertain closure wording.
+Consequences:
+- direct do-not-contact and serious threat evidence becomes `supported_operational_unusability`, `manager_review_recommended`, and manager review true
+- explicit permanent business closure becomes `supported_invalidity`, `correct_or_remove_record`, and manager review true
+- hedged closure wording cannot prove permanent closure; it remains untestable, uses partial evidence, caps confidence at 0.75, and recommends independent verification
+- locally generated findings expose the operational issue separately and agree with the top-level recommendation and review flag
+- every recommendation remains advisory; no claim, lead, allocation, CRM, alert, report, or manager-review state is changed
+- historical templates, stored results, and calibration artifacts remain preserved
+
+## ADR-023 - Evaluation Studio Is A Direct Local Workflow
+Date: 2026-07-13
+Status: Accepted
+Decision: Ordinary Evaluation Studio use requires no manager identity or approval. Local users select transcripts, preview and run batches, and browse evidence-backed results. Knowledge entries are Draft or Included. Accuracy calibration is optional and uses frozen local reference labels rather than an approval gate.
+Context: The application is operated locally by one user; manager-approval ceremony obscured the primary transcript-evaluation workflow without adding meaningful authentication.
+Consequences:
+- new Evaluation Studio artifacts use `local_user` attribution
+- stored compatibility enums remain readable, but the UI uses Draft, Included, and Manual check suggested
+- optional Manager Review remains separate and does not gate evaluation
+- schema, evidence, worker, idempotency, and no-operational-write protections remain mandatory
+
+## ADR-024 - Separate Accepted Offer From Commercial Completion
+Date: 2026-07-18
+Status: Accepted
+Decision: Project each call's stored Foundation and specialist results into a read-only, versioned commercial lifecycle that keeps accepted-offer evidence, quoted context, intended payment, payment verification, invoice, fulfilment, revenue, and CRM state independent. Offer Acceptance is authoritative only for whether the presented offer was accepted. A later stable-ID call is evidence of a related attempt, not automatic completion.
+Context: The Foundation and Offer Acceptance evaluators can establish transcript facts, but the current source does not prove cleared payment, invoicing, fulfilment, realised revenue, or CRM closure. Earlier follow-up linking and percentage confidence presentation could overstate what was actually known.
+Consequences:
+- `call_intelligence_aggregate.v1` and `call_commercial_state.v1` are deterministic views over stored evidence and trusted call metadata; they do not rewrite historical results or operational systems
+- Foundation/specialist disagreements remain visible and use explicit authority rules instead of silent merging
+- supported relative dates resolve from the source call's Australian DD/MM/YYYY date while retaining raw wording, source basis, method, and ambiguity
+- unknown downstream lifecycle fields remain unknown; accepted-offer reporting cannot imply paid, invoiced, fulfilled, realised revenue, or CRM won
+- stable-ID follow-up matching stores the matched fields and later call context as `later_attempt_observed`; completion/payment stay not established without separate evidence
+- normal result UI uses evidence-strength bands; numeric model confidence remains uncalibrated audit metadata
+- seeded Callback, Procedure, and Objection evaluators use typed v2 contracts with exact evidence, while historical generic results and safe user-created custom templates remain compatible
+
+## ADR-025 - Use Unique-Call Typed Baselines For Evaluation Reporting
+Date: 2026-07-18
+Status: Accepted
+Decision: Management reports count one authoritative result per unique call, preferring the highest template version and latest stored result. Foundation reporting uses the active template baseline when it has results. Historical generic Callback, Procedure, and Objection outputs remain audit history but do not count as current typed specialist completion.
+Context: The store contains legitimate reruns, older template generations, and 1,073 generic specialist results whose placeholder contract cannot support present-day pass/fail reporting. Counting result rows inflated denominators, while summing transcript-extracted quoted options created a misleading value total.
+Consequences:
+- reruns and older template results remain visible but cannot inflate accepted, classified, Foundation, or specialist-completion totals
+- active Foundation v6 is the management baseline; older Foundation-only results remain available in result history
+- generic historical specialists are labelled `evaluated_legacy_untyped`, never evaluated-clear or issue-found
+- a specialist route is complete only when its current typed assessment is present
+- quoted-price calls are counted, cross-call price totals are suppressed, and unusually large transcript amounts are flagged for review without silent correction
+- deterministic acceptance-action reconciliation may create a new versioned result only when an explicit requested action is later completed by the customer and no later condition or withdrawal controls the final position
+
+## ADR-026 - Recover Missing Typed Specialists Before Foundation And Store Studio History In SQLite
+Date: 2026-07-19
+Status: Accepted
+Decision: The overnight controller must derive missing specialist work from current typed schema contracts and active Foundation routes, recover that work in bounded batches before submitting more Foundation calls, and halt on any recovery quality failure. Evaluation Studio knowledgebase, template, run, and result history is authoritative in a dedicated SQLite database rather than embedded in `state.json`.
+Context: The accuracy audit found 967 missing current typed checks across 551 calls even though historical generic specialist rows existed. Embedded Studio history had also grown `state.json` to 54.7 MB, increasing rewrite and startup cost before planned higher volume.
+Consequences:
+- legacy generic rows remain auditable but never satisfy a current typed route
+- recovery defaults to at most 100 exact calls for one specialist goal per run and re-derives the backlog after each clean terminal boundary
+- any failed call, partial run, stored error, or planned/completed mismatch halts new overnight submissions until investigated
+- the existing 22:00-06:00 Melbourne, 04:30 cutoff, 10-minute idle, 4 GB RAM, and single-controller gates remain authoritative
+- SQLite uses WAL, full synchronous durability, indexed operational fields, per-record hashes, and incremental upserts; existing code receives a transparently hydrated Studio object
+- the live migration keeps a timestamped pre-migration JSON rollback copy and verifies record counts plus `PRAGMA integrity_check`
+
+## ADR-027 - Make Opportunity Reporting Readiness-First And Typed-Authority-Only
+Date: 2026-07-19
+Status: Accepted
+Decision: Build sales opportunity reporting as a read-only projection with explicit stage denominators, evaluation coverage before comparison, and action queues that use current typed specialist decisions for specialist questions. Foundation-only routes remain labelled candidates pending specialist evaluation; historical generic specialists never become current decisions.
+Context: The current import has 16,108 transcript-bearing calls but only 1,880 current Foundation results, concentrated chronologically, while specialist recovery is incomplete. The data supports useful call actions but not representative salesperson/source rankings or verified downstream commercial outcomes.
+Consequences:
+- the opportunity screen shows readiness and date distribution before cohort metrics and never sorts cohorts as a leaderboard
+- every displayed count, rate, stage, queue, salesperson, source, and date resolves to contributing call records under the same global filters
+- accepted offer is authoritative only at the transcript signal level; payment, fulfilment, recognised revenue, and CRM won stay separate
+- no later stable-ID match is described only within the uploaded data window, never as proof of an overdue or missed follow-up
+- the management brief is generated dynamically from current stored evidence and can be downloaded without persisting or changing evaluations
+
+## ADR-028 - Separate Spiel Quality From Sale Outcome And Grade By Applicable Scope
+Date: 2026-07-19
+Status: Accepted
+Decision: Add a typed `spiel_quality.v1` evaluator with separate Call Handling Quality and Spiel Quality bands. Classify call purpose first, use `spiel_and_handling` only when a meaningful offer was delivered, use `handling_only` for applicable non-pitch work, and keep Offer Acceptance as the sole authority for accepted-offer reporting.
+Context: Manager calibration established that a rejected call can be Strong, an accepted sale can Need Improvement, and situational judgement can justify withdrawing instead of forcing another objection response. Material payment, customer-boundary, and operational-accuracy failures must still control the quality result.
+Consequences:
+- ratings are Strong, Acceptable, Needs Improvement, Poor, or Not Assessable; no numeric composite is stored
+- material payment-term mismatch, wrong product/document, avoidable customer-detail error, or incomplete opt-out caps Call Handling Quality at Needs Improvement unless Poor is supported
+- quality explanations, strengths, coaching, and manager summaries are reconciled with deterministic material findings so contradictory text is not displayed
+- five calibrated knowledge entries remain visible drafts and are scoped only to this evaluator; unrelated approved knowledge is never injected automatically
+- the evaluator is selectable in Studio but is not yet a sixth automatic Foundation route
+- team comparison waits for representative coverage and at least 20 assessable calls per salesperson
+
+## ADR-029 - Require Independent Promotion Evidence For Spiel Quality
+Date: 2026-07-20
+Status: Accepted
+Decision: Keep Spiel & Call Handling Quality template v2 available only as an opt-in, unpromoted evaluator until a newly selected and predeclared unseen 10-call audit reaches at least 9/10 exact Call Handling/Spiel band pairs with zero missed critical safeguards. A replay of records used to design a reconciliation fix is regression evidence and cannot satisfy the promotion gate.
+Context: Six independent unseen gates completed 60/60 jobs with zero execution failures, but their original exact band-pair agreement was 8/10, 7/10, 8/10, 7/10, 4/10, and 3/10. The fifth missed one critical post-hardship payment-plan safeguard; the sixth missed two and also produced two material reciprocal scope-denominator defects. Earlier stored replay reaches 10/10 on the fifth set and 39/40 on the preceding corpus, but counting replay as a pass would overstate generalisation. The sixth failed result was preserved without tuning, replay, relabelling, or an additional sample.
+Consequences:
+- the corrected rules remain active for opt-in call-level coaching and are covered by deterministic regressions
+- the evaluator is not auto-routed from Foundation and cannot drive automated salesperson ranking, disciplinary action, or operational decisions
+- Offer Acceptance remains authoritative for accepted-offer reporting
+- the next promotion attempt must use calls not inspected during this calibration and must declare expected outcomes before model inference
+- the full audit, run IDs, expected labels, original results, and replay distinction are preserved in `runtime/SPIEL_QUALITY_VALIDATION_2026-07-20.md`
+
+## ADR-030 - Bound Spiel Automation To Demonstrated Qwen3 30B Capability
+Date: 2026-07-20
+Status: Accepted
+Decision: Make the local Qwen3 30B evaluator's demonstrated capability the hard ceiling for Spiel Quality automation. Template v3 may score narrow categories supported by clear chronological transcript facts and deterministic safeguards. When purpose, payment permission, speaker identity, commitment state, or an unvalidated category remains ambiguous, it must abstain with both bands Not Assessable and require human review rather than guess.
+Context: The sixth v2 gate completed reliably at the infrastructure level but matched only 3/10 frozen decisions. Errors clustered around chronology, seller-initiated payment flexibility after hardship, purpose/scope, and reconciliation overrides. Increasing prompt detail alone would overstate what the local model can judge consistently. The manager explicitly requires aggressive but respectful objection handling to remain acceptable and asked that the system never be expanded beyond what Qwen can accurately handle.
+Consequences:
+- deterministic facts protect only clear, general chronological boundaries; call-specific phrase piles are not a promotion strategy
+- explicit customer requests for payment flexibility remain permissible, seller-initiated flexibility after clear hardship/refusal remains material, and vague permission requires human review
+- capability abstention is a first-class safe outcome and is visibly distinguished from transcript unavailability
+- an audit cannot pass by abstaining on everything: at least seven of ten calls must be supported and correctly scored
+- unsafe scoring of a frozen human-review case is a gate failure even if the final band happens to look plausible
+- v3 remains opt-in and unpromoted; 10/10 stored-payload replay is regression evidence, while all historical v2 failures remain unchanged
+
+## ADR-031 - Make Qwen A Fact Extractor And Promote Spiel Lanes Separately
+Date: 2026-07-21
+Status: Accepted
+Decision: Implement Spiel v4 as an isolated candidate in which Qwen3 30B may only extract a closed set of chronological transcript events with exact evidence. Deterministic code owns every purpose, scope, state, safeguard, quality, denominator, and reporting decision. Unsupported calls are `not_scored` with no human-review queue. Promotion is lane-specific and requires two unchanged, disjoint, genuinely unseen 25-call gates plus a separate manager decision.
+Context: The comprehensive evaluator audit showed that valid JSON and plausible explanations did not make Qwen reliable at authority, chronology, conditional commitment, confirmation, objection outcomes, or complete quality decisions. Expanding the all-in-one prompt exceeded the useful capability boundary. The manager approved building around Qwen's demonstrated literal extraction strengths and approved a temporary exclusive audit window so resource contention cannot contaminate controlled gates.
+Consequences:
+- complete rendered input is capped at 6,000 tokens with a 900-token completion cap and 1,292-token reserve inside the 8,192-token route contract; transcripts are never truncated for scoring
+- exact local validation rejects fabricated, non-contiguous, wrong-speaker, wrong-turn, unordered, or extra-schema output
+- critical local facts cannot be erased by model omission; unresolved broad triggers abstain
+- terminal no-contact and deterministic exclusions do not receive Qwen jobs
+- Gate A and Gate B use exact frozen configuration and transcript hashes, one batch each, no replay, and separate thresholds for contract, facts, purpose, scope, bands, safeguards, and complete decisions
+- the exclusive window may pause only explicitly identified competing local-model resources, must capture original states, and must prove complete restoration; a broad process kill or missing restoration proof is prohibited
+- the legacy v3 evaluator remains unchanged, opt-in, unpromoted, and outside v4 promotion evidence
+
+## ADR-032 - Reduce Qwen To One-Fact Local-Span Selection
+Date: 2026-07-21
+Status: Accepted
+Decision: Retire Spiel v4 from promotion after its failed Gate A and build v5 as an isolated capability harness. Each Qwen job asks one atomic factual question and may return only `present`, `absent`, or `uncertain` plus pre-numbered local evidence-span IDs. Local code owns the source quote, speaker, turn, chronology, every deterministic decision, and every quality result. Each fact lane and each dependent decision lane is promoted separately through two perfect, unchanged, globally disjoint unseen gates followed by an explicit manager action.
+Context: Corrected v4 Gate A R2 completed 19/20 jobs, but only 4/20 responses met the extraction contract after removing trusted Execution Layer metadata. The completed failures were not cosmetic: Qwen misassigned turns and speakers, reordered events, copied non-exact quotes, and populated irrelevant subject/timing fields. Asking one prompt to locate up to twelve heterogeneous facts exceeded the demonstrated Qwen3 30B boundary even though Qwen was no longer the final band judge.
+Consequences:
+- Qwen no longer copies quote text or supplies speakers, turns, timing fields, event order, purpose, scope, safeguards, bands, or reasons
+- the application segments the complete transcript into exact overlapping spans of at most 180 characters and materialises evidence only from validated selected IDs
+- the trusted `model_metadata` transport field is separated before validating the model's closed output
+- every fact lane begins unvalidated and cannot be consumed by scoring until two 10/10 unseen gates and manager promotion
+- each deterministic quality rule later requires its own two perfect unseen gates; an unpromoted dependency produces no score
+- v5 remains outside Evaluation Studio routing, production result storage, rankings, discipline, finance, and operations until the relevant lanes are independently promoted
+- no v5 model batch is authorised by implementation alone; the first authority gate must receive direct-quote manager confirmation and separate inference authorisation
+
+## ADR-033 - Stop Same-Model Decomposition After Narrow Semantic Failure
+Date: 2026-07-22
+Status: Accepted
+Decision: Treat repeated semantic failure on narrow unseen facts as evidence that the product boundary is incompatible with the current local model. After an atomic or otherwise narrow factual gate fails, no further Qwen prompt variant, decomposition, successor version, or adjacent fact lane may be used to rescue the evaluator family. Valid JSON, exact quotes, job completion, and passing software tests remain technical evidence only.
+Context: Qwen3 30B completed the broad and specialist infrastructure reliably but failed the actual decisions. The frozen all-evaluator audit found Foundation authority 17/25, objections 16/25 and efficiency 9/25; Offer Acceptance 18/25; Callback 15/25; Objection 10/25; Procedure 7/21; and no complete active evaluator promoted. Spiel then failed v3, v4, and three atomic v5 lanes at 8/10, 6/10 and 5/10 exact fact decisions. V6 would continue the same-model decomposition pattern without evidence that the model can reliably retrieve the required semantic span.
+Consequences:
+- the Qwen Spiel family is stopped; v6 remains untested and no further label freeze or model batch is permitted
+- reopening requires a materially different model digest or a product boundary where the model owns no semantic decision, plus a new frozen hypothesis, budget, unseen set, and explicit manager authorisation
+- every local-model workflow must follow `docs/LOCAL_MODEL_CAPABILITY_POLICY.md` and the current machine-readable capability register
+- technical validation and semantic promotion are reported separately
+- unpromoted evaluators cannot be described as authoritative or used for automatic routes, queues, denominators, rankings, coaching, compliance, discipline, finance, lead actions, or CRM decisions
+
+## ADR-034 - Make The Zero-Promoted Boundary The Product Boundary
+Date: 2026-07-22
+Status: Accepted
+Decision: Bind every model submission and operational-consumption path to the validated capability register, quarantine active unpromoted work, and reduce the active product to source facts, exact stable-ID relationships, closed literal transcript detections, and manager-authored overlays. Historical model artifacts remain readable only as research with authority `none`.
+Context: The semantic audit proved that the system's technical controls were stronger than its evaluator accuracy. The UI, controllers, APIs, reports, and derived database still exposed or could revive outputs that had never earned semantic promotion. That created false confidence and a risk of continued token spend after the model boundary had already failed.
+Consequences:
+- 20 audited local-model capabilities remain registered and zero are promoted
+- a missing, invalid, changed, or unpromoted capability fails closed before network access or active-state mutation
+- queued jobs/runs are quarantined non-destructively and the scheduled evaluation task is absent/disabled
+- Evaluation Studio becomes a read-only research archive; run creation, prompt tests, resume, harvest, and result ingestion are unavailable
+- Lead Harvest, model-backed opportunity actions, semantic team panels, automatic specialist routing, and operational model rollups are retired/unavailable
+- active semantic database fields remain null; exact literal evidence and explicit manager overlays are the only transcript-derived active claims
+- the separate Execution Layer may continue serving other projects but cannot implicitly enable Sales Dashboard
+- a future evaluator must earn separate semantic promotion on genuinely unseen evidence before any operational route is restored
+
+## ADR-035 - Separate Benchmark Truth And Deterministic Recovery Evidence From Historical Research
+Date: 2026-07-22
+Status: Accepted
+Decision: Rebuild Evaluation Studio as a controlled validation laboratory with four hard-separated surfaces: a read-only capability catalog, an isolated human-labelled benchmark store, a deterministic voicemail/inbound evidence lane, and the immutable historical evaluator archive. Benchmark writes may create manifests, record exact-evidence labels in batches of at most five, and freeze complete manifests; they never submit a model, mutate historical research, or grant authority.
+Context: The prior Studio made technically completed model work look more useful than independent semantic audits justified. Future candidates need a falsifiable unseen promotion path, while managers also need useful facts that can be derived without asking the failed Qwen family to make semantic decisions.
+Consequences:
+- `data/store/evaluation-validation-lab.json` is separate from operational manager review and `evaluation-studio.sqlite`
+- prior-audit/current-result call IDs and any prior Validation Lab manifests are excluded from genuinely-unseen selection through a stable exclusion fingerprint
+- every frozen decision, including unsupported, requires an exact transcript quote and resolved chronological turn index
+- smoke (10), development (50), promotion (at least 100), and shadow (25) partitions have different evidentiary roles; only a balanced frozen promotion set can test eligibility
+- candidate reports expose false positives, false negatives, abstentions, unsupported errors, evidence integrity, critical errors, category results, resource use, and stop-rule status
+- no comparison changes the capability register; even a passing candidate is only eligible for separate external approval
+- the deterministic voicemail lane may state exact prompt, wording, chronology, stable-ID linkage, later inbound observation, elapsed time, and source-proven handler facts
+- corrupt chronology, missing stable IDs, multiple plausible inbound records, intervening matching outbound attempts, and missing handler proof become unknown/not-scored
+- callback causation, receptiveness, sale, conversion, gross profit, and ROI remain unknown unless an authoritative source such as CRM supplies them
+
+## ADR-036 - Keep Voicemail Pilot Attribution Optional, Read Only, And Fail Closed
+Date: 2026-07-23
+Status: Accepted
+Decision: Accept an optional source-system voicemail-pilot CSV/XLSX as a separate in-memory validation input. Join only by exact active-import call IDs and permitted stable IDs, preserve attribution provenance, validate commercial facts independently, and expose only a sanitized read-only report in Evaluation Studio. Do not persist raw pilot rows or create any operational action.
+Context: The active call export can prove call direction, timestamps, literal voicemail, salesperson/user and stable IDs, but it has no voicemail-event, callback-attribution, sale, gross-profit or currency fields. `OrderCount` is prior sales history and cannot prove a call outcome. A commercially useful pilot therefore needs new authoritative source fields without weakening the zero-promoted model boundary or inventing outcomes from transcripts.
+Consequences:
+- preassignment needs an immutable record ID, arm and timestamp no later than the outbound voicemail call
+- invalid assignment identity/chronology stays out of denominators; invalid message, callback, handler, sale or profit evidence becomes measure-level `not_scored`
+- phone matching, `OrderCount`, transcript sale language, model output and mixed-currency aggregation are prohibited
+- telephony, CRM and manager-verified callback provenance remains separate; manager verification requires shared stable IDs
+- a no-callback outcome requires a closed observation timestamp, and treatment/control callback lift requires both arms plus complete equal-duration windows
+- a no-sale/zero-profit denominator requires a separately closed commercial observation timestamp; per-assignment gross profit is withheld unless same-currency commercial coverage is complete across equal-duration windows
+- even a measured comparison is not a causal claim without documented random assignment and pilot controls
+- the pilot path is configured only by CLI/environment, the full path is not exposed, and no raw pilot row enters `state.json`, SQLite, Validation Lab, model input, reviews, queues or CRM
+
+## ADR-037 - Share Carma Evidence Through A Versioned Read-Only Contract
+Date: 2026-07-27
+Status: Accepted architecture; source-classification portion superseded by ADR-038
+Decision: Normalize saved Carma approved-sale, allocation and Lead Generators Sales credit extracts into a versioned local SQLite contract, then let Sales Dashboard open that contract read-only and join to active calls only by exact `customer_id`. Keep acquisition source types separate from campaign labels and preserve the current lenient source-credit rule: a proven source qualifies only when the actual seller has an exact allocation 0–28 days before approval; a later allocation to another person is ignored.
+Context: The Carma investigation produced authoritative order/allocation/credit facts and exact overlap with the call cohort, but the dashboard previously remained call-data-only. Direct file coupling, phone/fuzzy matching or importing raw evidence paths would weaken provenance and privacy. The earlier report also mixed dated/batch campaign labels with source types and filtered no-allocation cases through a primary-reason field.
+Consequences:
+- `carma_evidence.v1` stores normalized customers, orders, allocations, credit awards, staff identities, provenance, validation issues and read-only proof views
+- the no-exact-seller-allocation population uses explicit `seller_allocated_before_sale`, not `primaryFailureReason`; the prior focused 87/85/2 audit remains reproducible and the current lenient policy separately identifies seven possible aliases for review
+- possible aliases never become exact staff matches without an authoritative mapping
+- dated or `(Batch)` campaign labels never populate acquisition or policy source type
+- Sales Dashboard may display Carma-approved order/value facts, but exact customer overlap does not prove that a call caused a sale and approved value does not prove payment, fulfilment, profit or recognised revenue
+- phone, fuzzy business-name and inferred-person matching, raw path exposure, credential exposure and CRM writeback are prohibited
+- the contract is rebuildable from saved local extracts; the 420-branch report extraction is not repeated unless source scope changes or a demonstrated defect requires it
+- the documented $3,801.20 parsed-versus-displayed Lead Generators Sales reconciliation gap remains visible
+
+## ADR-038 - Lock Lead-Source Classification To Actual-Seller Allocation
+Date: 2026-07-27
+Status: Accepted
+Decision: Make `actual_seller_any_pre_sale_allocation.v1` the default top-level classification for every Carma lead-source, source-credit and salesperson-performance report. A sale is Company Sourced when the actual seller had any exact recorded allocation on or before approval; it is Self Sourced only when no exact recorded pre-sale allocation to the actual seller exists.
+Context: The prior source-credit rule combined two different questions: whether the company allocated the customer to the seller, and whether a named acquisition channel qualified for external monetary credit within 28 days. Order 11884640 demonstrated the error: Timothy Knight received the lead 10 days before approval, but a blank acquisition-source field caused the sale to be labelled Self Sourced. Allocation proves company sourcing even when the original channel is unknown.
+Consequences:
+- allocation age, source proof, most-recent-recipient status and later allocations to other people do not disqualify Company Sourced
+- administrative staff, other salespeople and unverified aliases cannot qualify in place of the actual seller
+- post-sale allocations do not affect the sale classification
+- sourcing method, named acquisition source, campaign, Carma credited source and allowable external credit remain separate report dimensions
+- the retained `seller_allocation_within_28_days_lenient.v1` rule may still govern named external credit comparisons, but it cannot redefine Company Sourced versus Self Sourced
+- every report exposes the classification policy version and enough allocation evidence to audit the result
+- the added classification fields version the normalized SQLite contract as `carma_evidence.v2`; older v1 contracts fail closed until rebuilt

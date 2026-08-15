@@ -40,6 +40,7 @@ Create interfaces that feel like clear, high-value SaaS products:
 - Prefer familiar controls: toggles for binary choices, sliders or inputs for numbers, menus for option sets, tabs for views.
 - Make primary actions clear, but avoid flooding screens with competing buttons.
 - Keep destructive or irreversible actions visually distinct and confirm when needed.
+- Give every data-table column heading a concise plain-language description available on hover and keyboard focus. Explain denominators, provenance, limitations, and ambiguous workflow terms where relevant.
 
 ## Verification
 Before finishing UI work:

@@ -3,11 +3,17 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { isUntrustedLegacyField } = require("./untrustedLegacyFields");
+const {
+  assertLocalModelSubmissionAllowed,
+  localModelCapabilitySummary
+} = require("./localModelCapability");
 
 const DEFAULT_LAYER_PATH = "C:\\Users\\User\\Desktop\\ai-execution-layer";
 const DEFAULT_BASE_URL = "http://127.0.0.1:8080";
 const DEFAULT_TASK_TYPE = "sales_transcript_evaluation";
 const INTELLIGENCE_TASK_TYPE = "sales_transcript_intelligence_extraction";
+const EVALUATION_STUDIO_TASK_TYPE = "sales_dashboard_evaluation_studio";
 
 function clean(value) {
   return value === undefined || value === null ? "" : String(value).trim();
@@ -42,6 +48,17 @@ function publicAiExecutionStatus(config = resolveAiExecutionConfig()) {
   if (config.enabled && !config.projectApiKey) missing.push("project_api_key");
   if (config.enabled && !config.baseUrl) missing.push("base_url");
 
+  let capabilityPolicy;
+  try {
+    capabilityPolicy = localModelCapabilitySummary();
+  } catch (error) {
+    capabilityPolicy = {
+      programStatus: "register_unavailable",
+      liveSubmissionPermitted: false,
+      operationalConsumptionPermitted: false,
+      error: error.message
+    };
+  }
   return {
     enabled: Boolean(config.enabled),
     configured: Boolean(config.enabled && config.projectApiKey && config.baseUrl && config.layerPathExists),
@@ -52,7 +69,8 @@ function publicAiExecutionStatus(config = resolveAiExecutionConfig()) {
     model: config.model,
     priority: config.priority,
     responseMode: config.responseMode,
-    missing
+    missing,
+    capabilityPolicy
   };
 }
 
@@ -70,6 +88,58 @@ function hash(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
 
+function normalizedFieldName(value) {
+  return clean(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isParkedAllocationField(field) {
+  const normalized = normalizedFieldName(field);
+  if (!normalized) return false;
+  const blocked = new Set([
+    "allocationcoverage",
+    "allocationrows",
+    "allocationtotals",
+    "allocationonlyrows",
+    "callsonlyrows",
+    "campaignrows",
+    "reconciliationrows",
+    "reconciliationstatus",
+    "allocation_coverage",
+    "allocation_rows",
+    "allocation_totals",
+    "allocation_only_rows",
+    "calls_only_rows",
+    "campaign_rows",
+    "reconciliation_rows",
+    "reconciliation_status",
+    "lead_campaign",
+    "qty_allocated",
+    "qty_actioned",
+    "qty_remaining",
+    "sales_manager",
+    "allocated",
+    "actioned",
+    "remaining"
+  ]);
+  if (blocked.has(normalized)) return true;
+  if (/^allocation(_|$)/.test(normalized)) return true;
+  if (/^campaign(_|$)/.test(normalized)) return true;
+  return normalized.includes("reconciliation");
+}
+
+function safeRawFieldsForAi(rawFields = {}, omittedFields = []) {
+  const omitted = new Set(omittedFields.map(normalizedFieldName));
+  return Object.fromEntries(
+    Object.entries(rawFields || {}).filter(([key]) => {
+      const normalized = normalizedFieldName(key);
+      return !omitted.has(normalized) && !isParkedAllocationField(key) && !isUntrustedLegacyField(key);
+    })
+  );
+}
+
 function buildTranscriptEvaluationInput(call, options = {}) {
   if (!call) throw new Error("call is required");
   return {
@@ -77,6 +147,7 @@ function buildTranscriptEvaluationInput(call, options = {}) {
     instructions: [
       "Evaluate only the supplied transcript and deterministic baseline.",
       "Do not invent contact details, sales outcomes, or follow-up actions.",
+      "Do not use parked campaign/allocation import data for classification, scoring, source inference, alerts, or coaching.",
       "Return compact JSON with classification, follow_up_assessment, risks, evidence_used, limitations, and confidence."
     ],
     source: {
@@ -92,11 +163,20 @@ function buildTranscriptEvaluationInput(call, options = {}) {
     deterministic_baseline: {
       contact_classification: call.contactClassification,
       local_outcome: call.localOutcome,
-      imported_no_sale: call.importedNoSale,
       follow_up_status: call.followUpStatus,
       follow_up_channel: call.followUpChannel,
       transcript_quality: call.transcriptQuality,
       duration_seconds: call.durationSeconds,
+      ai_voice_assistant: {
+        detected: Boolean(call.aiVoiceAssistantDetected),
+        confidence: call.aiVoiceAssistantConfidence || 0,
+        response_classification: call.aiVoiceAssistantResponse || "not_encountered",
+        handled_successfully: Boolean(call.aiVoiceAssistantHandledSuccessfully),
+        bailed: Boolean(call.aiVoiceAssistantBailed),
+        tactics: call.aiVoiceAssistantTactics || [],
+        future_status: call.aiVoiceAssistantFutureStatus || "not_applicable",
+        future_call_id: call.aiVoiceAssistantFutureCallId || ""
+      },
       stable_ids: call.stableIds || [],
       evidence: call.evidence || []
     },
@@ -110,9 +190,10 @@ function buildTranscriptEvaluationInput(call, options = {}) {
       days_since_created: call.daysSinceCreated
     },
     transcript: call.transcript || "",
-    sanitized_raw_fields: call.rawFields || {},
+    sanitized_raw_fields: safeRawFieldsForAi(call.rawFields || {}),
     guardrails: [
       "Redacted phone numbers are not available and must not be reconstructed.",
+      "Campaign/allocation imports are parked; ignore allocation totals, campaign rows, actioned/remaining counts, and reconciliation status if present.",
       "Use normalized source_attribution dates when present; treat blank or malformed raw date fragments as missing.",
       "Treat deterministic scores as baseline evidence, not final truth.",
       "If evidence is insufficient, say so."
@@ -128,10 +209,7 @@ function truncatedText(value, maxChars = 8000) {
 }
 
 function intelligenceRawFields(rawFields = {}) {
-  const omitted = new Set(["transcription_text", "Baz_DetailedNotes", "transcript"]);
-  return Object.fromEntries(
-    Object.entries(rawFields || {}).filter(([key]) => !omitted.has(key))
-  );
+  return safeRawFieldsForAi(rawFields || {}, ["transcription_text", "transcript"]);
 }
 
 function buildTranscriptIntelligenceInput(call, deterministicIntelligence, options = {}) {
@@ -151,8 +229,10 @@ function buildTranscriptIntelligenceInput(call, deterministicIntelligence, optio
       "Return at most 2 entities, 2 events, and 2 risk_flags; choose only the strongest evidence.",
       "Keep each evidence string under 140 characters.",
       "Evidence must be a real transcript phrase that supports the exact label; never use a single keyword or category name as evidence.",
+      "Preserve AI call assistant encounters as ai_call_assistant_encountered events when the deterministic input or transcript supports them.",
       "Only emit payment_or_order_intent when the customer clearly agrees to pay/order/book/proceed with this offer, asks for an invoice, or gives/requests payment details.",
       "Do not infer payment_or_order_intent from unrelated finance wording such as paying a mortgage, bills, wages, rent, fines, debts, tax, or general affordability complaints.",
+      "Do not use parked campaign/allocation import data for classification, scoring, source inference, alerts, or coaching.",
       "Do not flag ordinary campaign references to Police, SES, ambulance, schools, charities, or Blue Light as legal/compliance risk unless the transcript includes actual threat, deception, fraud concern, complaint, privacy issue, or coercive pressure."
     ],
     output_contract: {
@@ -191,8 +271,9 @@ function buildTranscriptIntelligenceInput(call, deterministicIntelligence, optio
     sanitized_raw_fields: intelligenceRawFields(call.rawFields || {}),
     guardrails: [
       "Redacted phone values are intentionally unavailable and must not be reconstructed.",
+      "Campaign/allocation imports are parked; ignore allocation totals, campaign rows, actioned/remaining counts, and reconciliation status if present.",
       "OrderCount can indicate historical warmth but is not proof this call converted.",
-      "NoSaleType is a weak imported label and may be wrong.",
+      "Untrusted legacy disposition and note fields are excluded and must not be inferred or reconstructed.",
       "Use transcript evidence first; use structured fields only as context.",
       "If the transcript was truncated, limit conclusions to visible evidence."
     ]
@@ -237,15 +318,61 @@ async function submitAiTask(input, options = {}) {
   const config = options.config || resolveAiExecutionConfig(options.env);
   requireConfigured(config);
   const taskType = options.taskType || config.taskType;
+  const model = options.model || config.model || "auto";
+  const metadata = options.metadata || {};
+  const capability = assertLocalModelSubmissionAllowed({
+    capabilityId: options.capabilityId,
+    taskType,
+    evaluationGoal: options.evaluationGoal,
+    model,
+    providerModel: options.providerModel,
+    modelDigest: options.modelDigest,
+    promptHash: options.promptHash,
+    schemaVersion: options.schemaVersion,
+    schemaHash: options.schemaHash,
+    inferenceSettingsHash: options.inferenceSettingsHash,
+    inferenceSettings: options.inferenceSettings,
+    executionContractRevision: options.executionContractRevision,
+    populationId: options.populationId,
+    populationDefinitionHash: options.populationDefinitionHash,
+    metadata,
+    input
+  }, {
+    register: options.capabilityRegister,
+    registerPath: options.capabilityRegisterPath
+  });
+  const contract = capability.promotionContract || {};
+  const pinnedInput = {
+    ...input,
+    execution_constraints: {
+      ...(input?.execution_constraints || {}),
+      max_completion_tokens: Number(contract.inference_settings.maximum_completion_tokens)
+    }
+  };
   const body = {
     task_type: taskType,
-    input,
-    model: options.model || config.model || "auto",
+    input: pinnedInput,
+    model: contract.model_key,
     priority: options.priority || config.priority || "normal",
     response_mode: options.responseMode || config.responseMode || "async",
-    metadata: options.metadata || {}
+    metadata: {
+      ...metadata,
+      capability_id: capability.capabilityId,
+      capability_register_hash: capability.registerHash,
+      provider_model: contract.provider_model,
+      model_digest: contract.model_digest,
+      prompt_hash: contract.prompt_hash,
+      schema_version: contract.schema_version,
+      schema_hash: contract.schema_hash,
+      inference_settings_hash: contract.inference_settings_hash,
+      inference_settings: contract.inference_settings,
+      execution_contract_revision: contract.execution_contract_revision,
+      population_id: contract.supported_population.population_id,
+      population_definition_hash: contract.supported_population.definition_hash,
+      promotion_contract_hash: capability.promotionContractHash
+    }
   };
-  const idempotencyKey = options.idempotencyKey || `sales-dashboard:${taskType}:${hash(JSON.stringify(input)).slice(0, 32)}`;
+  const idempotencyKey = options.idempotencyKey || `sales-dashboard:${taskType}:${hash(JSON.stringify(pinnedInput)).slice(0, 32)}`;
   return requestJson(`${config.baseUrl}/run-task`, {
     method: "POST",
     headers: {
@@ -266,6 +393,132 @@ async function getAiJob(jobId, options = {}) {
     headers: {
       "Authorization": `Bearer ${config.projectApiKey}`
     }
+  }, options.fetchImpl);
+}
+
+async function submitAiBatch(items, options = {}) {
+  const config = options.config || resolveAiExecutionConfig(options.env);
+  requireConfigured(config);
+  if (!Array.isArray(items) || !items.length) throw new Error("AI execution batch requires at least one item.");
+  const taskType = options.taskType || config.taskType;
+  const model = options.model || config.model || "auto";
+  const priority = options.priority || config.priority || "normal";
+  const capabilityOptions = {
+    register: options.capabilityRegister,
+    registerPath: options.capabilityRegisterPath
+  };
+  const itemDecisions = items.map((item) => assertLocalModelSubmissionAllowed({
+    capabilityId: item.capabilityId || options.capabilityId,
+    taskType: item.taskType || item.task_type || taskType,
+    evaluationGoal: item.evaluationGoal || options.evaluationGoal,
+    model: item.model || model,
+    providerModel: item.providerModel || options.providerModel,
+    modelDigest: item.modelDigest || options.modelDigest,
+    promptHash: item.promptHash || options.promptHash,
+    schemaVersion: item.schemaVersion || options.schemaVersion,
+    schemaHash: item.schemaHash || options.schemaHash,
+    inferenceSettingsHash: item.inferenceSettingsHash || options.inferenceSettingsHash,
+    inferenceSettings: item.inferenceSettings || options.inferenceSettings,
+    executionContractRevision: item.executionContractRevision || options.executionContractRevision,
+    populationId: item.populationId || options.populationId,
+    populationDefinitionHash: item.populationDefinitionHash || options.populationDefinitionHash,
+    metadata: { ...(options.metadata || {}), ...(item.metadata || {}) },
+    input: item.input
+  }, capabilityOptions));
+  const body = {
+    batch_name: clean(options.batchName) || "Sales Dashboard controlled batch",
+    metadata: options.metadata || {},
+    defaults: {
+      task_type: taskType,
+      model,
+      priority,
+      response_mode: "async"
+    },
+    items: items.map((item, index) => {
+      const capability = itemDecisions[index];
+      const contract = capability.promotionContract || {};
+      return {
+        item_id: clean(item.itemId || item.item_id) || `item-${index + 1}`,
+        task_type: item.taskType || item.task_type || taskType,
+        input: {
+          ...item.input,
+          execution_constraints: {
+            ...(item.input?.execution_constraints || {}),
+            max_completion_tokens: Number(contract.inference_settings.maximum_completion_tokens)
+          }
+        },
+        model: contract.model_key,
+        priority: item.priority || priority,
+        response_mode: "async",
+        metadata: {
+          ...(item.metadata || {}),
+          capability_id: capability.capabilityId,
+          capability_register_hash: capability.registerHash,
+          provider_model: contract.provider_model,
+          model_digest: contract.model_digest,
+          prompt_hash: contract.prompt_hash,
+          schema_version: contract.schema_version,
+          schema_hash: contract.schema_hash,
+          inference_settings_hash: contract.inference_settings_hash,
+          inference_settings: contract.inference_settings,
+          execution_contract_revision: contract.execution_contract_revision,
+          population_id: contract.supported_population.population_id,
+          population_definition_hash: contract.supported_population.definition_hash,
+          promotion_contract_hash: capability.promotionContractHash
+        },
+        ...(clean(item.idempotencyKey || item.idempotency_key)
+          ? { idempotency_key: clean(item.idempotencyKey || item.idempotency_key) }
+          : {})
+      };
+    })
+  };
+  const idempotencyKey = clean(options.idempotencyKey)
+    || `sales-dashboard:batch:${taskType}:${hash(JSON.stringify(body)).slice(0, 32)}`;
+  return requestJson(`${config.baseUrl}/run-batch`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${config.projectApiKey}`,
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+      ...(options.correlationId ? { "X-Correlation-ID": options.correlationId } : {})
+    },
+    body: JSON.stringify(body)
+  }, options.fetchImpl);
+}
+
+async function getAiBatch(batchId, options = {}) {
+  const config = options.config || resolveAiExecutionConfig(options.env);
+  requireConfigured(config);
+  return requestJson(`${config.baseUrl}/batches/${encodeURIComponent(batchId)}`, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${config.projectApiKey}`
+    }
+  }, options.fetchImpl);
+}
+
+async function recordAiJobFeedback(jobId, feedback = {}, options = {}) {
+  const config = options.config || resolveAiExecutionConfig(options.env);
+  requireConfigured(config);
+  const label = clean(feedback.label).toLowerCase();
+  if (!["accepted", "rejected", "fallback_grade"].includes(label)) {
+    const error = new Error("AI job feedback label must be accepted, rejected, or fallback_grade.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return requestJson(`${config.baseUrl}/jobs/${encodeURIComponent(jobId)}/feedback`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${config.projectApiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      label,
+      notes: clean(feedback.notes).slice(0, 4000) || null,
+      metadata: feedback.metadata && typeof feedback.metadata === "object" && !Array.isArray(feedback.metadata)
+        ? feedback.metadata
+        : {}
+    })
   }, options.fetchImpl);
 }
 
@@ -307,13 +560,18 @@ module.exports = {
   DEFAULT_BASE_URL,
   DEFAULT_LAYER_PATH,
   DEFAULT_TASK_TYPE,
+  EVALUATION_STUDIO_TASK_TYPE,
   INTELLIGENCE_TASK_TYPE,
   buildTranscriptIntelligenceInput,
   buildTranscriptEvaluationInput,
   checkAiExecutionHealth,
+  getAiBatch,
   getAiJob,
   publicAiExecutionStatus,
+  recordAiJobFeedback,
   resolveAiExecutionConfig,
+  safeRawFieldsForAi,
+  submitAiBatch,
   submitAiTask,
   submitTranscriptIntelligenceExtraction,
   submitTranscriptEvaluation

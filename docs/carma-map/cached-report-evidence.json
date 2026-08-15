@@ -1,0 +1,165 @@
+{
+  "schemaVersion": "carma_cached_report_evidence.v1",
+  "generatedAt": "2026-07-30T00:28:25.487Z",
+  "sourceDescription": "Sanitized report-file and parameter-schema evidence derived locally from the saved Carma browser cache.",
+  "safety": "Local read-only parsing only. No Carma request was sent and no report was run.",
+  "privacy": "Only technical report filenames, prompt labels, internal parameter names, type codes, Boolean defaults, counts and SHA-256 source hashes are retained. No report rows, option-list values, customer data, credentials or session values are copied.",
+  "limitations": [
+    "A cached report reference proves only that the endpoint was previously observed; it does not establish a current menu path or permission.",
+    "A technical filename is not silently converted into an exact UI label.",
+    "Parameter metadata is recorded only when a cached prompt page can be parsed without retaining option-list values."
+  ],
+  "sampling": {
+    "scannedCacheArtifacts": 5,
+    "sanitizedSourceSetSha256": "cbf2e430066795cdac0d1d8ca337a2ccb7109a757c224c24d5b0cc27e37c696b"
+  },
+  "reports": [
+    {
+      "reportFile": "CarmaNumberSearches.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 1,
+      "parameterPages": []
+    },
+    {
+      "reportFile": "LeadGenerators.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 2,
+      "parameterPages": [
+        {
+          "sourceArtifactSha256": "e3a99c144ccb6cad8135e3bb9946d97862b97701b55bb7ab2488562448a83ae5",
+          "declaredParameterCount": 1,
+          "parameters": [
+            {
+              "position": 0,
+              "promptLabel": "Select True to Show Details",
+              "internalName": "ShowDetails",
+              "crystalTypeCode": "_bo",
+              "interpretedType": "boolean",
+              "booleanDefault": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "reportFile": "LeadImportData.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 1,
+      "parameterPages": []
+    },
+    {
+      "reportFile": "LeadImportDataManagement.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 2,
+      "parameterPages": [
+        {
+          "sourceArtifactSha256": "c06d894d8e8c114b5e364844487245e8efda53b9beb1ffeaf4796622c2b92e81",
+          "declaredParameterCount": 4,
+          "parameters": [
+            {
+              "position": 0,
+              "promptLabel": "Select True for Summary Only (Grouping by Salespeople Only)",
+              "internalName": "SummaryOnly",
+              "crystalTypeCode": "_bo",
+              "interpretedType": "boolean",
+              "booleanDefault": false
+            },
+            {
+              "position": 1,
+              "promptLabel": "Select True to Group by Date",
+              "internalName": "GroupBYDay",
+              "crystalTypeCode": "_bo",
+              "interpretedType": "boolean",
+              "booleanDefault": false
+            },
+            {
+              "position": 2,
+              "promptLabel": "Select Start Date",
+              "internalName": "StartDate",
+              "crystalTypeCode": "_da",
+              "interpretedType": "date"
+            },
+            {
+              "position": 3,
+              "promptLabel": "Select End Date",
+              "internalName": "EndDate",
+              "crystalTypeCode": "_da",
+              "interpretedType": "date"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "reportFile": "LeadsCalledByImportData.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 2,
+      "parameterPages": []
+    },
+    {
+      "reportFile": "LeadsNBSoldbyAllocation.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 1,
+      "parameterPages": []
+    },
+    {
+      "reportFile": "SalesApprovedByCustomerForPeriod.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 1,
+      "parameterPages": []
+    },
+    {
+      "reportFile": "SalespersonGeneratedLeads.rpt",
+      "evidenceLevel": "prior_live_cache_proof",
+      "exactMenuLabelKnown": false,
+      "menuPathKnown": false,
+      "cacheArtifactObservationCount": 2,
+      "parameterPages": [
+        {
+          "sourceArtifactSha256": "8d145824924223f4aa3e0900ca017aa6501cf2c5872834b095b155ed8396046b",
+          "declaredParameterCount": 3,
+          "parameters": [
+            {
+              "position": 0,
+              "promptLabel": "Select True to show Details",
+              "internalName": "ShowGeneratorNames",
+              "crystalTypeCode": "_bo",
+              "interpretedType": "boolean",
+              "booleanDefault": false
+            },
+            {
+              "position": 1,
+              "promptLabel": "Select True to Show All Customer Details",
+              "internalName": "ShowAllEntries",
+              "crystalTypeCode": "_bo",
+              "interpretedType": "boolean",
+              "booleanDefault": false
+            },
+            {
+              "position": 2,
+              "promptLabel": "Select True to show by Week Sold and Exclude Self Sourced",
+              "internalName": "SortByWeekSold",
+              "crystalTypeCode": "_bo",
+              "interpretedType": "boolean",
+              "booleanDefault": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

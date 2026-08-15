@@ -1,0 +1,131 @@
+{
+  "schemaVersion": "uncalled_lead_review_rules.v1",
+  "minimumComparisonSample": 30,
+  "bands": {
+    "A - Priority": 90,
+    "B - Good": 75,
+    "C - Conditional": 50,
+    "D - Low/manual research": 25,
+    "Reject": 0
+  },
+  "operationalRules": [
+    {
+      "id": "NO_USABLE_BUSINESS_NAME",
+      "pattern": "^(?:|\\.|-|n/?a|none|unknown|test|delete|deleted|x{2,})$",
+      "group": "Could not practically be called",
+      "category": "Invalid or unusable record",
+      "band": "D - Low/manual research",
+      "confidence": "High",
+      "handling": "Fix or remove the source record before allocating it again.",
+      "audience": "Not assigned",
+      "rationale": "The allocation does not contain a usable business identity."
+    },
+    {
+      "id": "RESTRICTED_ADULT_TOBACCO_GAMBLING",
+      "pattern": "\\b(?:adult services?|brothel|escort agency|tobacconist|tobacco shop|vape shop|lotto|lottery|gambling|casino)\\b",
+      "group": "Should not have been called",
+      "category": "Restricted or unsuitable business",
+      "band": "Reject",
+      "confidence": "High",
+      "handling": "Confirm and suppress this type of record at the lead gate.",
+      "audience": "Not assigned",
+      "rationale": "The business name contains a clear restricted or unsuitable activity."
+    },
+    {
+      "id": "INFRASTRUCTURE_OR_COLLECTION_POINT",
+      "pattern": "\\b(?:telstra payphone|payphone|australian clinical labs|qml pathology|4cyte pathology|pathology collection)\\b",
+      "group": "Should not have been called",
+      "category": "Infrastructure or collection point",
+      "band": "Reject",
+      "confidence": "High",
+      "handling": "Confirm and suppress the location or infrastructure record.",
+      "audience": "Not assigned",
+      "rationale": "The name identifies infrastructure or an individual collection point rather than a likely local advertising decision-maker."
+    },
+    {
+      "id": "GOVERNMENT_POLITICAL_RELIGIOUS_NONCOMMERCIAL",
+      "pattern": "\\b(?:government department|city council|shire council|municipal council|member of parliament|political party|church|mosque|temple|salvation army|community association|incorporated association|sporting association|sports club|soccer club|football club|rugby club|scout group|public park|reserve|playground)\\b",
+      "group": "Should not have been called",
+      "category": "Government or non-commercial organisation",
+      "band": "Reject",
+      "confidence": "High",
+      "handling": "Confirm the organisation type before suppressing future allocations.",
+      "audience": "Not assigned",
+      "rationale": "The business name contains a clear government, religious or non-commercial organisation signal."
+    }
+  ],
+  "categoryRules": [
+    {
+      "id": "TRADES_CONSTRUCTION",
+      "category": "Trades and construction",
+      "pattern": "\\b(?:plumb\\w*|electric\\w*|roof\\w*|construct\\w*|build(?:er|ing|ers|ings)?|carpent\\w*|cabinet\\w*|paint\\w*|pest\\w*|air conditioning|landscap\\w*|mowing|handyman|flooring|concrete|glass|render\\w*|engineering)\\b",
+      "band": "A - Priority",
+      "audience": "Police, emergency-service and community readers",
+      "handling": "Manager follow-up on the uncalled allocation.",
+      "rationale": "A clear local trade or construction business is generally suitable for broad CWA community audiences."
+    },
+    {
+      "id": "HEALTH_CARE",
+      "category": "Health and care",
+      "pattern": "\\b(?:clinic\\w*|medical|health|physio\\w*|dental|dentist\\w*|psycholog\\w*|counsell\\w*|therapy|therapist\\w*|disability|aged care|pharmacy|chiro\\w*|optom\\w*|dietitian\\w*|diabetes|wellbeing|veterinary|vet)\\b",
+      "band": "A - Priority",
+      "audience": "Ambulance, emergency-service and community readers",
+      "handling": "Manager follow-up on the uncalled allocation.",
+      "rationale": "A clear health or care business aligns with community and emergency-service audiences."
+    },
+    {
+      "id": "AUTOMOTIVE_TRANSPORT",
+      "category": "Automotive and transport",
+      "pattern": "\\b(?:automotive|mechanic|motor|tyre|towing|transport|logistics|truck|car hire|car rental|vehicle|auto care|panel beat)\\b",
+      "band": "A - Priority",
+      "audience": "Police, emergency-service and community readers",
+      "handling": "Manager follow-up on the uncalled allocation.",
+      "rationale": "A clear automotive or transport business suits broad service and community audiences."
+    },
+    {
+      "id": "FOOD_HOSPITALITY",
+      "category": "Food and hospitality",
+      "pattern": "\\b(?:cafe|restaurant|pizza|kebab|bakery|hotel|motel|takeaway|catering|bistro|coffee|dining|kitchen|grocer|grocery|food|bar\\b)\\b",
+      "band": "B - Good",
+      "audience": "General CWA community audience",
+      "handling": "Manager follow-up where the business and region are clear.",
+      "rationale": "A clear food or hospitality business can suit a defined local or regional audience."
+    },
+    {
+      "id": "RETAIL_PERSONAL_SERVICES",
+      "category": "Retail and personal services",
+      "pattern": "\\b(?:beauty|hair|nail|barber|boutique|retail|store|shop|cleaning|laundry|tattoo|skincare|flowers|florist|massage|salon|brows|lashes)\\b",
+      "band": "B - Good",
+      "audience": "General CWA community audience",
+      "handling": "Manager follow-up where the business and region are clear.",
+      "rationale": "A clear retail or personal-service business can suit a defined community audience."
+    },
+    {
+      "id": "PROFESSIONAL_BUSINESS_SERVICES",
+      "category": "Professional and business services",
+      "pattern": "\\b(?:lawyer\\w*|legal|account\\w*|finance|financial|consult\\w*|marketing|media|recruit\\w*|staffing|technology|software|web design|real estate|insurance|management services|business centre)\\b",
+      "band": "B - Good",
+      "audience": "Professional, police and community readers",
+      "handling": "Manager follow-up where the service and region are clear.",
+      "rationale": "A clear professional or business-service provider can suit defined professional and community audiences."
+    },
+    {
+      "id": "EDUCATION_CHILDCARE",
+      "category": "Education and childcare",
+      "pattern": "\\b(?:school|education|tutor|childcare|daycare|family day care|academy|training|learning|college)\\b",
+      "band": "B - Good",
+      "audience": "Streetsmart, youth and community readers",
+      "handling": "Manager follow-up where the organisation is commercial and regionally relevant.",
+      "rationale": "A clear education or childcare business can align with youth and community audiences."
+    },
+    {
+      "id": "FITNESS_RECREATION",
+      "category": "Fitness and recreation",
+      "pattern": "\\b(?:fitness|pilates|gym|dance|swim|aquatic|yoga|personal training|martial arts|recreation)\\b",
+      "band": "B - Good",
+      "audience": "Streetsmart, youth and community readers",
+      "handling": "Manager follow-up where the organisation is commercial and regionally relevant.",
+      "rationale": "A clear commercial fitness or recreation business can align with youth and community audiences."
+    }
+  ]
+}

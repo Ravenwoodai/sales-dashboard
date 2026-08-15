@@ -73,8 +73,6 @@ const MACHINE_VOICEMAIL_PATTERNS = [
   /\bafter the tone\b/i,
   /\bmailbox\b/i,
   /\bmessage bank\b/i,
-  /\bnot available\b/i,
-  /\bunavailable\b/i,
   /\brecord(?:ing)? (?:your )?message\b/i
 ];
 
@@ -82,6 +80,55 @@ const HUMAN_VOICEMAIL_DIALOGUE_PATTERNS = [
   /\b(?:i|i'm|i am|i'll|i will|i've|i have|me|my|we|we're|we are|we'll|we will|we've|our|us)\b/i,
   /\b(?:business|customers?|advertis(?:e|ing)|support|ready|busy|priorit(?:y|ies)|visibility|bandwidth|break|pause|capacity)\b/i,
   /\b(?:not right now|not now|can't|cannot|don't|do not|call you when|save your number|stay in touch)\b/i
+];
+
+const AI_VOICE_ASSISTANT_PATTERNS = [
+  {
+    pattern: /\bcall assistant recording this call\b/i,
+    confidence: 0.96
+  },
+  {
+    pattern: /\b(?:i['’]?m|i am)\s+(?:a|an)\s+(?:ai\s+)?call assistant\b/i,
+    confidence: 0.94
+  },
+  {
+    pattern: /\bplease say who you are and why you['’]?re calling\b/i,
+    confidence: 0.92
+  },
+  {
+    pattern: /\bthe person you['’]?re (?:calling|trying to reach) is busy\b/i,
+    confidence: 0.9
+  },
+  {
+    pattern: /\b(?:ai|virtual|digital) (?:call )?(?:assistant|receptionist)\b/i,
+    confidence: 0.86
+  },
+  {
+    pattern: /\b(?:google )?(?:assistant|screen(?:ing)? service) (?:is )?(?:recording|screening) (?:this )?call\b/i,
+    confidence: 0.84
+  },
+  {
+    pattern: /\bthis call is being screened\b/i,
+    confidence: 0.82
+  }
+];
+
+const AI_VOICE_ASSISTANT_EVIDENCE_PATTERNS = AI_VOICE_ASSISTANT_PATTERNS.map((item) => item.pattern);
+
+const CALL_SCREENING_PATTERNS = [
+  /\brecord your name and reason for calling\b/i,
+  /\bi['’]?ll see if this person is available\b/i,
+  /\bplease stay on the line\b/i,
+  /\bif you record your name\b/i,
+  /\bcall assistant recording this call\b/i,
+  /\bplease say who you are and why you['’]?re calling\b/i
+];
+
+const CARRIER_SYSTEM_PATTERNS = [
+  /\bthe number is busy\b/i,
+  /\bnumber you have called\b/i,
+  /\bcould not be connected\b/i,
+  /\b(?:number|service) (?:has been|is) disconnected\b/i
 ];
 
 function isMachineVoicemailTurn(turn) {
@@ -125,6 +172,129 @@ function parseTranscriptTurns(text) {
 
 function hasHumanLikeVoicemailDialogue(text) {
   return hasHumanLikeVoicemailDialogueFromTurns(parseRawTranscriptTurns(text));
+}
+
+function emptyAiVoiceAssistant() {
+  return {
+    detected: false,
+    category: "none",
+    confidence: null,
+    responseClassification: "not_encountered",
+    handledSuccessfully: null,
+    bailed: null,
+    responseWordCount: null,
+    afterAssistantWordCount: null,
+    tacticCount: null,
+    tactics: {},
+    tacticLabels: [],
+    evidence: {
+      text: "",
+      turns: [],
+      matchText: ""
+    },
+    followThrough: {
+      status: "not_applicable",
+      futureHumanContact: null,
+      futureMeaningfulConversation: null,
+      futureCallId: ""
+    }
+  };
+}
+
+function firstPatternMatch(source, definitions) {
+  return definitions.reduce((best, definition) => {
+    definition.pattern.lastIndex = 0;
+    const match = definition.pattern.exec(source);
+    if (!match) return best;
+    if (!best || match.index < best.index) {
+      return {
+        definition,
+        match,
+        index: match.index,
+        end: match.index + match[0].length
+      };
+    }
+    return best;
+  }, null);
+}
+
+function tacticResult(key, label, present) {
+  return { key, label, present: Boolean(present) };
+}
+
+function detectAiVoiceAssistant(text) {
+  const source = clean(text).replace(/\s+/g, " ");
+  if (!source) return emptyAiVoiceAssistant();
+
+  const firstMatch = firstPatternMatch(source, AI_VOICE_ASSISTANT_PATTERNS);
+  if (!firstMatch) return emptyAiVoiceAssistant();
+
+  const turns = parseRawTranscriptTurns(source);
+  let assistantTurnIndex = turns.findIndex((turn) => firstPatternMatch(clean(turn.text), AI_VOICE_ASSISTANT_PATTERNS));
+  if (assistantTurnIndex < 0) {
+    assistantTurnIndex = turns.findIndex((turn) => firstMatch.index < turn.end && firstMatch.end > turn.labelStart);
+  }
+
+  const salespersonTurns = turns.filter((turn) => isSalespersonSpeaker(turn.speaker));
+  const afterAssistantTurns = assistantTurnIndex >= 0
+    ? turns.slice(assistantTurnIndex + 1).filter((turn) => isSalespersonSpeaker(turn.speaker))
+    : [];
+  const responseTurns = afterAssistantTurns.length ? afterAssistantTurns : salespersonTurns;
+  const allSalespersonText = salespersonTurns.map((turn) => turn.text).join(" ");
+  const responseText = responseTurns.map((turn) => turn.text).join(" ");
+  const afterAssistantText = afterAssistantTurns.map((turn) => turn.text).join(" ");
+  const responseWordCount = wordCount(responseText);
+  const afterAssistantWordCount = wordCount(afterAssistantText);
+
+  const tacticChecks = [
+    tacticResult("stated_name", "Stated name", /\b(?:it['’]?s|it is|this is|my name is|speaking)\s+(?:just\s+)?[a-z][a-z' -]{1,40}\b/i.test(allSalespersonText)),
+    tacticResult("mentioned_company", "Mentioned company", /\b(?:countrywide|countrywide austral|cwa)\b/i.test(allSalespersonText)),
+    tacticResult("explained_reason", "Explained reason", /\b(?:reason (?:for|of) (?:my|the) call|calling (?:about|regarding)|official journal|local area|community|support|advertis(?:e|ing)|publication|sponsorship|campaign)\b/i.test(allSalespersonText)),
+    tacticResult("asked_for_callback", "Asked for callback", /\b(?:call|ring|phone|get back to) (?:me|us) back\b|\bgive (?:me|us) a call\b|\breturn (?:my|our) call\b/i.test(allSalespersonText)),
+    tacticResult("left_contact_detail", "Left contact detail", /\b(?:my|our) (?:number|mobile|phone)\b|\breach (?:me|us) (?:on|at)\b|\b0\d(?:[\s.-]?\d){7,}\b/i.test(allSalespersonText)),
+    tacticResult("answered_prompt", "Answered assistant prompt", responseWordCount >= 12),
+    tacticResult("kept_message_concise", "Kept message concise", responseWordCount >= 8 && responseWordCount <= 80)
+  ];
+  const tactics = tacticChecks.reduce((result, item) => {
+    result[item.key] = item.present;
+    return result;
+  }, {});
+  const tacticLabels = tacticChecks.filter((item) => item.present).map((item) => item.label);
+  const tacticCount = tacticLabels.length;
+  const explainedAndIdentified = tactics.explained_reason && (
+    tactics.stated_name ||
+    tactics.mentioned_company ||
+    tactics.asked_for_callback ||
+    tactics.left_contact_detail ||
+    tactics.answered_prompt
+  );
+  const handledSuccessfully = tacticCount >= 3 || explainedAndIdentified || (tactics.asked_for_callback && responseWordCount >= 8);
+  const bailed = !handledSuccessfully && (
+    afterAssistantWordCount < 8 ||
+    (!tactics.explained_reason && !tactics.asked_for_callback && !tactics.left_contact_detail)
+  );
+
+  const evidence = evidenceFor(source, AI_VOICE_ASSISTANT_EVIDENCE_PATTERNS, "AI call assistant language detected.");
+  return {
+    detected: true,
+    category: "ai_call_assistant",
+    confidence: firstMatch.definition.confidence,
+    responseClassification: handledSuccessfully ? "handled_well" : bailed ? "bailed" : "partial",
+    handledSuccessfully,
+    bailed,
+    responseWordCount,
+    afterAssistantWordCount,
+    tacticCount,
+    tactics,
+    tacticLabels,
+    evidence,
+    followThrough: {
+      status: "pending",
+      futureHumanContact: false,
+      futureMeaningfulConversation: false,
+      futureCallId: ""
+    }
+  };
 }
 
 function turnsAroundMatch(source, matchStart, matchEnd) {
@@ -200,11 +370,55 @@ function hasAny(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
 }
 
+function systemAudioSubtypeFor({ aiVoiceAssistant, carrierSystem, systemAudio, voicemail }) {
+  const callScreening = Boolean(aiVoiceAssistant?.detected);
+
+  if (callScreening) {
+    return {
+      detected: true,
+      subtype: "call_screening",
+      label: "Call Screening / AI Assistant",
+      category: "screening"
+    };
+  }
+  if (carrierSystem) {
+    return {
+      detected: true,
+      subtype: "carrier_phone_system",
+      label: "Carrier / Phone System",
+      category: "carrier"
+    };
+  }
+  if (voicemail) {
+    return {
+      detected: true,
+      subtype: "machine_voicemail",
+      label: "Machine Voicemail",
+      category: "voicemail"
+    };
+  }
+  if (systemAudio) {
+    return {
+      detected: true,
+      subtype: "ambiguous_system_audio",
+      label: "Ambiguous System Audio",
+      category: "ambiguous"
+    };
+  }
+  return {
+    detected: false,
+    subtype: "none",
+    label: "None",
+    category: "none"
+  };
+}
+
 function followUpSummary(channel) {
   if (channel === "quote") return "Customer asked about quote, price, or cost";
   if (channel === "email_or_sms") return "Customer asked for information by email or SMS";
   if (channel === "meeting") return "Meeting or appointment signal found";
   if (channel === "call") return "Callback requested or promised";
+  if (channel === "future_nurture") return "Long-term deferral or future nurture signal";
   return "Positive follow-up signal found";
 }
 
@@ -271,6 +485,15 @@ const PATTERNS = {
     /\bnot now\b/i,
     /\btoo busy\b/i
   ],
+  longTermDeferral: [
+    /\b(?:call|ring|phone|get back to|try|contact|reach)\s+(?:me|us|him|her|them|the owner|the boss)?\s*(?:back|again)?\s*(?:in|after|within)?\s*(?:about|around|roughly)?\s*(?:12|twelve)\s+months?(?:'?\s*time)?\b/i,
+    /\b(?:in|after|within)\s+(?:about|around|roughly)?\s*(?:12|twelve)\s+months?(?:'?\s*time)?\b/i,
+    /\b(?:in|after|within)\s+(?:(?:about|around|roughly|approximately|maybe)\s+)?(?:a|one)\s+year(?:'s)?(?:\s+time)?\b/i,
+    /\bnext financial year\b/i,
+    /\bbefore (?:the )?next financial year\b/i,
+    /\b(?:try|call|ring|contact|get back to|reach)\s+(?:me|us|him|her|them)?\s*(?:again|back)?\s+(?:this time )?next year\b/i,
+    /\bthis time next year\b/i
+  ],
   emailOrSms: [
     /\bsend (?:me )?(?:an )?email\b/i,
     /\bemail (?:me|through|it)\b/i,
@@ -323,123 +546,242 @@ const PATTERNS = {
   ]
 };
 
+const DIRECT_CUSTOMER_WRONG_NUMBER_PATTERNS = [
+  /\b(?:you(?:'| a)?ve got|this is|that is) (?:the )?wrong number\b/i,
+  /\bwrong number\b/i
+];
+
+const DIRECT_CUSTOMER_NOT_INTERESTED_PATTERNS = [
+  /\bnot interested\b/i
+];
+
+function directCustomerProof(transcript, patterns) {
+  const turns = parseRawTranscriptTurns(transcript);
+  for (const turn of turns) {
+    if (turnLabel(turn.speaker).toLowerCase() !== "customer") continue;
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(turn.text);
+      if (!match) continue;
+      return {
+        text: `Customer: ${turn.text}`,
+        turns: [{ speaker: "Customer", text: turn.text, matched: true }],
+        matchText: clean(match[0])
+      };
+    }
+  }
+  return null;
+}
+
+function literalTurnProof(transcript, patterns, allowedSpeakers) {
+  const turns = parseRawTranscriptTurns(transcript);
+  for (const turn of turns) {
+    const speaker = turnLabel(turn.speaker).toLowerCase();
+    if (!allowedSpeakers.has(speaker)) continue;
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(turn.text);
+      if (!match) continue;
+      return {
+        text: `${turn.speaker}: ${turn.text}`,
+        turns: [{ speaker: turn.speaker, text: turn.text, matched: true }],
+        matchText: clean(match[0])
+      };
+    }
+  }
+  return null;
+}
+
+function explicitNoAnswerProof(transcript) {
+  const source = clean(transcript).replace(/\s+/g, " ");
+  const pattern = /^(?:outbound call\s*)?(?:\[\s*)?(?:no answer|no speech detected|not connected or rang out)(?:\s*\])?[.!]?$/i;
+  const match = pattern.exec(source);
+  if (!match) return null;
+  return {
+    text: source,
+    turns: [],
+    matchText: clean(match[0])
+  };
+}
+
+function explicitMachineVoicemailProof(transcript) {
+  return literalTurnProof(
+    transcript,
+    MACHINE_VOICEMAIL_PATTERNS,
+    new Set(["voicemail", "transcript"])
+  );
+}
+
+function explicitCarrierSystemProof(transcript) {
+  return literalTurnProof(
+    transcript,
+    CARRIER_SYSTEM_PATTERNS,
+    new Set(["voicemail", "transcript"])
+  );
+}
+
+function detectLiteralAiVoiceAssistant(transcript) {
+  const proof = literalTurnProof(
+    transcript,
+    [...AI_VOICE_ASSISTANT_EVIDENCE_PATTERNS, ...CALL_SCREENING_PATTERNS],
+    new Set(["customer", "voicemail", "transcript"])
+  );
+  if (!proof) return emptyAiVoiceAssistant();
+  return {
+    ...emptyAiVoiceAssistant(),
+    detected: true,
+    category: "ai_call_assistant",
+    responseClassification: "detected_unscored",
+    evidence: proof,
+    followThrough: {
+      status: "not_evaluated",
+      futureHumanContact: null,
+      futureMeaningfulConversation: null,
+      futureCallId: ""
+    }
+  };
+}
+
+function restrictedAiVoiceAssistant(aiVoiceAssistant) {
+  if (!aiVoiceAssistant?.detected) return emptyAiVoiceAssistant();
+  return {
+    ...emptyAiVoiceAssistant(),
+    detected: true,
+    category: "ai_call_assistant",
+    confidence: 0,
+    responseClassification: "detected_unscored",
+    evidence: aiVoiceAssistant.evidence,
+    followThrough: {
+      status: "not_evaluated",
+      futureHumanContact: false,
+      futureMeaningfulConversation: false,
+      futureCallId: ""
+    }
+  };
+}
+
 function evaluateCall(row) {
   const transcript = clean(row.transcription_text);
   const transcriptAvailable = !isMissing(row.transcription_text);
-  const lowerTranscript = transcript.toLowerCase();
   const durationSeconds = toInt(row.call_duration_seconds) || 0;
   const totalSeconds = toInt(row.CallTotalSeconds) || 0;
   const words = wordCount(transcript);
   const humanLikeVoicemailDialogue = transcriptAvailable && hasHumanLikeVoicemailDialogue(transcript);
   const speakerLabelsPresent = transcriptAvailable && hasAny(transcript, PATTERNS.speakerLabel);
-
-  const noAnswer = transcriptAvailable && hasAny(transcript, PATTERNS.noAnswer);
-  const rawVoicemail = transcriptAvailable && hasAny(transcript, PATTERNS.voicemail);
-  const voicemail = rawVoicemail && !humanLikeVoicemailDialogue;
-  const systemAudio = transcriptAvailable && hasAny(transcript, PATTERNS.systemAudio);
-  const wrongNumber = transcriptAvailable && hasAny(transcript, PATTERNS.wrongNumber);
-  const notInterested = transcriptAvailable && hasAny(transcript, PATTERNS.notInterested);
-  const callback = transcriptAvailable && hasAny(transcript, PATTERNS.callback);
-  const emailOrSms = transcriptAvailable && hasAny(transcript, PATTERNS.emailOrSms);
-  const quote = transcriptAvailable && hasAny(transcript, PATTERNS.quote);
-  const appointment = transcriptAvailable && hasAny(transcript, PATTERNS.appointment);
-  const positiveInterest = transcriptAvailable && hasAny(transcript, PATTERNS.positiveInterest);
-  const complaint = transcriptAvailable && hasAny(transcript, PATTERNS.complaint);
-  const optOut = transcriptAvailable && hasAny(transcript, PATTERNS.optOut);
+  const aiVoiceAssistant = transcriptAvailable ? detectLiteralAiVoiceAssistant(transcript) : emptyAiVoiceAssistant();
+  const noAnswerProof = transcriptAvailable ? explicitNoAnswerProof(transcript) : null;
+  const voicemailProof = transcriptAvailable ? explicitMachineVoicemailProof(transcript) : null;
+  const carrierSystemProof = transcriptAvailable ? explicitCarrierSystemProof(transcript) : null;
+  const noAnswer = Boolean(noAnswerProof);
+  const voicemail = Boolean(voicemailProof) && !humanLikeVoicemailDialogue;
+  const systemAudio = Boolean(carrierSystemProof) || aiVoiceAssistant.detected;
+  const systemAudioDetails = systemAudioSubtypeFor({
+    aiVoiceAssistant,
+    carrierSystem: Boolean(carrierSystemProof),
+    systemAudio,
+    voicemail
+  });
+  const wrongNumberProof = transcriptAvailable
+    ? directCustomerProof(transcript, DIRECT_CUSTOMER_WRONG_NUMBER_PATTERNS)
+    : null;
+  const optOutProof = transcriptAvailable ? directCustomerProof(transcript, PATTERNS.optOut) : null;
+  const notInterestedProof = transcriptAvailable
+    ? directCustomerProof(transcript, DIRECT_CUSTOMER_NOT_INTERESTED_PATTERNS)
+    : null;
+  const wrongNumber = Boolean(wrongNumberProof);
+  const optOut = Boolean(optOutProof);
+  const notInterested = Boolean(notInterestedProof);
 
   const transcriptNull = !transcriptAvailable;
   const transcriptPlaceholder = noAnswer || /\bfailed transcription\b/i.test(transcript);
   const transcriptTooShort = transcriptAvailable && words < 12 && durationSeconds < 15;
   const transcriptSystemGenerated = noAnswer || systemAudio || voicemail;
-  const transcriptUsableForCoaching = transcriptAvailable && !transcriptPlaceholder && !transcriptTooShort && !voicemail && !systemAudio;
-  const transcriptQualityScore = transcriptNull
-    ? 0
-    : Math.max(5, Math.min(100, 35 + Math.min(words, 120) * 0.4 + (speakerLabelsPresent ? 20 : 0) - (transcriptSystemGenerated ? 25 : 0)));
-  const transcriptQualityBand = transcriptQualityScore >= 75 ? "high" : transcriptQualityScore >= 45 ? "medium" : transcriptQualityScore > 0 ? "low" : "unusable";
-
   const telephonyConnected = durationSeconds > 0;
-  const probableLiveHuman =
-    transcriptAvailable &&
-    !noAnswer &&
-    !systemAudio &&
-    !voicemail &&
-    (wrongNumber || callback || emailOrSms || quote || appointment || positiveInterest || notInterested || complaint || optOut || (speakerLabelsPresent && words >= 16 && durationSeconds >= 10));
-  const meaningfulConversation = probableLiveHuman && (words >= 35 || durationSeconds >= 30);
-  const actionableConversation =
-    meaningfulConversation && (callback || emailOrSms || quote || appointment || positiveInterest || complaint || optOut || wrongNumber || notInterested);
 
   let contactClassification = "unknown";
-  if (noAnswer || (!transcriptAvailable && !telephonyConnected)) contactClassification = "no_answer";
+  if (noAnswer) contactClassification = "no_answer";
   else if (wrongNumber) contactClassification = "wrong_number";
   else if (systemAudio) contactClassification = "system_audio";
   else if (voicemail) contactClassification = "voicemail";
-  else if (probableLiveHuman) contactClassification = "customer";
 
   let localOutcomeCategory = "unknown";
-  if (optOut) localOutcomeCategory = "opt_out";
-  else if (complaint) localOutcomeCategory = "complaint";
+  if (contactClassification === "system_audio") localOutcomeCategory = "system_audio";
+  else if (optOut) localOutcomeCategory = "opt_out";
   else if (wrongNumber) localOutcomeCategory = "wrong_number";
-  else if (callback) localOutcomeCategory = "callback_requested";
-  else if (quote) localOutcomeCategory = "quote_requested";
-  else if (emailOrSms) localOutcomeCategory = "send_information";
-  else if (appointment) localOutcomeCategory = "appointment_or_meeting";
-  else if (positiveInterest) localOutcomeCategory = "positive_interest";
   else if (notInterested) localOutcomeCategory = "not_interested";
   else if (contactClassification === "no_answer") localOutcomeCategory = "no_answer";
-  else if (contactClassification === "system_audio") localOutcomeCategory = "system_audio";
   else if (contactClassification === "voicemail") localOutcomeCategory = "voicemail";
-  else if (meaningfulConversation) localOutcomeCategory = "other";
-
-  const followUpRequired = callback || emailOrSms || quote || appointment || positiveInterest;
-  const followUpChannel = quote ? "quote" : emailOrSms ? "email_or_sms" : appointment ? "meeting" : callback ? "call" : followUpRequired ? "other" : "none";
-  const importedNoSale = isMissing(row.NoSaleType) ? "" : clean(row.NoSaleType);
-  const importedLower = importedNoSale.toLowerCase();
-
-  let outcomeMismatch = false;
-  if (importedLower === "did not answer" && !["no_answer", "system_audio", "voicemail"].includes(localOutcomeCategory)) {
-    outcomeMismatch = true;
-  }
-  if (importedLower === "not interested" && ["positive_interest", "callback_requested", "send_information", "quote_requested", "appointment_or_meeting"].includes(localOutcomeCategory)) {
-    outcomeMismatch = true;
-  }
-  if (!importedNoSale && (followUpRequired || actionableConversation || meaningfulConversation)) {
-    outcomeMismatch = true;
-  }
-
-  const reviewRequired = outcomeMismatch || complaint || optOut || (transcriptAvailable && transcriptQualityBand === "low" && durationSeconds >= 30);
-  const confidence = transcriptQualityBand === "high" ? 0.86 : transcriptQualityBand === "medium" ? 0.68 : transcriptQualityBand === "low" ? 0.42 : 0.12;
 
   const evidence = [];
-  if (followUpRequired) {
+  if (noAnswerProof) {
     evidence.push(evidenceItem(
-      "follow_up",
-      followUpSummary(followUpChannel),
-      evidenceFor(transcript, [...PATTERNS.callback, ...PATTERNS.emailOrSms, ...PATTERNS.quote, ...PATTERNS.appointment, ...PATTERNS.positiveInterest]),
-      confidence
+      "literal_no_answer",
+      "Exact no-answer system marker found",
+      noAnswerProof,
+      0
     ));
   }
-  if (outcomeMismatch) {
+  if (voicemailProof && voicemail) {
     evidence.push(evidenceItem(
-      "outcome_mismatch",
-      "Imported outcome may not match the transcript",
-      evidenceFor(transcript, [/\bcustomer\s*:/i, ...PATTERNS.callback, ...PATTERNS.notInterested, ...PATTERNS.positiveInterest], "Local outcome differs from imported disposition."),
-      confidence
+      "literal_machine_voicemail",
+      "Explicit machine-voicemail wording found in system-labelled audio",
+      voicemailProof,
+      0
     ));
   }
-  if (complaint || optOut) {
+  if (carrierSystemProof) {
     evidence.push(evidenceItem(
-      complaint ? "complaint" : "opt_out",
-      complaint ? "Complaint or risk wording found" : "Opt-out request found",
-      evidenceFor(transcript, complaint ? PATTERNS.complaint : PATTERNS.optOut),
-      confidence
+      "literal_carrier_system",
+      "Canonical carrier-system wording found outside a customer or salesperson turn",
+      carrierSystemProof,
+      0
+    ));
+  }
+  if (wrongNumberProof) {
+    evidence.push(evidenceItem(
+      "literal_wrong_number",
+      "Direct customer wrong-number wording found",
+      wrongNumberProof,
+      0
+    ));
+  }
+  if (optOutProof) {
+    evidence.push(evidenceItem(
+      "opt_out",
+      "Direct customer opt-out wording found",
+      optOutProof,
+      0
+    ));
+  }
+  if (notInterestedProof && !optOutProof) {
+    evidence.push(evidenceItem(
+      "literal_not_interested",
+      "Direct customer not-interested wording found",
+      notInterestedProof,
+      0
+    ));
+  }
+  if (aiVoiceAssistant.detected) {
+    evidence.push(evidenceItem(
+      "ai_voice_assistant",
+      "AI call assistant literal phrase found; handling was not evaluated",
+      aiVoiceAssistant.evidence,
+      0
     ));
   }
 
   return {
     schemaVersion: "local_call_eval.v1",
     modelProvider: "deterministic-local-rules",
-    rulesetVersion: "mvp-2026-07-05",
-    processingStatus: "processed",
+    rulesetVersion: "literal-triage-2026-07-22",
+    processingStatus: "restricted_literal_only",
+    authority: {
+      status: "restricted",
+      decisionUsePermitted: false,
+      permittedUse: "Literal machine/no-answer/voicemail, direct-customer wrong-number, direct-customer not-interested, and direct-customer opt-out triage only.",
+      prohibitedUse: "Semantic outcomes, follow-up work, complaint findings, interest, quote, callback, quality, coaching, ranking, or performance decisions.",
+      evidenceSource: "runtime/ALL_EVALUATORS_ACCURACY_AUDIT_2026-07-20.md"
+    },
     callId: clean(row.call_id),
     durationSeconds,
     totalSeconds,
@@ -447,9 +789,9 @@ function evaluateCall(row) {
       available: transcriptAvailable,
       wordCount: words,
       speakerLabelsPresent,
-      usableForCoaching: transcriptUsableForCoaching,
-      qualityScore: Math.round(transcriptQualityScore),
-      qualityBand: transcriptQualityBand,
+      usableForCoaching: false,
+      qualityScore: 0,
+      qualityBand: "unknown",
       nullFlag: transcriptNull,
       placeholderFlag: transcriptPlaceholder,
       systemGeneratedFlag: transcriptSystemGenerated,
@@ -458,41 +800,53 @@ function evaluateCall(row) {
     },
     contact: {
       telephonyConnected,
-      probableLiveHuman,
-      meaningfulConversation,
-      actionableConversation,
+      probableLiveHuman: null,
+      meaningfulConversation: null,
+      actionableConversation: null,
       classification: contactClassification,
-      confidence
+      confidence: null,
+      semanticStatus: "not_evaluated"
+    },
+    systemAudio: {
+      ...systemAudioDetails,
+      barrier: systemAudioDetails.detected,
+      shouldTrackRecovery: false
     },
     opportunity: {
-      positiveInterest,
-      requestedCallback: callback,
-      requestedEmailOrSms: emailOrSms,
-      requestedQuote: quote,
-      appointmentOrMeeting: appointment,
-      followUpRequired,
-      followUpChannel,
-      confidence
+      positiveInterest: null,
+      requestedCallback: null,
+      longTermDeferral: null,
+      requestedEmailOrSms: null,
+      requestedQuote: null,
+      appointmentOrMeeting: null,
+      followUpRequired: null,
+      followUpChannel: "not_evaluated",
+      confidence: null,
+      semanticStatus: "not_evaluated"
     },
     risk: {
-      complaint,
+      complaint: null,
       optOut,
-      reviewRequired: complaint || optOut,
-      severity: optOut || complaint ? "high" : "none",
-      confidence: complaint || optOut ? confidence : 0
+      reviewRequired: optOut,
+      severity: optOut ? "high" : "none",
+      confidence: null,
+      semanticStatus: "literal_opt_out_only"
     },
     outcome: {
-      importedNoSale,
       localCategory: localOutcomeCategory,
-      mismatch: outcomeMismatch,
-      reviewRequired,
-      confidence
+      reviewRequired: optOut,
+      confidence: null,
+      semanticStatus: ["wrong_number", "not_interested", "opt_out", "no_answer", "voicemail", "system_audio"].includes(localOutcomeCategory)
+        ? "restricted_literal"
+        : "not_evaluated"
     },
     coaching: {
-      missedFollowUpOpportunity: meaningfulConversation && positiveInterest && !followUpRequired,
-      lowCustomerEngagement: probableLiveHuman && words < 35,
-      confidence
+      missedFollowUpOpportunity: null,
+      lowCustomerEngagement: null,
+      confidence: null,
+      semanticStatus: "not_evaluated"
     },
+    aiVoiceAssistant,
     evidence,
     preview: transcript.slice(0, 260)
   };

@@ -1,12 +1,9 @@
 "use strict";
 
 const { clean, isMissing, toInt } = require("./transcriptEvaluator");
+const { businessRelationshipFor } = require("./businessRelationship");
 
 const SOURCE_AGE_THRESHOLDS = [7, 30, 60, 90, 180, 365];
-
-function sourceNameFor(row) {
-  return isMissing(row.CustomerImportSource) ? "Unknown source" : clean(row.CustomerImportSource);
-}
 
 function orderCountFor(row) {
   const value = toInt(row.OrderCount);
@@ -14,7 +11,7 @@ function orderCountFor(row) {
 }
 
 function businessSegmentForRow(row) {
-  return orderCountFor(row) > 0 ? "warm" : "new";
+  return businessRelationshipFor(row).segment;
 }
 
 function parseCustomerDate(value) {
@@ -96,6 +93,56 @@ function createdByTypeLabel(value) {
   return type || "Unknown";
 }
 
+function sourceCategoryFor(row) {
+  const rawSource = clean(row.CustomerImportSource);
+  if (!isMissing(rawSource)) {
+    return {
+      source: rawSource,
+      rawSource,
+      inferred: false,
+      inferenceReason: "CustomerImportSource"
+    };
+  }
+
+  const customerId = clean(row.customer_id);
+  if (isMissing(customerId)) {
+    return {
+      source: "Self Sourced",
+      rawSource: "",
+      inferred: true,
+      inferenceReason: "Missing CustomerImportSource and customer_id"
+    };
+  }
+
+  const createdByType = normalizeCreatedByType(row.CustomerCreatedByType);
+  if (createdByType === "LG") {
+    return {
+      source: "Facebook",
+      rawSource: "",
+      inferred: true,
+      inferenceReason: "Missing CustomerImportSource with LG creator type"
+    };
+  }
+
+  return {
+    source: "Self Sourced",
+    rawSource: "",
+    inferred: true,
+    inferenceReason: createdByType === "SP"
+      ? "Missing CustomerImportSource with SP creator type"
+      : "Missing CustomerImportSource without LG/SP creator type"
+  };
+}
+
+function sourceNameFor(row) {
+  return sourceCategoryFor(row).source;
+}
+
+function regionNameFor(row) {
+  const region = clean(row.CallRegion);
+  return isMissing(region) ? "Australia" : region;
+}
+
 function dateIso(value) {
   return value ? value.toISOString().slice(0, 10) : null;
 }
@@ -103,25 +150,47 @@ function dateIso(value) {
 function sourceAttributionFor(row, callDateTime) {
   const importDate = parseCustomerDate(row.CustomerImportDate);
   const createDate = parseCustomerDate(row.CustomerCreateDate);
-  const customerImportSource = sourceNameFor(row);
+  const sourceCategory = sourceCategoryFor(row);
+  const customerImportSource = sourceCategory.source;
   const customerCreatedBy = isMissing(row.CustomerCreatedBy) ? "" : clean(row.CustomerCreatedBy);
   const customerCreatedByType = normalizeCreatedByType(row.CustomerCreatedByType);
+  const customerCreatedByTypeLabel = createdByTypeLabel(customerCreatedByType);
   const daysSinceImport = daysSince(importDate, callDateTime);
   const daysSinceCreated = daysSince(createDate, callDateTime);
+  const daysSinceRecord = daysSinceImport !== null ? daysSinceImport : daysSinceCreated;
+  const recordAgeBasis = daysSinceImport !== null
+    ? "import_date"
+    : daysSinceCreated !== null
+      ? "create_date"
+      : "none";
+  const recordAgeBasisLabel = recordAgeBasis === "import_date"
+    ? "Imported"
+    : recordAgeBasis === "create_date"
+      ? customerCreatedByType
+        ? `Created by ${customerCreatedByType}`
+        : "Created manually"
+      : "No valid date";
 
   return {
     customerImportSource,
+    customerImportSourceRaw: sourceCategory.rawSource,
+    customerImportSourceInferred: sourceCategory.inferred,
+    customerImportSourceInferenceReason: sourceCategory.inferenceReason,
     customerImportDate: isMissing(row.CustomerImportDate) ? "" : clean(row.CustomerImportDate),
     customerImportDateIso: dateIso(importDate),
     customerCreatedBy,
     customerCreatedByType,
-    customerCreatedByTypeLabel: createdByTypeLabel(customerCreatedByType),
+    customerCreatedByTypeLabel,
     customerCreateDate: isMissing(row.CustomerCreateDate) ? "" : clean(row.CustomerCreateDate),
     customerCreateDateIso: dateIso(createDate),
     daysSinceImport,
     daysSinceCreated,
+    daysSinceRecord,
+    recordAgeBasis,
+    recordAgeBasisLabel,
     importAgeBucket: ageBucket(daysSinceImport),
     createAgeBucket: ageBucket(daysSinceCreated),
+    recordAgeBucket: ageBucket(daysSinceRecord),
     hasBulkSource: !isMissing(row.CustomerImportSource) || Boolean(importDate),
     hasManualCreator: Boolean(customerCreatedBy || customerCreatedByType || createDate)
   };
@@ -135,6 +204,8 @@ module.exports = {
   createdByTypeLabel,
   orderCountFor,
   parseCustomerDate,
+  regionNameFor,
+  sourceCategoryFor,
   sourceAttributionFor,
   sourceNameFor
 };

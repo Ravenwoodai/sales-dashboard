@@ -1,58 +1,106 @@
 # Plans
-This file tracks execution plans for Sales Dashboard.
 
-## Active Plans
-- Review workflow controls
-  - Goal: make stored alert and manager-review state editable from the dashboard instead of API-only.
-  - Scope: acknowledge/dismiss alerts, save manager confirmations, filter review state, and show resolved history.
-  - Risks: avoid treating manager corrections as model truth without versioning.
-  - Verification: add API and browser tests around review actions.
-  - Status: future work.
+## Completed 2026-07-29: Shared Carma Data Layer
 
-## Completed Plans
-### MVP Call Intelligence Dashboard
-- Goal: build a local first version that loads the July 1 CSV, respects privacy-reduced phone data, evaluates transcripts locally, and renders usable sales operations views.
-- Scope shipped: CSV parsing, call deduplication, data-confidence panel, ignored field guardrails, deterministic transcript evaluation, follow-up linking through stable IDs, alert centre, manager review queue, salesperson/source scorecards, sanitized call explorer, and automated tests.
-- Risks handled: phone values are ignored, invalid customer date/import date values are ignored, sales/revenue metrics are marked unsupported, and transcript text is escaped before rendering.
-- Verification: `node --test tests/*.test.js`; real CSV load via `loadAnalysis("C:/Users/User/Downloads/July 1 Data.csv")`.
-- Status: complete.
+- Goal: give Sales Dashboard agents one documented, local entry point to the already-extracted Carma datasets.
+- Scope: full approved-sales-history manifest, raw weekly allocation logs, customer allocation-history extracts, optional Campaign status snapshots and the existing validated dashboard evidence contract.
+- Boundary: raw data remains local and is not exposed through the dashboard UI/API; app joins stay exact `customer_id` only.
+- Result: `docs/CARMA_DATA_LAYER.md`, a local ignored configuration/catalog, and `npm run carma:refresh-data-layer` now provide a reproducible source inventory. The first catalog registers approved-sales history from 1996-01-01 to 2026-07-27 and the 2026-07-20-to-2026-07-26 raw-log file (33,708 rows; 33,659 logical events).
 
-### Local Persistence And Reports Library
-- Goal: persist scheduled import history and make generated reports accessible from the dashboard.
-- Scope shipped: local ignored JSON store, import summaries, sanitized evaluation artifacts, alert events, manager-review records, automatic executive-summary reports, `POST /api/reports`, report/detail APIs, import history UI, and Reports Library UI.
-- Risks handled: raw CSV is not copied into Git, redacted phone values remain unused, and report content is local-only.
-- Verification: `node --test tests/*.test.js`; real CSV load creates an import snapshot and automatic report.
-- Status: complete.
+## Completed 2026-07-27: Carma Evidence Contract And Dashboard Sharing
 
-### Lead Utilization Follow-Up Leakage Report
-- Goal: prove who is and is not utilizing leads without relying on redacted phone numbers.
-- Scope shipped: automatic lead-utilization report on each import, stable lead-day matching, strict callback-duty detection, future-callback pending status, no-contact retry coverage, salesperson risk table, evidence samples, and report-library viewer support.
-- Risks handled: callback proof excludes loose sales-script wording such as "later this year"; phone numbers and invalid customer date/import fields remain unused.
-- Verification: `node --test tests/*.test.js`; real July 1 CSV load creates `Lead Utilization And Follow-Up Leakage - July 1 Data.csv`.
-- Status: complete.
+- Reused saved Carma approved-sales, allocation and complete parsed Lead Generators Sales extracts; did not repeat the 420-branch extraction.
+- Corrected the no-exact-seller-allocation population using explicit `seller_allocated_before_sale`, reproducing the prior focused 87/85/2 audit and separately retaining all 7 current lenient alias-review candidates.
+- Built and verified `carma_evidence.v2`: 930 orders, 910 customers, 30,494 allocations, 5,750 credit rows, versioned provenance/issues/views, integrity `ok`, zero foreign-key issues.
+- Added the optional read-only Sales Dashboard adapter, health fields, sanitized API and Records & Reports UI. Exact `customer_id` is the only join; phone/fuzzy-name matching and CRM writeback remain prohibited.
+- Locked `actual_seller_any_pre_sale_allocation.v1` as the default top-level classification for every lead-source report: Company Sourced when the actual seller had any exact pre-sale allocation, otherwise Self Sourced.
+- Preserved named acquisition-source/campaign separation and the independently versioned 28-day external-credit comparison; neither can override the top-level allocation classification.
+- Verified the original 293-order cohort at 26 exact customers/28 calls, with 15/15 comparable source and 15/15 import-date matches; expanded sources legitimately raise the combined overlap to 74 customers/121 calls.
+- Created the corrected 637-sale proof workbook and repeatable build/verify commands. Full suite passes 357/357.
 
-### Drill-Down Proof Layer
-- Goal: make dashboard/report numbers auditable by opening the exact call rows or lead-day records behind them.
-- Scope shipped: `/drilldown` HTML page, `/api/drilldown` JSON endpoint, `/calls/<call-id>` proof page, `/api/calls/<call-id>` JSON endpoint, dashboard metric links, salesperson/source metric links, lead-utilization metric links, report drill-down links, sanitized raw source fields, full local transcript proof, and manager review form submissions.
-- Risks handled: `dialled_phone_number`, `CustomerCreateDate`, and `CustomerImportDate` are excluded from raw proof fields; full drill-down rows are kept out of `/api/summary`.
-- Verification: `node --test tests/*.test.js`; browser verification of dashboard links, lead drill-down page, call proof page, raw-field exclusions, and report drill-down links.
-- Status: complete.
+## Active Plan
 
-### Local AI Execution Layer Integration
-- Goal: route optional local model transcript work through `C:\Users\User\Desktop\ai-execution-layer`.
-- Scope shipped: execution-layer adapter, environment-driven configuration, `/api/ai/status`, transcript-evaluation submission endpoint, job polling proxy, local AI job references in the store, call-page submission panel, and integration documentation.
-- Risks handled: credentials are environment-only, model runtimes are not called directly, deterministic rules remain the baseline, and Sales Dashboard stores job references rather than raw model outputs.
-- Verification: `node --test tests/*.test.js`.
-- Status: complete.
+### Voicemail Pilot Attribution
 
-### Readable Transcript Evidence Display
-- Goal: make transcript evidence easy to scan in dashboard/report tables while preserving raw proof for audit.
-- Scope shipped: evidence summaries on dashboard, drill-down, alert, review, explorer, and lead-utilization report surfaces; ordered transcript proof cards on call pages; readable full-transcript turn view; raw transcript retained below the readable view.
-- Risks handled: proof snippets no longer start mid-word or flatten several transcript fragments into one table cell; source transcript order is preserved in proof turns instead of being re-sorted by the UI.
-- Verification: `node --test tests/*.test.js`; browser verification at `http://127.0.0.1:3101` for drill-down proof summaries, call proof cards, report proof-summary samples, desktop layout, and mobile-width overflow.
-- Status: complete.
+- Goal: add an optional source-system pilot export that can prove preassignment, message completion, explicit callback linkage, handler, CRM sale and gross profit without inference.
+- Design: `docs/VOICEMAIL_CALLBACK_ATTRIBUTION.md`.
+- Current source finding: the call export has no voicemail-event, callback-attribution, sale-ID/date/status, revenue, gross-profit or currency fields. `OrderCount` is prior-history context only and cannot be attributed to a call.
+- Safety: keep phone matching, transcript sale inference, model output and observational causation out of the implementation.
+- Status: implemented and verified after explicit GPT-5.6 Sol high confirmation. The optional CSV/XLSX is validated read-only, measure-level contradictions become `not_scored`, assignment failures stay out of denominators, currencies remain separate, and callback lift is withheld unless both arms have complete equal-duration observation windows.
 
-## Planning Rules
-- Keep the MVP grounded in current CSV evidence.
-- Do not add sales/revenue claims until reliable fields exist.
-- Treat LLM outputs as a future versioned layer, not as a hidden replacement for deterministic checks.
+### Trusted Local Product Boundary
+
+- Goal: keep Sales Dashboard useful without exposing any decision that the current Qwen model cannot make accurately.
+- Active surface: source facts, exact stable-ID relationships, conservative literal transcript states, transcript proof, and manager-authored review overlays.
+- Model state: 20 audited capabilities, zero promoted. Submission and operational consumption are closed.
+- Required invariant: an unknown semantic state stays unknown; technical completion never upgrades it into a business fact.
+- Status: implemented and verified on 2026-07-22. Preserve this boundary in future changes.
+
+## Completed Remediation
+
+### Evaluation Trust And Validation Studio
+
+- Added a read-only capability catalog showing exact scope, model/provenance, status, authority, exclusions, controlling evidence, failure reason, and permitted next action for all 20 registered capabilities.
+- Added an isolated benchmark Validation Lab with repository/runtime/result/run/manifest prior-use exclusion, genuinely-unseen manifests, direct-quote human labelling in batches of at most five, immutable freezes, predeclared thresholds/budgets/stop rules, exact candidate result-set checks, and frozen-evidence comparisons.
+- Kept the entire historical knowledge/template/run/result archive immutable and visibly separated from benchmark truth.
+- Added a strict promotion framework: the promotion partition requires at least 100 frozen calls with positive, hard-negative, and unsupported coverage; passing only creates an external-approval candidate and never promotes automatically.
+- Added a deterministic voicemail and inbound-evidence lane covering exact voicemail prompts, literal callback requests, exact approved-template use, stable-ID chronology, later inbound relationships, and observed source-salesperson handling. Commercial and causal conclusions remain unknown.
+- Verified the current 19,914-call import has 1,972 exact voicemail encounters, 22 transcript-verifiable callback requests, no exact approved-template message, 135 later-inbound relationships, and 113 clean chronology links with no intervening matching outbound attempt.
+
+### Capability Control
+
+- Added a machine-readable capability register and fail-closed policy enforcement.
+- Bound every Sales Dashboard model submission/consumption path to the current register.
+- Blocked direct transcript evaluation, Evaluation Studio result ingestion, run creation, prompt testing, run resume, result harvest, automatic routing, automatic polling, overnight execution, and ad-hoc execution.
+- Historical job/result APIs return research-only state with authority `none`.
+
+### Active-State Quarantine
+
+- Quarantined 167 queued model jobs and five queued Evaluation Studio runs without deleting history.
+- Confirmed zero queued/running Sales Dashboard model work afterward.
+- Verified the `Sales Dashboard Overnight Evaluations` scheduled task is present but disabled.
+- Left the separate Execution Layer untouched because it may serve another project; Sales Dashboard is disconnected from it.
+
+### Deterministic Boundary
+
+- Replaced semantic transcript decisions with exact literal detections only.
+- Set human-contact, meaningful/actionable conversation, decision-maker, sentiment, next-step, valid-no-sale, quality scores, and confidence fields to null/unknown.
+- Limited literal outcomes to recognised no-answer, machine/carrier voicemail or system audio, direct Customer wrong number, and direct Customer opt-out.
+- Kept literal AI-assistant phrase detection as descriptive evidence only.
+- Restricted reattempt reporting to source/stable-ID facts without claiming contact, lead quality, or follow-up completion.
+
+### Product And UI
+
+- Reduced the dashboard to six understandable workspaces: Overview, Opportunities, Follow-Up, Alerts & Reviews, Intelligence, and Records & Reports.
+- Made Opportunities unavailable until a relevant capability is promoted.
+- Retired Lead Harvest and hidden semantic team-performance panels.
+- Rebuilt Evaluation Studio as a controlled validation laboratory while keeping the historical research archive read-only and exposing no model-run controls.
+- Locked every Evaluation Studio mutation path, including research metadata edits and result-to-review/feedback handoff.
+- Kept transcript proof and manager-authored review available on call pages.
+
+### Verification
+
+- Audited the active 19,914-call SQLite dataset: every call has `llm_status=not_requested`; all audited semantic fields are null.
+- Audited Evaluation Studio and job state: no active runs and no unresolved jobs.
+- Added `npm run audit:trusted-boundary` to make the capability, database, active-job, and active-run invariants repeatable.
+- Proved blocked write requests leave stored run/result/job counts unchanged.
+- Verified the scheduled task is disabled and cannot execute; controller capability preflight remains a second fail-closed boundary.
+- Browser-checked every workspace, Evaluation Studio, and a call proof page; no operational model controls or hidden semantic quality metrics were present and no console warnings/errors occurred.
+
+## Conditional Future Plan
+
+### New Evaluator Research
+
+Do not start this plan merely because semantic automation would be convenient.
+
+It may begin only when all conditions are met:
+
+1. The candidate is a materially different model or a genuinely deterministic rule, not another Qwen decomposition.
+2. The exact facts and excluded calls are written before inference.
+3. Human expected labels and evidence are frozen on genuinely unseen calls.
+4. Minimum evidence and critical-error thresholds are predeclared per fact.
+5. Technical success and semantic promotion are scored separately.
+6. Failure of an atomic unseen semantic gate stops that evaluator family.
+7. Operational use receives separate explicit approval after promotion.
+
+Until then, improve source-record reporting, literal evidence, manager review usability, browser accessibility, and local performance without introducing semantic claims.

@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "carma_retained_navigation_evidence.v1",
+  "generatedAt": "2026-07-30T00:28:25.990Z",
+  "evidenceDate": "2026-07-24",
+  "evidenceLevel": "prior_live_proof",
+  "sourceDescription": "Sanitized navigation-only summary derived from retained read-only order-detail captures.",
+  "privacy": "No customer, contact, order, phone, email, address, credential or body-text value is written to this artifact.",
+  "sampling": {
+    "availableOrderArtifactCount": 293,
+    "sampledOrderArtifactCount": 25,
+    "bodyTextFieldCount": 300,
+    "sampledSourceSetSha256": "44fe10c4da5e77b0ae35d929f1b024d62a4625f4c9fa26407ed0ccee40dd8095"
+  },
+  "navigationBlocks": {
+    "primary_workspace_navigation": [
+      {
+        "items": [
+          "My Mail",
+          "Search",
+          "Campaigns",
+          "Events",
+          "History",
+          "Payment Plans",
+          "Digital Inventory",
+          "Sales",
+          "Sales Summary",
+          "Sales Totals",
+          "Graphs",
+          "Debt Collections",
+          "Admin Email Status",
+          "Maintain Orders",
+          "Our People",
+          "Banking"
+        ],
+        "observationCount": 857
+      }
+    ],
+    "application_menu": [
+      {
+        "items": [
+          "Handbooks Distribution",
+          "Add New Businesses",
+          "Home",
+          "Collections",
+          "Custom Lists",
+          "Menu Editor",
+          "Production",
+          "Reporting",
+          "Payruns",
+          "Pay Reporting",
+          "Sales Team Reports",
+          "Pending Cancellations",
+          "Template Editor",
+          "Learning Hub",
+          "Material",
+          "AdHoc Maintenace",
+          "Logout"
+        ],
+        "observationCount": 600
+      }
+    ]
+  },
+  "contextualTabs": [
+    {
+      "name": "Address",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Admin Notes",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Admin Notes (Show all)",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Company",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Contacts",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "History",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Invoicing Summary",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "OrderSummary",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Payments",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Sales History",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Sales Totals",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    },
+    {
+      "name": "Summary",
+      "observedInArtifactCount": 25,
+      "route": "/CustomerManagement"
+    }
+  ]
+}
